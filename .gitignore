@@ -1,0 +1,51 @@
+node_modules/
+venv/
+.git/
+.obsidian/
+dist/
+.expo/
+package-lock.json
+.env
+.env.local
+*.pkl
+services/ai-detector/models/*.pkl
+# ==========================================
+# ENVIRONMENT & SECRETS (STRICT EXCLUSION)
+# ==========================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ==========================================
+# PYTHON & AI MICROSERVICE (services/ai)
+# ==========================================
+services/ai/venv/
+services/ai/env/
+services/ai/__pycache__/
+services/ai/**/__pycache__/
+services/ai/.pytest_cache/
+*.py[cod]
+
+# Raw downloaded dataset (auto-downloaded by train.py)
+services/ai/data/sms_spam_collection.tsv
+
+# Optional: Uncomment if you DO NOT want to commit model binary artifacts (.pkl)
+# services/ai/models/*.pkl
+
+# ==========================================
+# NODE.JS & EXPRESS GATEWAY (services/api)
+# ==========================================
+services/api/node_modules/
+services/api/npm-debug.log*
+services/api/yarn-debug.log*
+services/api/yarn-error.log*
+
+# ==========================================
+# OS & EDITOR TEMP FILES
+# ==========================================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
