@@ -33,7 +33,21 @@ services/ai/data/sms_spam_collection.tsv
 
 # Optional: Uncomment if you DO NOT want to commit model binary artifacts (.pkl)
 # services/ai/models/*.pkl
+# Virtual Environments
+.venv/
+services/ai/.venv/
+venv/
+env/
 
+# AI Models & Datasets
+services/ai/data/
+services/ai/models/transformer/*.bin
+services/ai/models/transformer/*.pt
+services/ai/models/transformer/*.safetensors
+services/ai/models/transformer/*.onnx
+
+# Local Debug Logs
+.docs/debug/
 # ==========================================
 # NODE.JS & EXPRESS GATEWAY (services/api)
 # ==========================================
