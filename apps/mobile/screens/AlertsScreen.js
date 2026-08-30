@@ -1,33 +1,48 @@
-import React, { useCallback, useState } from 'react';
-import { View, Text, FlatList, RefreshControl } from 'react-native';
-import { Bell, MapPin, TriangleAlert } from 'lucide-react-native';
-import { useFocusEffect } from '@react-navigation/native';
-import * as Location from 'expo-location';
-import { fetchNearbyAlerts } from '../services/api';
+// apps/mobile/screens/AlertsScreen.js
+//
+// Feed of geofenced scam alerts + personal report-status notifications,
+// sourced from GET /api/v1/alerts/nearby. Falls back gracefully offline
+// (shows last-fetched list, no crash).
 
-const FALLBACK_ALERTS = [
-  { id: 'a1', title: 'Fake bank verification call', location: 'Brgy. Poblacion, Makati City', distanceKm: 0.8, severity: 'high', reportedAt: '2 hours ago' },
-  { id: 'a2', title: 'SMS phishing - fake courier fee', location: 'Brgy. San Antonio, Makati City', distanceKm: 1.4, severity: 'medium', reportedAt: '5 hours ago' },
-  { id: 'a3', title: 'Impersonation - fake government hotline', location: 'Brgy. Bel-Air, Makati City', distanceKm: 2.1, severity: 'medium', reportedAt: 'Yesterday' },
-  { id: 'a4', title: 'Fake lottery / prize notification', location: 'Brgy. Guadalupe Nuevo, Makati City', distanceKm: 3.0, severity: 'low', reportedAt: '2 days ago' },
-];
+import React, { useCallback, useState } from 'react';
+import { View, Text, TouchableOpacity, FlatList, RefreshControl } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
+
+import api, { OfflineError } from '../lib/api';
+
+function Badge({ label, color }) {
+  const palette = {
+    rose: { text: '#f43f5e', bg: 'rgba(244,63,94,0.12)', border: 'rgba(244,63,94,0.25)' },
+    amber: { text: '#f59e0b', bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.25)' },
+    emerald: { text: '#10b981', bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.25)' },
+  };
+  const s = palette[color] || palette.amber;
+  return (
+    <View className="px-2 py-0.5 rounded-full self-start" style={{ backgroundColor: s.bg, borderWidth: 1, borderColor: s.border }}>
+      <Text style={{ color: s.text, fontSize: 10, fontWeight: '600' }}>{label}</Text>
+    </View>
+  );
+}
+
+function levelToBadge(level) {
+  if (level === 'high') return { label: 'High Alert', color: 'rose' };
+  if (level === 'moderate') return { label: 'Under Review', color: 'amber' };
+  return { label: 'Confirmed', color: 'emerald' };
+}
 
 export default function AlertsScreen() {
-  const [alerts, setAlerts] = useState(FALLBACK_ALERTS);
+  const [alerts, setAlerts] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
 
   const loadAlerts = useCallback(async () => {
     try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        setAlerts(FALLBACK_ALERTS);
-        return;
+      const response = await api.get('/api/v1/alerts/nearby');
+      setAlerts(response.data?.alerts || []);
+    } catch (err) {
+      if (!(err instanceof OfflineError)) {
+        console.warn('[AlertsScreen] failed to load alerts:', err?.message);
       }
-      const position = await Location.getCurrentPositionAsync({});
-      const data = await fetchNearbyAlerts(position.coords.latitude, position.coords.longitude, 10);
-      setAlerts(Array.isArray(data) && data.length > 0 ? data : FALLBACK_ALERTS);
-    } catch (error) {
-      setAlerts(FALLBACK_ALERTS);
     }
   }, []);
 
@@ -43,50 +58,88 @@ export default function AlertsScreen() {
     setRefreshing(false);
   };
 
-  const severityColor = (severity) => {
-    if (severity === 'high') return { bg: 'bg-red-100', icon: '#DC2626' };
-    if (severity === 'low') return { bg: 'bg-slate-100', icon: '#64748B' };
-    return { bg: 'bg-amber-100', icon: '#B45309' };
+  const markAsRead = async (id) => {
+    setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, read: true } : a)));
+    try {
+      await api.patch(`/api/v1/alerts/${id}/read`);
+    } catch {
+      // Best-effort — local state already reflects read status.
+    }
   };
 
+  const markAllRead = async () => {
+    setAlerts((prev) => prev.map((a) => ({ ...a, read: true })));
+    try {
+      await api.post('/api/v1/alerts/mark-all-read');
+    } catch {
+      // Best-effort.
+    }
+  };
+
+  const unread = alerts.filter((a) => !a.read).length;
+
   return (
-    <View className="flex-1 bg-slate-50">
-      <View className="px-5 pt-14 pb-4 bg-white border-b border-slate-100 flex-row items-center">
-        <Bell size={20} color="#1E3A8A" />
-        <Text className="text-slate-900 text-2xl font-bold ml-2">Alerts</Text>
+    <SafeAreaView edges={['top']} style={{ flex: 1, backgroundColor: '#0a1120' }}>
+      <View className="flex-row items-center justify-between px-4 pt-3 pb-2">
+        <View className="flex-row items-center gap-2">
+          <Text style={{ color: '#e2e8f0', fontSize: 14, fontWeight: '600' }}>Alerts</Text>
+          {unread > 0 && (
+            <View className="w-4 h-4 rounded-full items-center justify-center" style={{ backgroundColor: '#f43f5e' }}>
+              <Text style={{ fontSize: 9, color: 'white', fontWeight: '700' }}>{unread}</Text>
+            </View>
+          )}
+        </View>
+        <TouchableOpacity onPress={markAllRead}>
+          <Text style={{ color: '#4f46e5', fontSize: 12, fontWeight: '500' }}>Mark all read</Text>
+        </TouchableOpacity>
       </View>
 
       <FlatList
         data={alerts}
-        keyExtractor={(item) => String(item.id)}
-        contentContainerStyle={{ padding: 20 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1E3A8A" />}
-        renderItem={({ item }) => {
-          const colors = severityColor(item.severity);
-          return (
-            <View className="bg-white rounded-2xl border border-slate-100 p-4 mb-3 flex-row">
-              <View className={`w-10 h-10 rounded-xl items-center justify-center mr-3 ${colors.bg}`}>
-                <TriangleAlert size={18} color={colors.icon} />
-              </View>
-              <View className="flex-1">
-                <Text className="text-slate-900 font-semibold text-sm">{item.title}</Text>
-                <View className="flex-row items-center mt-1.5">
-                  <MapPin size={12} color="#94A3B8" />
-                  <Text className="text-slate-400 text-xs ml-1">
-                    {item.location} · {item.distanceKm} km
-                  </Text>
-                </View>
-                <Text className="text-slate-300 text-[11px] mt-1">{item.reportedAt}</Text>
-              </View>
-            </View>
-          );
-        }}
+        keyExtractor={(item) => item.id}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#818cf8" />}
         ListEmptyComponent={
-          <View className="items-center py-10">
-            <Text className="text-slate-400 text-sm">No alerts near you right now.</Text>
+          <View className="items-center justify-center px-6" style={{ paddingTop: 80 }}>
+            <Text style={{ color: '#475569', fontSize: 13 }}>No alerts yet</Text>
           </View>
         }
+        renderItem={({ item }) => {
+          const badge = levelToBadge(item.level);
+          return (
+            <TouchableOpacity
+              onPress={() => markAsRead(item.id)}
+              className="flex-row gap-3 px-4 py-3"
+              style={{
+                borderBottomWidth: 1,
+                borderBottomColor: 'rgba(148,163,184,0.07)',
+                backgroundColor: item.read ? 'transparent' : 'rgba(79,70,229,0.04)',
+              }}
+            >
+              <View style={{ marginTop: 4 }}>
+                <View
+                  className="w-2 h-2 rounded-full"
+                  style={{ backgroundColor: item.read ? 'transparent' : '#818cf8' }}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <View className="flex-row items-start justify-between gap-2 mb-0.5">
+                  <Text
+                    style={{ color: item.read ? '#64748b' : '#e2e8f0', fontSize: 12, fontWeight: '600', flex: 1 }}
+                    numberOfLines={2}
+                  >
+                    {item.title}
+                  </Text>
+                  <Text style={{ color: '#334155', fontSize: 9 }}>{item.time}</Text>
+                </View>
+                <Text style={{ color: '#475569', fontSize: 11, lineHeight: 16 }}>{item.body}</Text>
+                <View style={{ marginTop: 6 }}>
+                  <Badge label={badge.label} color={badge.color} />
+                </View>
+              </View>
+            </TouchableOpacity>
+          );
+        }}
       />
-    </View>
+    </SafeAreaView>
   );
 }

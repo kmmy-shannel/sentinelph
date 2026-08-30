@@ -1,257 +1,101 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import {
-  View,
-  Text,
-  ScrollView,
-  Pressable,
-  RefreshControl,
-  ActivityIndicator,
-} from 'react-native';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import {
-  ShieldCheck,
-  ShieldAlert,
-  PlusCircle,
-  MapPin,
-  WifiOff,
-  RefreshCw,
-  ChevronRight,
-  TriangleAlert,
-} from 'lucide-react-native';
-import NetInfo from '@react-native-community/netinfo';
-import * as Location from 'expo-location';
-import { getPendingReportsCount } from '../db/sqlite';
-import { fetchNearbyAlerts } from '../services/api';
+// apps/mobile/screens/HomeScreen.js
+//
+// Dashboard: threat banner, offline/sync status, quick report CTA, stat
+// counters (Queued/Under Review/Confirmed), and nearby scam activity feed.
 
-const MOCK_ALERTS = [
-  {
-    id: 'mock-1',
-    title: 'Fake bank verification call',
-    location: 'Brgy. Poblacion, Makati City',
-    distanceKm: 0.8,
-    severity: 'high',
-    reportedAt: '2 hours ago',
-  },
-  {
-    id: 'mock-2',
-    title: 'SMS phishing - fake courier fee',
-    location: 'Brgy. San Antonio, Makati City',
-    distanceKm: 1.4,
-    severity: 'medium',
-    reportedAt: '5 hours ago',
-  },
-  {
-    id: 'mock-3',
-    title: 'Impersonation - fake government hotline',
-    location: 'Brgy. Bel-Air, Makati City',
-    distanceKm: 2.1,
-    severity: 'medium',
-    reportedAt: 'Yesterday',
-  },
-];
+import React, { useCallback, useEffect, useState } from 'react';
+import { View, Text, ScrollView, RefreshControl } from 'react-native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import BlacklistStatusBanner from '../components/BlacklistStatusBanner';
+import OfflineSyncIndicator from '../components/OfflineSyncIndicator';
+import QuickReportCard from '../components/QuickReportCard';
+import NearbyAlertsWidget from '../components/NearbyAlertsWidget';
+import api, { OfflineError } from '../lib/api';
+import { getPendingReports, getAllReports } from '../db/sqlite';
+
+function StatCounter({ label, value, color, bg }) {
+  return (
+    <View className="flex-1 rounded-xl p-3 items-center gap-1" style={{ backgroundColor: bg, borderWidth: 1, borderColor: `${color}25` }}>
+      <Text style={{ color, fontSize: 20, fontWeight: '700', letterSpacing: -0.5 }}>{value}</Text>
+      <Text style={{ color: '#64748b', fontSize: 9, fontWeight: '500', textAlign: 'center' }}>{label}</Text>
+    </View>
+  );
+}
 
 export default function HomeScreen() {
   const navigation = useNavigation();
-  const [pendingCount, setPendingCount] = useState(0);
-  const [isOffline, setIsOffline] = useState(false);
-  const [alerts, setAlerts] = useState(MOCK_ALERTS);
-  const [alertsLoading, setAlertsLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [blacklistStatus, setBlacklistStatus] = useState({
-    flaggedCount: 3,
-    status: 'active_threats',
-  });
+  const [threatLevel, setThreatLevel] = useState('safe');
+  const [stats, setStats] = useState({ queued: 0, underReview: 0, confirmed: 0 });
+  const [nearbyIncidents, setNearbyIncidents] = useState([]);
 
-  const loadPendingCount = useCallback(async () => {
+  const loadDashboard = useCallback(async () => {
+    // Local counts always come from SQLite (works offline).
     try {
-      const count = await getPendingReportsCount();
-      setPendingCount(count);
-    } catch (error) {
-      console.warn('Unable to read pending reports count:', error);
+      const [pending, all] = await Promise.all([getPendingReports(), getAllReports()]);
+      const confirmed = all.filter((r) => r.synced).length;
+      setStats((prev) => ({ ...prev, queued: pending.length, confirmed }));
+    } catch (err) {
+      console.warn('[HomeScreen] failed to read local reports:', err?.message);
     }
-  }, []);
 
-  const loadNearbyAlerts = useCallback(async () => {
-    setAlertsLoading(true);
+    // Remote data — threat level, under-review count, nearby feed.
     try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        setAlerts(MOCK_ALERTS);
-        return;
-      }
-      const position = await Location.getCurrentPositionAsync({});
-      const data = await fetchNearbyAlerts(
-        position.coords.latitude,
-        position.coords.longitude
-      );
-      if (Array.isArray(data) && data.length > 0) {
-        setAlerts(data);
-      } else {
-        setAlerts(MOCK_ALERTS);
-      }
-    } catch (error) {
-      console.warn('Falling back to cached nearby alerts:', error.message);
-      setAlerts(MOCK_ALERTS);
-    } finally {
-      setAlertsLoading(false);
-    }
-  }, []);
+      const [statusRes, alertsRes] = await Promise.all([
+        api.get('/api/v1/status/summary'),
+        api.get('/api/v1/alerts/nearby'),
+      ]);
 
-  useEffect(() => {
-    const unsubscribe = NetInfo.addEventListener((state) => {
-      setIsOffline(!(state.isConnected && state.isInternetReachable !== false));
-    });
-    return () => unsubscribe();
+      setThreatLevel(statusRes.data?.threatLevel || 'safe');
+      setStats((prev) => ({ ...prev, underReview: statusRes.data?.underReviewCount ?? prev.underReview }));
+      setNearbyIncidents(alertsRes.data?.incidents || []);
+    } catch (err) {
+      if (!(err instanceof OfflineError)) {
+        console.warn('[HomeScreen] failed to load remote dashboard data:', err?.message);
+      }
+      // Offline: keep last-known threat level / feed, don't clear the screen.
+    }
   }, []);
 
   useFocusEffect(
     useCallback(() => {
-      loadPendingCount();
-    }, [loadPendingCount])
+      loadDashboard();
+    }, [loadDashboard])
   );
 
-  useEffect(() => {
-    loadNearbyAlerts();
-  }, [loadNearbyAlerts]);
-
-  const onRefresh = useCallback(async () => {
+  const onRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([loadPendingCount(), loadNearbyAlerts()]);
+    await loadDashboard();
     setRefreshing(false);
-  }, [loadPendingCount, loadNearbyAlerts]);
-
-  const hasActiveThreats = blacklistStatus.flaggedCount > 0;
+  };
 
   return (
-    <View className="flex-1 bg-slate-50">
+    <SafeAreaView edges={['top']} style={{ flex: 1, backgroundColor: '#0a1120' }}>
+      <BlacklistStatusBanner level={threatLevel} />
+
       <ScrollView
-        className="flex-1"
-        contentContainerStyle={{ paddingBottom: 32 }}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1E3A8A" />
-        }
+        className="flex-1 px-4"
+        contentContainerStyle={{ paddingTop: 12, paddingBottom: 16, gap: 12 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#818cf8" />}
       >
-        {/* Header */}
-        <View className="px-5 pt-14 pb-4 bg-white border-b border-slate-100">
-          <Text className="text-slate-400 text-sm">Good day,</Text>
-          <Text className="text-slate-900 text-2xl font-bold mt-0.5">Juan Dela Cruz</Text>
+        <OfflineSyncIndicator />
+
+        <QuickReportCard
+          onQuickReport={() => navigation.navigate('ReportWizard')}
+          onCameraShortcut={() => navigation.navigate('ReportWizard', { openStep: 2, focus: 'camera' })}
+          onMicShortcut={() => navigation.navigate('ReportWizard', { openStep: 2, focus: 'mic' })}
+        />
+
+        <View className="flex-row gap-2">
+          <StatCounter label="Queued" value={stats.queued} color="#f59e0b" bg="rgba(245,158,11,0.08)" />
+          <StatCounter label="Under Review" value={stats.underReview} color="#818cf8" bg="rgba(79,70,229,0.08)" />
+          <StatCounter label="Confirmed" value={stats.confirmed} color="#10b981" bg="rgba(16,185,129,0.08)" />
         </View>
 
-        {/* Offline Sync Indicator */}
-        {(isOffline || pendingCount > 0) && (
-          <View className="mx-5 mt-4 flex-row items-center justify-between bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3">
-            <View className="flex-row items-center flex-1 pr-2">
-              {isOffline ? (
-                <WifiOff size={18} color="#B45309" />
-              ) : (
-                <RefreshCw size={18} color="#B45309" />
-              )}
-              <Text className="ml-2 text-amber-800 text-xs flex-1">
-                {isOffline
-                  ? `You're offline. ${pendingCount} report${pendingCount === 1 ? '' : 's'} queued for sync.`
-                  : `${pendingCount} report${pendingCount === 1 ? '' : 's'} pending sync.`}
-              </Text>
-            </View>
-            <View className="bg-amber-500 rounded-full px-2 py-0.5 min-w-[24px] items-center">
-              <Text className="text-white text-xs font-bold">{pendingCount}</Text>
-            </View>
-          </View>
-        )}
-
-        {/* Blacklist Status Banner */}
-        <View
-          className={`mx-5 mt-4 rounded-3xl p-5 ${
-            hasActiveThreats ? 'bg-red-600' : 'bg-emerald-600'
-          }`}
-        >
-          <View className="flex-row items-center justify-between">
-            <View className="flex-1 pr-3">
-              <View className="flex-row items-center">
-                {hasActiveThreats ? (
-                  <ShieldAlert size={22} color="#FFFFFF" />
-                ) : (
-                  <ShieldCheck size={22} color="#FFFFFF" />
-                )}
-                <Text className="text-white font-bold text-base ml-2">
-                  {hasActiveThreats ? 'Active Threats Detected' : 'No Active Threats'}
-                </Text>
-              </View>
-              <Text className="text-white/90 text-xs mt-2 leading-4">
-                {hasActiveThreats
-                  ? `${blacklistStatus.flaggedCount} numbers linked to your recent contacts are flagged in the national blacklist registry.`
-                  : 'None of your recently checked numbers are currently flagged.'}
-              </Text>
-            </View>
-            <View className="bg-white/20 rounded-2xl px-3 py-2 items-center">
-              <Text className="text-white text-2xl font-extrabold">
-                {blacklistStatus.flaggedCount}
-              </Text>
-              <Text className="text-white/80 text-[10px]">flagged</Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Quick Report Card */}
-        <Pressable
-          onPress={() => navigation.navigate('Report')}
-          className="mx-5 mt-4 bg-blue-900 rounded-3xl p-5 flex-row items-center justify-between active:opacity-90"
-        >
-          <View className="flex-row items-center flex-1 pr-3">
-            <View className="bg-white/15 rounded-2xl p-3">
-              <PlusCircle size={26} color="#FFFFFF" />
-            </View>
-            <View className="ml-3 flex-1">
-              <Text className="text-white font-bold text-base">Report a Scam</Text>
-              <Text className="text-white/75 text-xs mt-1">
-                Report a suspicious number, message, or call in under a minute.
-              </Text>
-            </View>
-          </View>
-          <ChevronRight size={20} color="#FFFFFF" />
-        </Pressable>
-
-        {/* Nearby Alerts Widget */}
-        <View className="mt-6 px-5">
-          <View className="flex-row items-center justify-between mb-3">
-            <Text className="text-slate-900 font-bold text-lg">Nearby Alerts</Text>
-            {alertsLoading && <ActivityIndicator size="small" color="#1E3A8A" />}
-          </View>
-
-          {alerts.length === 0 ? (
-            <View className="bg-white rounded-2xl border border-slate-100 p-5 items-center">
-              <Text className="text-slate-400 text-sm">No recent alerts near you.</Text>
-            </View>
-          ) : (
-            alerts.map((alert) => (
-              <View
-                key={alert.id}
-                className="bg-white rounded-2xl border border-slate-100 p-4 mb-3 flex-row"
-              >
-                <View
-                  className={`w-10 h-10 rounded-xl items-center justify-center mr-3 ${
-                    alert.severity === 'high' ? 'bg-red-100' : 'bg-amber-100'
-                  }`}
-                >
-                  <TriangleAlert
-                    size={18}
-                    color={alert.severity === 'high' ? '#DC2626' : '#B45309'}
-                  />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-slate-900 font-semibold text-sm">{alert.title}</Text>
-                  <View className="flex-row items-center mt-1.5">
-                    <MapPin size={12} color="#94A3B8" />
-                    <Text className="text-slate-400 text-xs ml-1">
-                      {alert.location} · {alert.distanceKm} km
-                    </Text>
-                  </View>
-                  <Text className="text-slate-300 text-[11px] mt-1">{alert.reportedAt}</Text>
-                </View>
-              </View>
-            ))
-          )}
-        </View>
+        <NearbyAlertsWidget incidents={nearbyIncidents} />
       </ScrollView>
-    </View>
+    </SafeAreaView>
   );
 }

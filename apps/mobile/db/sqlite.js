@@ -1,132 +1,178 @@
+// apps/mobile/db/sqlite.js
+//
+// Local SQLite outbox for offline-first report submission.
+// Reports created while offline are enqueued here, then flushed by
+// db/syncQueue.js once connectivity returns.
+//
+// Uses the new expo-sqlite async API (SDK 51+): openDatabaseAsync +
+// runAsync/getAllAsync/execAsync.
+
 import * as SQLite from 'expo-sqlite';
 
-let db = null;
+const DB_NAME = 'sentinelph.db';
+
+let dbInstance = null;
+
+async function getDb() {
+  if (!dbInstance) {
+    dbInstance = await SQLite.openDatabaseAsync(DB_NAME);
+  }
+  return dbInstance;
+}
 
 /**
- * Initializes the local SQLite database and creates the offline
- * report queue table if it doesn't already exist.
- * Must be awaited once at app startup before any other db function is called.
+ * Creates the reports outbox table if it doesn't already exist.
+ * Call once on app boot (e.g. in App.tsx's root effect).
  */
 export async function initDB() {
-  db = await SQLite.openDatabaseAsync('sentinelph.db');
+  const db = await getDb();
 
   await db.execAsync(`
     PRAGMA journal_mode = WAL;
-    CREATE TABLE IF NOT EXISTS pending_reports (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      local_uuid TEXT NOT NULL,
-      payload TEXT NOT NULL,
-      reported_number TEXT,
+
+    CREATE TABLE IF NOT EXISTS reports_outbox (
+      local_id TEXT PRIMARY KEY NOT NULL,
+      scam_type TEXT NOT NULL,
+      content TEXT NOT NULL,
+      evidence_files TEXT,               -- JSON-stringified array of local file URIs
+      voice_note_uri TEXT,
+      latitude REAL,
+      longitude REAL,
+      nullifier TEXT NOT NULL,
+      zkp_hash TEXT,
       created_at TEXT NOT NULL,
-      synced INTEGER NOT NULL DEFAULT 0,
+      synced INTEGER NOT NULL DEFAULT 0, -- 0 = pending, 1 = synced
       sync_attempts INTEGER NOT NULL DEFAULT 0,
-      last_error TEXT
+      last_error TEXT,
+      server_report_id TEXT
     );
+
+    CREATE INDEX IF NOT EXISTS idx_reports_outbox_synced
+      ON reports_outbox (synced);
   `);
 
   return db;
 }
 
-function getDB() {
-  if (!db) {
-    throw new Error('SQLite database not initialized. Call initDB() before using this function.');
-  }
-  return db;
-}
-
 /**
- * Adds a report to the local offline queue.
- * @param {object} reportData - full report payload (text, number, evidence, location, etc.)
- * @returns {Promise<{id: number, localUuid: string, createdAt: string}>}
+ * Adds a new report to the local outbox with synced = 0.
+ * @param {object} report
+ * @param {string} report.localId - client-generated UUID
+ * @param {string} report.scamType
+ * @param {string} report.content
+ * @param {string[]} [report.evidenceFiles]
+ * @param {string} [report.voiceNoteUri]
+ * @param {number} [report.latitude]
+ * @param {number} [report.longitude]
+ * @param {string} report.nullifier
+ * @param {string} [report.zkpHash]
  */
-export async function enqueueReport(reportData) {
-  const database = getDB();
-
-  const localUuid =
-    reportData.localUuid || `local-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+export async function enqueueReport(report) {
+  const db = await getDb();
   const createdAt = new Date().toISOString();
-  const payload = JSON.stringify({ ...reportData, localUuid });
 
-  const result = await database.runAsync(
-    `INSERT INTO pending_reports (local_uuid, payload, reported_number, created_at, synced, sync_attempts)
-     VALUES (?, ?, ?, ?, 0, 0);`,
-    [localUuid, payload, reportData.reportedNumber || null, createdAt]
+  await db.runAsync(
+    `INSERT INTO reports_outbox
+      (local_id, scam_type, content, evidence_files, voice_note_uri, latitude, longitude, nullifier, zkp_hash, created_at, synced, sync_attempts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
+    [
+      report.localId,
+      report.scamType,
+      report.content,
+      JSON.stringify(report.evidenceFiles || []),
+      report.voiceNoteUri || null,
+      report.latitude ?? null,
+      report.longitude ?? null,
+      report.nullifier,
+      report.zkpHash || null,
+      createdAt,
+    ]
   );
 
-  return {
-    id: result.lastInsertRowId,
-    localUuid,
-    createdAt,
-  };
+  return { ...report, createdAt, synced: 0 };
 }
 
 /**
- * Retrieves all reports that have not yet been synced to the backend.
- * @returns {Promise<Array<object>>}
+ * Returns all reports not yet synced to the server, oldest first.
  */
 export async function getPendingReports() {
-  const database = getDB();
-
-  const rows = await database.getAllAsync(
-    `SELECT * FROM pending_reports WHERE synced = 0 ORDER BY created_at ASC;`
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT * FROM reports_outbox WHERE synced = 0 ORDER BY created_at ASC`
   );
+  return rows.map(deserializeRow);
+}
 
-  return rows.map((row) => ({
-    id: row.id,
-    localUuid: row.local_uuid,
-    payload: JSON.parse(row.payload),
-    reportedNumber: row.reported_number,
+/**
+ * Returns every report in the outbox (pending + synced), newest first.
+ * Used by MyReportsScreen to show full local history.
+ */
+export async function getAllReports() {
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT * FROM reports_outbox ORDER BY created_at DESC`
+  );
+  return rows.map(deserializeRow);
+}
+
+/**
+ * Marks a report as synced and stores the server-assigned report ID.
+ */
+export async function markReportSynced(localId, serverReportId) {
+  const db = await getDb();
+  await db.runAsync(
+    `UPDATE reports_outbox SET synced = 1, server_report_id = ?, last_error = NULL WHERE local_id = ?`,
+    [serverReportId, localId]
+  );
+}
+
+/**
+ * Records a failed sync attempt (increments counter, stores last error)
+ * without removing the report — it stays queued for the next sync pass.
+ */
+export async function markReportSyncFailed(localId, errorMessage) {
+  const db = await getDb();
+  await db.runAsync(
+    `UPDATE reports_outbox
+     SET sync_attempts = sync_attempts + 1, last_error = ?
+     WHERE local_id = ?`,
+    [errorMessage, localId]
+  );
+}
+
+/**
+ * Permanently deletes a synced report from the local outbox.
+ * Call after confirming the server has the report, if you don't want to
+ * keep local history (otherwise leave synced rows in place for MyReports).
+ */
+export async function deleteSyncedReport(localId) {
+  const db = await getDb();
+  await db.runAsync(`DELETE FROM reports_outbox WHERE local_id = ? AND synced = 1`, [localId]);
+}
+
+/**
+ * Wipes the entire outbox. Used by ProfileScreen's "Clear offline cache".
+ */
+export async function clearAllReports() {
+  const db = await getDb();
+  await db.runAsync(`DELETE FROM reports_outbox`);
+}
+
+function deserializeRow(row) {
+  return {
+    localId: row.local_id,
+    scamType: row.scam_type,
+    content: row.content,
+    evidenceFiles: row.evidence_files ? JSON.parse(row.evidence_files) : [],
+    voiceNoteUri: row.voice_note_uri,
+    latitude: row.latitude,
+    longitude: row.longitude,
+    nullifier: row.nullifier,
+    zkpHash: row.zkp_hash,
     createdAt: row.created_at,
-    synced: !!row.synced,
+    synced: Boolean(row.synced),
     syncAttempts: row.sync_attempts,
     lastError: row.last_error,
-  }));
-}
-
-/**
- * Marks a queued report as successfully synced with the backend.
- * @param {number} id - local SQLite row id
- */
-export async function markReportSynced(id) {
-  const database = getDB();
-  await database.runAsync(`UPDATE pending_reports SET synced = 1 WHERE id = ?;`, [id]);
-  return true;
-}
-
-/**
- * Permanently deletes a synced report from the local queue.
- * Typically called right after markReportSynced() during a sync sweep.
- * @param {number} id - local SQLite row id
- */
-export async function deleteSyncedReport(id) {
-  const database = getDB();
-  await database.runAsync(`DELETE FROM pending_reports WHERE id = ?;`, [id]);
-  return true;
-}
-
-/**
- * Records a failed sync attempt against a queued report (for retry/backoff logic).
- * @param {number} id
- * @param {string} errorMessage
- */
-export async function incrementSyncAttempt(id, errorMessage) {
-  const database = getDB();
-  await database.runAsync(
-    `UPDATE pending_reports SET sync_attempts = sync_attempts + 1, last_error = ? WHERE id = ?;`,
-    [errorMessage || null, id]
-  );
-  return true;
-}
-
-/**
- * Returns the count of unsynced reports — used for the Home screen's
- * Offline Sync Indicator badge.
- * @returns {Promise<number>}
- */
-export async function getPendingReportsCount() {
-  const database = getDB();
-  const row = await database.getFirstAsync(
-    `SELECT COUNT(*) as count FROM pending_reports WHERE synced = 0;`
-  );
-  return row?.count ?? 0;
+    serverReportId: row.server_report_id,
+  };
 }

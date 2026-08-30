@@ -1,51 +1,113 @@
+// apps/mobile/App.js
 import 'react-native-gesture-handler';
-import React, { useEffect, useState } from 'react';
-import { View, Text, ActivityIndicator } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { StatusBar as RNStatusBar } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { StatusBar } from 'expo-status-bar';
+import * as SplashScreen from 'expo-splash-screen';
+import {
+  useFonts,
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+  Inter_700Bold,
+} from '@expo-google-fonts/inter';
+import {
+  JetBrainsMono_400Regular,
+  JetBrainsMono_500Medium,
+} from '@expo-google-fonts/jetbrains-mono';
+
+import { AuthProvider, useAuth } from './context/AuthContext';
+import AuthScreen from './screens/AuthScreen';
 import TabNavigator from './navigation/TabNavigator';
 import { initDB } from './db/sqlite';
+import * as syncQueue from './db/syncQueue';
 
-export default function App() {
-  const [dbReady, setDbReady] = useState(false);
-  const [dbError, setDbError] = useState(null);
+// --- ENV DIAGNOSTIC CHECK ---
+console.log('================ [ENV CHECK START] ================');
+console.log('API Gateway URL   :', process.env.EXPO_PUBLIC_API_URL);
+console.log('API Timeout (ms)  :', process.env.EXPO_PUBLIC_API_TIMEOUT_MS);
+console.log('Firebase Proj ID  :', process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID);
+console.log('SQLite DB Name    :', process.env.EXPO_PUBLIC_SQLITE_DB_NAME);
+console.log('Max Sync Attempts :', process.env.EXPO_PUBLIC_SQLITE_MAX_SYNC_ATTEMPTS);
+console.log('ZKP Separator     :', process.env.EXPO_PUBLIC_ZKP_DOMAIN_SEPARATOR);
+console.log('================ [ENV CHECK END] ==================');
 
-  useEffect(() => {
-    (async () => {
-      try {
-        await initDB();
-        setDbReady(true);
-      } catch (error) {
-        console.error('Failed to initialize local database:', error);
-        setDbError(error.message);
-        setDbReady(true);
-      }
-    })();
-  }, []);
+SplashScreen.preventAutoHideAsync().catch(() => {
+  // Safe to ignore if already hidden
+});
 
-  if (!dbReady) {
-    return (
-      <View className="flex-1 items-center justify-center bg-white">
-        <ActivityIndicator size="large" color="#1E3A8A" />
-        <Text className="mt-4 text-slate-500">Starting SentinelPH...</Text>
-      </View>
-    );
+/**
+ * Reads auth state and renders the correct navigation tree.
+ */
+function RootNavigator() {
+  const { isAuthenticated, initializing } = useAuth();
+
+  if (initializing) {
+    return null;
   }
 
   return (
-    <SafeAreaProvider>
-      <StatusBar style="dark" />
-      <NavigationContainer>
-        <TabNavigator />
-      </NavigationContainer>
-      {dbError ? (
-        <View className="absolute bottom-0 left-0 right-0 bg-red-600 px-4 py-2">
-          <Text className="text-white text-xs text-center">
-            Local storage failed to initialize: {dbError}
-          </Text>
-        </View>
-      ) : null}
+    <NavigationContainer>
+      {isAuthenticated ? <TabNavigator /> : <AuthScreen />}
+    </NavigationContainer>
+  );
+}
+
+export default function App() {
+  const [fontsLoaded] = useFonts({
+    Inter_400Regular,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    Inter_700Bold,
+    JetBrainsMono_400Regular,
+    JetBrainsMono_500Medium,
+  });
+  const [dbReady, setDbReady] = useState(false);
+
+  useEffect(() => {
+    async function prepareApp() {
+      try {
+        await initDB();
+      } catch (err) {
+        console.warn('[App] SQLite init failed:', err?.message || err);
+      } finally {
+        setDbReady(true);
+      }
+
+      // Safe binding for sync listener regardless of function name
+      if (typeof syncQueue.initSyncListener === 'function') {
+        syncQueue.initSyncListener();
+      } else if (typeof syncQueue.startSyncListener === 'function') {
+        syncQueue.startSyncListener();
+      }
+    }
+
+    prepareApp();
+
+    return () => {
+      if (typeof syncQueue.stopSyncListener === 'function') {
+        syncQueue.stopSyncListener();
+      }
+    };
+  }, []);
+
+  const onLayoutRootView = useCallback(async () => {
+    if (fontsLoaded && dbReady) {
+      await SplashScreen.hideAsync();
+    }
+  }, [fontsLoaded, dbReady]);
+
+  if (!fontsLoaded || !dbReady) {
+    return null;
+  }
+
+  return (
+    <SafeAreaProvider onLayout={onLayoutRootView} style={{ flex: 1 }}>
+      <RNStatusBar barStyle="light-content" backgroundColor="#0a1120" />
+      <AuthProvider>
+        <RootNavigator />
+      </AuthProvider>
     </SafeAreaProvider>
   );
 }
