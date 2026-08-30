@@ -59,10 +59,11 @@ async def lifespan(app: FastAPI):
             settings.MODELS_DIR,
         )
     else:
+        test_acc = clf.metadata.get("test_accuracy") or clf.metadata.get("test_metrics", {}).get("accuracy")
         logger.info(
             "Model loaded successfully. version={} test_accuracy={}",
             clf.model_version,
-            clf.metadata.get("test_metrics", {}).get("accuracy"),
+            test_acc,
         )
     yield
     # Shutdown: nothing to clean up (no DB connections held by this service).

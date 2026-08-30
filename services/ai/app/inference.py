@@ -1,121 +1,170 @@
+# services/ai/app/inference.py
+
 """
-app/inference.py
-------------------
-Loads serialized model artifacts and performs scam-probability inference.
-Kept separate from app/main.py so it can be unit-tested without spinning
-up the FastAPI/Uvicorn server.
+Advisory scam-text classifier. Never blacklists anything — only returns a
+probability + label consumed by the API layer, which still requires
+two-officer consensus for any blacklist action.
+
+Model priority:
+  1. Transformer model at models/transformer/ IF it exists and its recorded
+     test_accuracy in model_metadata.json passed the 85% quality gate.
+  2. Otherwise, fall back to the classical logreg + tfidf model.
+  3. If the transformer fails to load for any reason, fall back to classical
+     rather than crashing the API.
 """
 
 import json
+import pickle
 from pathlib import Path
 from typing import Optional
 
-import joblib
-from loguru import logger
+AI_ROOT = Path(__file__).resolve().parents[1]
+MODELS_DIR = AI_ROOT / "models"
+TRANSFORMER_DIR = MODELS_DIR / "transformer"
+METADATA_PATH = MODELS_DIR / "model_metadata.json"
 
-from app.config import classify_score, settings
-from app.utils.text_normalize import normalize_text
+LOGREG_PATH = MODELS_DIR / "logreg_classifier.pkl"
+VECTORIZER_PATH = MODELS_DIR / "tfidf_vectorizer.pkl"
+
+MIN_TEST_ACCURACY = 0.85
+
+ID2LABEL = {0: "likely_legitimate", 1: "likely_scam"}
 
 
 class ModelNotLoadedError(Exception):
-    """Raised when /predict is called before artifacts have been trained."""
+    """Raised when inference is requested but no classification backend is available."""
+    pass
 
 
 class ScamClassifier:
-    """
-    Thin wrapper around the persisted TF-IDF vectorizer + Logistic
-    Regression classifier. Instantiated once at FastAPI startup and
-    reused across requests (loading the .pkl files per-request would be
-    needlessly slow).
-    """
+    def __init__(self):
+        self.backend = None          # "transformer" or "classical"
+        self.model_version = "unknown"
+        self.device = "cpu"
+        self.metadata = {}           # Stores model metadata for main.py lifespan checks
 
-    def __init__(self) -> None:
-        self.vectorizer = None
-        self.classifier = None
-        self.metadata: dict = {}
-        self.loaded = False
-        self._try_load()
+        self._transformer_model = None
+        self._transformer_tokenizer = None
+        self._logreg = None
+        self._vectorizer = None
 
-    def _try_load(self) -> None:
-        vec_path: Path = settings.VECTORIZER_PATH
-        clf_path: Path = settings.CLASSIFIER_PATH
-        meta_path: Path = settings.METADATA_PATH
+        self._try_load_transformer()
+        if self.backend is None:
+            self._load_classical()
 
-        if not vec_path.exists() or not clf_path.exists():
-            logger.warning(
-                "Model artifacts not found at {} / {}. "
-                "The /predict endpoint will return 503 until you run: "
-                "python scripts/train.py",
-                vec_path,
-                clf_path,
+        if self.backend is None:
+            raise ModelNotLoadedError(
+                "No usable model found (neither transformer nor classical). "
+                "The AI service cannot start without at least the classical "
+                "fallback model present."
             )
-            self.loaded = False
+
+    @property
+    def loaded(self) -> bool:
+        """Helper property expected by main.py lifespan check."""
+        return self.backend is not None
+
+    # -- transformer path -------------------------------------------------
+    def _try_load_transformer(self):
+        if not TRANSFORMER_DIR.exists() or not METADATA_PATH.exists():
+            return
+        try:
+            with open(METADATA_PATH, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+                self.metadata = meta if isinstance(meta, dict) else {}
+        except Exception as e:
+            print(f"[inference] Could not read model_metadata.json: {e}. "
+                  f"Falling back to classical model.")
+            return
+
+        if meta.get("model_type") != "transformer":
+            return
+
+        test_acc = meta.get("test_accuracy")
+        if test_acc is None or test_acc < MIN_TEST_ACCURACY:
+            print(f"[inference] Transformer metadata present but test_accuracy="
+                  f"{test_acc} did not meet the {MIN_TEST_ACCURACY} quality gate. "
+                  f"Falling back to classical model.")
             return
 
         try:
-            self.vectorizer = joblib.load(vec_path)
-            self.classifier = joblib.load(clf_path)
-            if meta_path.exists():
-                self.metadata = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.loaded = True
-            logger.info(
-                "Loaded model artifacts (run_id={}, test_accuracy={})",
-                self.metadata.get("run_id", "unknown"),
-                self.metadata.get("test_metrics", {}).get("accuracy", "unknown"),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to load model artifacts: {}", exc)
-            self.loaded = False
+            import torch
+            from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-    def reload(self) -> None:
-        """Re-attempt loading artifacts, e.g. after training completes."""
-        self._try_load()
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            self._transformer_tokenizer = AutoTokenizer.from_pretrained(str(TRANSFORMER_DIR))
+            self._transformer_model = AutoModelForSequenceClassification.from_pretrained(
+                str(TRANSFORMER_DIR)
+            ).to(self.device)
+            self._transformer_model.eval()
 
-    @property
-    def model_version(self) -> str:
-        return self.metadata.get("run_id", "unknown")
+            self.backend = "transformer"
+            self.model_version = meta.get("model_version", "transformer-unknown")
+            print(f"[inference] Loaded transformer model '{self.model_version}' "
+                  f"on device={self.device} (test_accuracy={test_acc}).")
+        except Exception as e:
+            print(f"[inference] Failed to load transformer model, falling back "
+                  f"to classical. Reason: {e}")
+            self._transformer_model = None
+            self._transformer_tokenizer = None
+            self.backend = None
 
-    def predict(self, clean_text: str) -> float:
-        """
-        Return the probability (0.0-1.0) that `clean_text` is scam-like.
-        `clean_text` must already be normalized via normalize_text().
-        """
-        if not self.loaded or self.vectorizer is None or self.classifier is None:
-            raise ModelNotLoadedError(
-                "Model artifacts are not loaded. Run scripts/train.py first."
-            )
+    # -- classical fallback path -------------------------------------------
+    def _load_classical(self):
+        if not LOGREG_PATH.exists() or not VECTORIZER_PATH.exists():
+            print("[inference] Classical model files not found either.")
+            return
+        try:
+            with open(LOGREG_PATH, "rb") as f:
+                self._logreg = pickle.load(f)
+            with open(VECTORIZER_PATH, "rb") as f:
+                self._vectorizer = pickle.load(f)
+            self.backend = "classical"
+            self.model_version = "logreg-tfidf-baseline"
+            print("[inference] Loaded classical logreg + tfidf fallback model.")
+        except Exception as e:
+            print(f"[inference] Failed to load classical model: {e}")
 
-        if not clean_text:
-            # No usable text at all -> cannot make a meaningful judgement.
-            # Return a neutral, non-alarming probability rather than
-            # guessing; the label will resolve to "likely_legitimate" /
-            # low-confidence uncertain territory, and the gateway/officers
-            # can decide based on other report metadata.
-            return 0.0
+    # -- prediction ----------------------------------------------------------
+   # -- prediction ----------------------------------------------------------
+    def predict(self, text: str) -> float:
+        """Runs model inference on normalized text and returns the raw scam probability score (0.0 to 1.0)."""
+        if self.backend == "transformer":
+            probability_score, _ = self._predict_transformer(text)
+        elif self.backend == "classical":
+            probability_score, _ = self._predict_classical(text)
+        else:
+            raise RuntimeError("No model backend loaded.")
 
-        X = self.vectorizer.transform([clean_text])
-        prob = float(self.classifier.predict_proba(X)[0, 1])
-        return prob
+        return float(probability_score)
+
+    def _predict_transformer(self, text: str):
+        import torch
+
+        inputs = self._transformer_tokenizer(
+            text, truncation=True, padding=True, max_length=256, return_tensors="pt"
+        ).to(self.device)
+        with torch.no_grad():
+            logits = self._transformer_model(**inputs).logits
+            probs = torch.softmax(logits, dim=-1).squeeze().tolist()
+        scam_prob = probs[1]
+        label = ID2LABEL[1] if scam_prob >= 0.5 else ID2LABEL[0]
+        return scam_prob, label
+
+    def _predict_classical(self, text: str):
+        vec = self._vectorizer.transform([text])
+        proba = self._logreg.predict_proba(vec)[0]
+        scam_prob = proba[1] if len(proba) > 1 else proba[0]
+        label = ID2LABEL[1] if scam_prob >= 0.5 else ID2LABEL[0]
+        return scam_prob, label
 
 
-# Singleton instance used by the FastAPI app.
-classifier_singleton: Optional[ScamClassifier] = None
+# Singleton, loaded once at API startup.
+_classifier: Optional[ScamClassifier] = None
 
 
 def get_classifier() -> ScamClassifier:
-    global classifier_singleton
-    if classifier_singleton is None:
-        classifier_singleton = ScamClassifier()
-    return classifier_singleton
-
-
-def predict_from_raw_text(raw_text: str) -> dict:
-    """Convenience wrapper: normalize + predict + classify in one call."""
-    clean = normalize_text(raw_text)
-    clf = get_classifier()
-    prob = clf.predict(clean)
-    return {
-        "probability_score": round(prob, 4),
-        "label": classify_score(prob),
-        "model_version": clf.model_version,
-    }
+    global _classifier
+    if _classifier is None:
+        _classifier = ScamClassifier()
+    return _classifier
