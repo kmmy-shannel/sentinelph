@@ -18,21 +18,17 @@ STRICT GUARDRAIL (SRS Requirement 5):
     (see services/api/controllers/reportController.js), not here — but
     this service is intentionally built with zero capability to do
     anything else, as defense in depth.
-
-Startup behavior (Requirement 8):
-    On boot, checks for model artifacts (.pkl) in services/ai/models/.
-    If missing, the service still starts (so /health works for
-    monitoring) but /predict returns HTTP 503 with a clear message
-    instructing the operator to run `python scripts/train.py`.
 """
 
+import os
 import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from loguru import logger
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -42,6 +38,10 @@ from app.inference import ModelNotLoadedError, get_classifier  # noqa: E402
 from app.schemas import HealthResponse, PredictRequest, PredictResponse  # noqa: E402
 from app.utils.ocr import OCRError, extract_text_from_base64
 from app.utils.text_normalize import normalize_text
+
+# Security configuration
+API_KEY = os.environ.get("AI_SERVICE_API_KEY", "").strip()
+PROTECTED_PATHS = {"/predict"}
 
 
 @asynccontextmanager
@@ -53,9 +53,7 @@ async def lifespan(app: FastAPI):
             "=" * 70 + "\n"
             "STARTUP WARNING: No trained model artifacts found in {}\n"
             "The API will run, but POST /predict will return HTTP 503\n"
-            "until you train a model:\n\n"
-            "    cd services/ai\n"
-            "    python scripts/train.py\n" + "=" * 70,
+            "until model weights are loaded.\n" + "=" * 70,
             settings.MODELS_DIR,
         )
     else:
@@ -80,10 +78,24 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Express gateway calls this service server-to-server; CORS is permissive
-# here only for local dev convenience. In production, restrict
-# `allow_origins` to the known gateway host(s) or remove CORS entirely
-# since browsers never call this service directly.
+
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next):
+    if request.url.path in PROTECTED_PATHS:
+        if not API_KEY:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"error": "AI_SERVICE_API_KEY not configured on the server."},
+            )
+        provided = request.headers.get("x-api-key", "")
+        if provided != API_KEY:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"error": "Invalid or missing X-API-KEY."},
+            )
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -92,7 +104,7 @@ app.add_middleware(
 )
 
 
-@app.get("/health", response_model=HealthResponse, tags=["ops"])
+@app.api_route("/health", methods=["GET", "HEAD"], response_model=HealthResponse, tags=["ops"])
 def health() -> HealthResponse:
     clf = get_classifier()
     if clf.loaded:
@@ -104,19 +116,16 @@ def health() -> HealthResponse:
     return HealthResponse(
         status="degraded",
         model_loaded=False,
-        message=(
-            "No model artifacts found. Run `python scripts/train.py` "
-            "in services/ai/ to enable /predict."
-        ),
+        message="No model artifacts loaded.",
     )
-
 
 @app.post(
     "/predict",
     response_model=PredictResponse,
     tags=["inference"],
     responses={
-        503: {"description": "Model artifacts not trained yet."},
+        401: {"description": "Invalid or missing X-API-KEY header."},
+        503: {"description": "Model not loaded or AI_SERVICE_API_KEY missing on server."},
         422: {"description": "Invalid request (no text or image provided, or bad base64)."},
     },
 )
@@ -127,11 +136,7 @@ def predict(payload: PredictRequest) -> PredictResponse:
     if not clf.loaded:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Model artifacts not found. An administrator must run "
-                "'python scripts/train.py' in services/ai/ before this "
-                "endpoint can serve predictions."
-            ),
+            detail="Model artifacts not found or failed to load.",
         )
 
     combined_text_parts = []
