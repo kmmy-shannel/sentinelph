@@ -1,23 +1,25 @@
-# Web Framework & Delivery Layer (SRS 5.1–5.4)
-fastapi
-uvicorn[standard]
-pydantic
+﻿# Web Framework & Delivery Layer (SRS 5.1–5.4)
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.9.2
 pydantic-settings
-python-multipart
+python-multipart==0.0.12
 
-# ML & Data Pipeline (SRS 5.1)
-scikit-learn
-pandas
-numpy
-joblib
+# ML & Transformer Pipeline (SRS 5.1)
+transformers==4.46.3
+huggingface_hub==0.26.3
+scikit-learn==1.5.2
+pandas==2.2.3
+numpy==1.26.4
+joblib==1.4.2
 
 # OCR Engine Stack (SRS 5.3)
-pytesseract
-Pillow
+pytesseract==0.3.13
+Pillow==10.4.0
 
 # Supporting Utilities & Governance (SRS 5.3, 5.4)
-python-dotenv
-loguru
+python-dotenv==1.0.1
+loguru==0.7.2
 requests
 
 # Automated Testing
