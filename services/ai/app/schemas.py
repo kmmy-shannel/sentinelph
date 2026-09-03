@@ -6,8 +6,7 @@ the Express API Gateway and this FastAPI microservice.
 """
 
 from typing import Literal, Optional
-
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class PredictRequest(BaseModel):
@@ -47,6 +46,9 @@ class PredictRequest(BaseModel):
 
 
 class PredictResponse(BaseModel):
+    # Fixes Pydantic warning for fields starting with 'model_'
+    model_config = ConfigDict(protected_namespaces=())
+
     report_id: Optional[str] = None
     probability_score: float = Field(
         ..., ge=0.0, le=1.0,
@@ -71,6 +73,9 @@ class PredictResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
+    # Fixes Pydantic warning for fields starting with 'model_'
+    model_config = ConfigDict(protected_namespaces=())
+
     status: Literal["ok", "degraded"]
     model_loaded: bool
     model_version: Optional[str] = None
