@@ -63,3 +63,6 @@ services/api/yarn-error.log*
 Thumbs.db
 .vscode/
 .idea/
+*.zip
+*.safetensors
+*.pkl
