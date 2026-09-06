@@ -1,133 +1,245 @@
-import React, { useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { ShieldCheck, Mail, Lock, Loader2, AlertCircle } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
+// apps/web/src/context/AuthContext.jsx
+//
+// Auth state for the Officer/Analyst/Auditor web console — Email/Password
+// via Firebase Auth. This surface was already email-based (officers don't
+// have SMS-verifiable numbers on file), so this revision adds:
+//   - explicit persistence control (browserLocalPersistence for
+//     "remember me", browserSessionPersistence otherwise)
+//   - a register() path with mandatory ToS/privacy consent and
+//     email verification, for the rare self-service account case
+//   - fully generic, non-enumerating credential error copy
 
-export default function Login() {
-  const { login, isAuthenticated, role } = useAuth();
-  const navigate = useNavigate();
-  const location = useLocation();
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useCallback,
+  useMemo,
+} from 'react';
+import {
+  browserLocalPersistence,
+  browserSessionPersistence,
+  createUserWithEmailAndPassword,
+  reload,
+  sendEmailVerification,
+  setPersistence,
+  signInWithEmailAndPassword,
+  signOut as firebaseSignOut,
+  updateProfile,
+  onAuthStateChanged,
+} from 'firebase/auth';
+import { auth } from '../config/firebase';
+import { fetchCurrentUserProfile } from '../lib/api';
 
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError] = useState(null);
+const AuthContext = createContext(undefined);
 
-  const redirectForRole = (userRole) => {
-    switch (userRole) {
-      case 'officer':
-        return '/officer';
-      case 'analyst':
-        return '/analyst';
-      case 'auditor':
-        return '/auditor';
-      default:
-        return '/login';
-    }
-  };
+export const ROLES = {
+  OFFICER: 'officer',
+  ANALYST: 'analyst',
+  AUDITOR: 'auditor',
+};
 
-  if (isAuthenticated) {
-    const from = location.state?.from?.pathname;
-    navigate(from || redirectForRole(role), { replace: true });
-    return null;
+// Never reveals whether a given email address already has an account —
+// every credential-related failure on both login and registration maps
+// to this single generic message.
+const GENERIC_AUTH_ERROR = 'Invalid credentials or account issue. Please try again.';
+
+function mapFirebaseAuthError(code) {
+  switch (code) {
+    case 'auth/invalid-email':
+      return 'That email address looks invalid.';
+    case 'auth/weak-password':
+      return 'Please choose a stronger password (at least 6 characters).';
+    case 'auth/too-many-requests':
+      return 'Too many attempts. Please wait a moment and try again.';
+    case 'auth/network-request-failed':
+      return 'Network error — check your connection and try again.';
+    case 'auth/user-not-found':
+    case 'auth/wrong-password':
+    case 'auth/invalid-credential':
+    case 'auth/email-already-in-use':
+    case 'auth/user-disabled':
+      return GENERIC_AUTH_ERROR;
+    default:
+      return GENERIC_AUTH_ERROR;
   }
+}
 
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-    setFormError(null);
+export function AuthProvider({ children }) {
+  const [firebaseUser, setFirebaseUser] = useState(null);
+  const [profile, setProfile] = useState(null); // { role, displayName, email, ... } from backend
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-    if (!email.trim() || !password) {
-      setFormError('Please enter both email and password.');
-      return;
-    }
-
-    setSubmitting(true);
+  const loadProfile = useCallback(async () => {
     try {
-      const { profile } = await login(email.trim(), password);
-      const destination = location.state?.from?.pathname || redirectForRole(profile?.role);
-      navigate(destination, { replace: true });
-    } catch (error) {
-      setFormError(error.message || 'Unable to sign in. Please try again.');
-    } finally {
-      setSubmitting(false);
+      const data = await fetchCurrentUserProfile();
+      setProfile(data);
+      return data;
+    } catch (profileError) {
+      console.error('Failed to load user profile from backend:', profileError);
+      setProfile(null);
+      setError('Unable to load your account details. Please try again.');
+      return null;
     }
-  };
+  }, []);
 
-  return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center px-4">
-      <div className="w-full max-w-md">
-        <div className="flex flex-col items-center mb-8">
-          <div className="w-14 h-14 rounded-2xl bg-blue-600 flex items-center justify-center mb-4">
-            <ShieldCheck size={28} className="text-white" />
-          </div>
-          <h1 className="text-white text-2xl font-bold">SentinelPH</h1>
-          <p className="text-slate-400 text-sm mt-1">Internal Operations Console</p>
-        </div>
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setLoading(true);
+      setFirebaseUser(user);
 
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-7">
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="text-xs font-semibold text-slate-400 uppercase mb-1.5 block">
-                Email
-              </label>
-              <div className="flex items-center bg-slate-800 border border-slate-700 rounded-xl px-3.5 focus-within:ring-2 focus-within:ring-blue-500">
-                <Mail size={16} className="text-slate-500" />
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  placeholder="you@sentinelph.gov.ph"
-                  autoComplete="username"
-                  className="flex-1 bg-transparent py-3 ml-2.5 text-sm text-white placeholder-slate-500 focus:outline-none"
-                />
-              </div>
-            </div>
+      if (user) {
+        await loadProfile();
+      } else {
+        setProfile(null);
+      }
 
-            <div>
-              <label className="text-xs font-semibold text-slate-400 uppercase mb-1.5 block">
-                Password
-              </label>
-              <div className="flex items-center bg-slate-800 border border-slate-700 rounded-xl px-3.5 focus-within:ring-2 focus-within:ring-blue-500">
-                <Lock size={16} className="text-slate-500" />
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  placeholder="••••••••"
-                  autoComplete="current-password"
-                  className="flex-1 bg-transparent py-3 ml-2.5 text-sm text-white placeholder-slate-500 focus:outline-none"
-                />
-              </div>
-            </div>
+      setLoading(false);
+    });
 
-            {formError && (
-              <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 rounded-xl px-3.5 py-2.5 text-sm text-red-400">
-                <AlertCircle size={15} />
-                {formError}
-              </div>
-            )}
+    return () => unsubscribe();
+  }, [loadProfile]);
 
-            <button
-              type="submit"
-              disabled={submitting}
-              className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm py-3.5 rounded-xl transition-colors disabled:opacity-60"
-            >
-              {submitting ? (
-                <>
-                  <Loader2 size={16} className="animate-spin" />
-                  Signing in...
-                </>
-              ) : (
-                'Sign In'
-              )}
-            </button>
-          </form>
-        </div>
-
-        <p className="text-center text-slate-600 text-xs mt-6">
-          Access restricted to authorized officers, analysts, and auditors.
-        </p>
-      </div>
-    </div>
+  /**
+   * @param {string} email
+   * @param {string} password
+   * @param {{ rememberMe?: boolean }} [options] rememberMe=true keeps the
+   *   session across browser restarts (browserLocalPersistence); false
+   *   (the default) clears it when the tab/browser closes.
+   */
+  const login = useCallback(
+    async (email, password, options = {}) => {
+      setError(null);
+      try {
+        await setPersistence(
+          auth,
+          options.rememberMe ? browserLocalPersistence : browserSessionPersistence
+        );
+        const credential = await signInWithEmailAndPassword(auth, email, password);
+        const loadedProfile = await loadProfile();
+        return { user: credential.user, profile: loadedProfile };
+      } catch (loginError) {
+        const message = mapFirebaseAuthError(loginError.code);
+        setError(message);
+        throw new Error(message);
+      }
+    },
+    [loadProfile]
   );
+
+  /**
+   * Self-service registration for staff accounts. Requires explicit ToS +
+   * privacy consent and sends a verification email; the backend profile
+   * (and role assignment) is still provisioned server-side per the
+   * existing onboarding process, so `profile` may be null until an admin
+   * completes that step.
+   */
+  const register = useCallback(
+    async ({ fullName, email, password, agreedToTerms }) => {
+      setError(null);
+
+      if (!agreedToTerms) {
+        const message = 'You must agree to the Terms of Service and Privacy Policy to continue.';
+        setError(message);
+        throw new Error(message);
+      }
+
+      try {
+        await setPersistence(auth, browserSessionPersistence);
+        const credential = await createUserWithEmailAndPassword(auth, email, password);
+        if (fullName) {
+          await updateProfile(credential.user, { displayName: fullName });
+        }
+        await sendEmailVerification(credential.user);
+        setFirebaseUser(credential.user);
+        return credential.user;
+      } catch (registerError) {
+        const message = mapFirebaseAuthError(registerError.code);
+        setError(message);
+        throw new Error(message);
+      }
+    },
+    []
+  );
+
+  const resendVerificationEmail = useCallback(async () => {
+    setError(null);
+    if (!auth.currentUser) {
+      const message = 'No signed-in user to verify.';
+      setError(message);
+      throw new Error(message);
+    }
+    try {
+      await sendEmailVerification(auth.currentUser);
+    } catch (resendError) {
+      const message = mapFirebaseAuthError(resendError.code);
+      setError(message);
+      throw new Error(message);
+    }
+  }, []);
+
+  // Verification happens via a link opened outside the SPA (usually a new
+  // tab), so we need an explicit re-pull of emailVerified once the staff
+  // member returns.
+  const reloadUser = useCallback(async () => {
+    if (!auth.currentUser) return null;
+    await reload(auth.currentUser);
+    setFirebaseUser(auth.currentUser);
+    return auth.currentUser;
+  }, []);
+
+  const logout = useCallback(async () => {
+    await firebaseSignOut(auth);
+    setFirebaseUser(null);
+    setProfile(null);
+  }, []);
+
+  const refreshProfile = useCallback(async () => {
+    if (firebaseUser) {
+      return loadProfile();
+    }
+    return null;
+  }, [firebaseUser, loadProfile]);
+
+  const value = useMemo(
+    () => ({
+      user: firebaseUser,
+      profile,
+      role: profile?.role || null,
+      isAuthenticated: !!firebaseUser && !!profile,
+      isEmailVerified: Boolean(firebaseUser?.emailVerified),
+      loading,
+      error,
+      login,
+      register,
+      logout,
+      resendVerificationEmail,
+      reloadUser,
+      refreshProfile,
+    }),
+    [
+      firebaseUser,
+      profile,
+      loading,
+      error,
+      login,
+      register,
+      logout,
+      resendVerificationEmail,
+      reloadUser,
+      refreshProfile,
+    ]
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth() {
+  const context = useContext(AuthContext);
+  if (context === undefined) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
 }

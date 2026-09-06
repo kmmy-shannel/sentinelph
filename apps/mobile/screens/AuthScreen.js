@@ -1,454 +1,1067 @@
 // apps/mobile/screens/AuthScreen.js
 //
-// Ported from the Figma Make MobileLogin.tsx prototype. Same dark theme
-// (#09090f bg, #22c55e accent, JetBrains Mono labels), same copy, same
-// two-step phone -> OTP flow — adapted to real Firebase phone auth via
-// useAuth() instead of the prototype's setTimeout-mocked handlers.
+// SentinelPH Citizen App — Email/Password authentication screen.
+// Three views: Sign In, Sign Up, and post-registration Email Verification.
 //
-// Deliberately dropped from the original: the fake phone bezel and
-// hand-drawn SVG status bar. Those existed only to preview the design on
-// a desktop browser; on a real device the OS renders the actual status
-// bar, so we use expo-status-bar instead of recreating it in SVG.
+// Design system: Dark canvas (#06060f), dark card (#0b0b16), dark inputs
+// (#080810), indigo/purple accent (#6366f1 / #4f46e5), monospace uppercase
+// field labels — matching the Figma Make "CITIZEN PROTECTION PORTAL" theme.
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ScrollView,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
-  Alert,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { StatusBar } from 'expo-status-bar';
+import { Ionicons } from '@expo/vector-icons';
 
 import { useAuth } from '../context/AuthContext';
 
-const OTP_LENGTH = 6;
-const RESEND_COOLDOWN_SEC = 300; // 05:00, matches the original copy
+// ---------------------------------------------------------------------------
+// T — Design tokens
+// ---------------------------------------------------------------------------
+const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
 
-function formatCountdown(totalSeconds) {
-  const m = Math.floor(totalSeconds / 60);
-  const s = totalSeconds % 60;
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+const T = {
+  canvas: '#06060f',
+  card: '#0b0b16',
+  inputBg: '#080810',
+  borderSubtle: '#16162a',
+  borderMedium: '#1c1c2e',
+  borderHighlight: '#2d2d48',
+  indigo: '#6366f1',
+  indigoDark: '#4f46e5',
+  green: '#22c55e',
+  red: '#ef4444',
+  textPrimary: '#ffffff',
+  textBody: '#e2e8f0',
+  textMuted: '#6b7280',
+  textDim: '#374151',
+  weak: '#ef4444',
+  medium: '#f59e0b',
+  strong: '#22c55e',
+  mono: MONO,
+};
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function isPasswordValid(password) {
+  if (password.length < 8) return false;
+  const hasLetter = /[A-Za-z]/.test(password);
+  const hasNumber = /[0-9]/.test(password);
+  return hasLetter && hasNumber;
 }
 
-export default function AuthScreen() {
-  const { sendOtp, confirmOtp, resetOtpSession } = useAuth();
+function getPasswordStrength(password) {
+  if (!password) {
+    return { score: 0, label: '', color: T.borderMedium };
+  }
+  let score = 0;
+  if (password.length >= 8) score += 1;
+  if (password.length >= 12) score += 1;
+  if (/[A-Za-z]/.test(password) && /[0-9]/.test(password)) score += 1;
+  if (/[^A-Za-z0-9]/.test(password)) score += 1;
 
-  const [screen, setScreen] = useState('home'); // 'home' | 'otp'
-  const [phone, setPhone] = useState('');
-  const [agreed, setAgreed] = useState(false);
-  const [otp, setOtp] = useState(Array(OTP_LENGTH).fill(''));
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [cooldown, setCooldown] = useState(RESEND_COOLDOWN_SEC);
+  if (score <= 1) return { score, label: 'WEAK', color: T.weak };
+  if (score <= 2) return { score, label: 'MEDIUM', color: T.medium };
+  return { score, label: 'STRONG', color: T.strong };
+}
 
-  const otpInputRefs = useRef([]);
-  const cooldownTimerRef = useRef(null);
+// ---------------------------------------------------------------------------
+// UI Atoms
+// ---------------------------------------------------------------------------
 
-  useEffect(() => {
-    return () => clearInterval(cooldownTimerRef.current);
-  }, []);
+function EyeIcon({ visible, onPress }) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      style={styles.eyeButton}
+      accessibilityRole="button"
+      accessibilityLabel={visible ? 'Hide password' : 'Show password'}
+    >
+      <Ionicons
+        name={visible ? 'eye-off-outline' : 'eye-outline'}
+        size={18}
+        color={T.textMuted}
+      />
+    </TouchableOpacity>
+  );
+}
 
-  const startCooldown = useCallback(() => {
-    clearInterval(cooldownTimerRef.current);
-    setCooldown(RESEND_COOLDOWN_SEC);
-    cooldownTimerRef.current = setInterval(() => {
-      setCooldown((prev) => {
-        if (prev <= 1) {
-          clearInterval(cooldownTimerRef.current);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  }, []);
+function Field({
+  label,
+  value,
+  onChangeText,
+  placeholder,
+  error,
+  secure,
+  keyboardType,
+  autoCapitalize = 'none',
+  autoComplete,
+  textContentType,
+  focused,
+  onFocus,
+  onBlur,
+}) {
+  const [visible, setVisible] = useState(false);
 
-  const fullPhoneNumber = `+63${phone}`;
+  return (
+    <View style={styles.fieldGroup}>
+      {label ? <Text style={styles.label}>{label}</Text> : null}
+      <View style={[styles.inputWrapper, focused && styles.inputWrapperActive]}>
+        <TextInput
+          value={value}
+          onChangeText={onChangeText}
+          placeholder={placeholder}
+          placeholderTextColor={T.textDim}
+          secureTextEntry={secure ? !visible : false}
+          autoCapitalize={autoCapitalize}
+          autoCorrect={false}
+          autoComplete={autoComplete}
+          textContentType={textContentType}
+          keyboardType={keyboardType}
+          style={styles.input}
+          onFocus={onFocus}
+          onBlur={onBlur}
+        />
+        {secure ? <EyeIcon visible={visible} onPress={() => setVisible((v) => !v)} /> : null}
+      </View>
+      {error ? <Text style={styles.fieldError}>{error}</Text> : null}
+    </View>
+  );
+}
 
-  const handleSendOtp = async () => {
-    if (!phone || !agreed || loading) return;
-    setError('');
-    setLoading(true);
+function PrimaryBtn({ label, onPress, loading, disabled }) {
+  return (
+    <TouchableOpacity
+      style={[styles.primaryButton, (loading || disabled) && styles.buttonDisabled]}
+      onPress={onPress}
+      disabled={loading || disabled}
+    >
+      {loading ? (
+        <ActivityIndicator color={T.textPrimary} />
+      ) : (
+        <Text style={styles.primaryButtonText}>{label}</Text>
+      )}
+    </TouchableOpacity>
+  );
+}
+
+function OutlineBtn({ label, onPress, loading, disabled }) {
+  return (
+    <TouchableOpacity
+      style={[styles.secondaryButton, (loading || disabled) && styles.buttonDisabled]}
+      onPress={onPress}
+      disabled={loading || disabled}
+    >
+      {loading ? (
+        <ActivityIndicator color={T.indigo} />
+      ) : (
+        <Text style={styles.secondaryButtonText}>{label}</Text>
+      )}
+    </TouchableOpacity>
+  );
+}
+
+function Tabs({ active, onChange }) {
+  return (
+    <View style={styles.tabsRow}>
+      <TouchableOpacity
+        style={[styles.tabItem, active === 'signin' && styles.tabItemActive]}
+        onPress={() => onChange('signin')}
+      >
+        <Text style={[styles.tabText, active === 'signin' && styles.tabTextActive]}>
+          Sign In
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.tabItem, active === 'signup' && styles.tabItemActive]}
+        onPress={() => onChange('signup')}
+      >
+        <Text style={[styles.tabText, active === 'signup' && styles.tabTextActive]}>
+          Sign Up
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function StrengthMeter({ password }) {
+  const { score, label, color } = useMemo(() => getPasswordStrength(password), [password]);
+  const segments = [0, 1, 2, 3];
+
+  if (!password) return null;
+
+  return (
+    <View style={styles.strengthContainer}>
+      <View style={styles.strengthBarRow}>
+        {segments.map((i) => (
+          <View
+            key={i}
+            style={[
+              styles.strengthSegment,
+              { backgroundColor: i < score ? color : T.borderMedium },
+            ]}
+          />
+        ))}
+      </View>
+      <Text style={[styles.strengthLabel, { color }]}>{label}</Text>
+    </View>
+  );
+}
+
+// Toast shown briefly at the top of the screen. Distinct from the inline
+// `banner` used for form-validation/API feedback.
+function Toast({ message }) {
+  if (!message) return null;
+  return (
+    <View style={styles.toast}>
+      <Ionicons name="checkmark-circle" size={18} color={T.green} />
+      <Text style={styles.toastText}>{message}</Text>
+    </View>
+  );
+}
+
+// Rounded purple logo badge with the "S" mark, app title, and the green
+// "CITIZEN PROTECTION PORTAL" status pill.
+function BrandHeader() {
+  return (
+    <View style={styles.headerBlock}>
+      <View style={styles.logoBadge}>
+        <Text style={styles.logoLetter}>S</Text>
+      </View>
+      <Text style={styles.appName}>SentinelPH</Text>
+      <View style={styles.statusPill}>
+        <View style={styles.statusDot} />
+        <Text style={styles.statusPillText}>CITIZEN PROTECTION PORTAL</Text>
+      </View>
+    </View>
+  );
+}
+
+function LegalFooter() {
+  return (
+    <View style={styles.footerBlock}>
+      <Text style={styles.footerText}>
+        Protected under RA 10175 — Philippine Cybercrime Prevention Act
+      </Text>
+    </View>
+  );
+}
+
+// Outer shell that frames the auth card, brand header, and footer.
+function PhoneShell({ children, title }) {
+  return (
+    <View style={styles.shell}>
+      <BrandHeader />
+      <View style={styles.card}>
+        {title ? <Text style={styles.cardTitle}>{title}</Text> : null}
+        {children}
+      </View>
+      <LegalFooter />
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sub-screens
+// ---------------------------------------------------------------------------
+
+function SignInScreen() {
+  const { signIn, switchScreen, isLoading, isOffline } = useAuth();
+
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(true);
+  const [focusedField, setFocusedField] = useState(null);
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [banner, setBanner] = useState(null);
+
+  const validate = () => {
+    const errors = {};
+    if (!EMAIL_REGEX.test(email.trim())) {
+      errors.email = 'Enter a valid email address.';
+    }
+    if (!password) {
+      errors.password = 'Password is required.';
+    }
+    setFieldErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
+  const handleSignIn = async () => {
+    setBanner(null);
+    if (!validate()) return;
     try {
-      await sendOtp(fullPhoneNumber);
-      setOtp(Array(OTP_LENGTH).fill(''));
-      setScreen('otp');
-      startCooldown();
+      await signIn(email.trim(), password, rememberMe);
     } catch (err) {
-      setError(mapFirebaseError(err));
-    } finally {
-      setLoading(false);
+      setBanner({ type: 'error', message: err.message || 'Invalid email or password.' });
+    }
+  };
+
+  return (
+    <>
+      {isOffline && (
+        <View style={styles.offlineBanner}>
+          <Ionicons name="cloud-offline-outline" size={16} color={T.red} />
+          <Text style={styles.offlineBannerText}>
+            You're offline. Reconnect to sign in or register.
+          </Text>
+        </View>
+      )}
+
+      {banner && (
+        <View
+          style={[
+            styles.banner,
+            banner.type === 'error' ? styles.bannerError : styles.bannerSuccess,
+          ]}
+        >
+          <Text
+            style={[
+              styles.bannerText,
+              { color: banner.type === 'error' ? T.red : T.green },
+            ]}
+          >
+            {banner.message}
+          </Text>
+        </View>
+      )}
+
+      <Field
+        label="EMAIL ADDRESS"
+        value={email}
+        onChangeText={setEmail}
+        placeholder="you@example.com"
+        keyboardType="email-address"
+        autoComplete="email"
+        textContentType="emailAddress"
+        error={fieldErrors.email}
+        focused={focusedField === 'email'}
+        onFocus={() => setFocusedField('email')}
+        onBlur={() => setFocusedField(null)}
+      />
+
+      <Field
+        label="PASSWORD"
+        value={password}
+        onChangeText={setPassword}
+        placeholder="Your password"
+        secure
+        autoComplete="password"
+        textContentType="password"
+        error={fieldErrors.password}
+        focused={focusedField === 'password'}
+        onFocus={() => setFocusedField('password')}
+        onBlur={() => setFocusedField(null)}
+      />
+
+      <View style={styles.rowBetween}>
+        <TouchableOpacity
+          style={styles.rememberMeRow}
+          onPress={() => setRememberMe((v) => !v)}
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: rememberMe }}
+        >
+          <Ionicons
+            name={rememberMe ? 'checkbox' : 'square-outline'}
+            size={18}
+            color={rememberMe ? T.indigo : T.textMuted}
+          />
+          <Text style={styles.rememberMeText}>Remember me</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity>
+          <Text style={styles.forgotPasswordText}>Forgot password?</Text>
+        </TouchableOpacity>
+      </View>
+
+      <PrimaryBtn
+        label="Sign In"
+        onPress={handleSignIn}
+        loading={isLoading}
+        disabled={isOffline}
+      />
+
+      <TouchableOpacity style={styles.switchModeRow} onPress={() => switchScreen('signup')}>
+        <Text style={styles.switchModeText}>
+          Don't have an account? <Text style={styles.switchModeLink}>Sign Up</Text>
+        </Text>
+      </TouchableOpacity>
+    </>
+  );
+}
+
+function SignUpScreen() {
+  const { signUp, switchScreen, isLoading, isOffline } = useAuth();
+
+  const [fullName, setFullName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const [focusedField, setFocusedField] = useState(null);
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [banner, setBanner] = useState(null);
+
+  const validate = () => {
+    const errors = {};
+    if (!fullName.trim()) {
+      errors.fullName = 'Full name is required.';
+    }
+    if (!EMAIL_REGEX.test(email.trim())) {
+      errors.email = 'Enter a valid email address.';
+    }
+    if (!isPasswordValid(password)) {
+      errors.password =
+        'Password must be at least 8 characters and include a letter and a number.';
+    }
+    if (confirmPassword !== password) {
+      errors.confirmPassword = 'Passwords do not match.';
+    }
+    if (!agreedToTerms) {
+      errors.agreedToTerms = 'You must agree to the Terms and Privacy Policy.';
+    }
+    setFieldErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
+  const handleSignUp = async () => {
+    setBanner(null);
+    if (!validate()) return;
+    try {
+      await signUp(fullName.trim(), email.trim(), password, agreedToTerms);
+    } catch (err) {
+      setBanner({ type: 'error', message: err.message || 'Registration failed.' });
+    }
+  };
+
+  return (
+    <>
+      {isOffline && (
+        <View style={styles.offlineBanner}>
+          <Ionicons name="cloud-offline-outline" size={16} color={T.red} />
+          <Text style={styles.offlineBannerText}>
+            You're offline. Reconnect to sign in or register.
+          </Text>
+        </View>
+      )}
+
+      {banner && (
+        <View
+          style={[
+            styles.banner,
+            banner.type === 'error' ? styles.bannerError : styles.bannerSuccess,
+          ]}
+        >
+          <Text
+            style={[
+              styles.bannerText,
+              { color: banner.type === 'error' ? T.red : T.green },
+            ]}
+          >
+            {banner.message}
+          </Text>
+        </View>
+      )}
+
+      <Field
+        label="FULL NAME"
+        value={fullName}
+        onChangeText={setFullName}
+        placeholder="Juan Dela Cruz"
+        autoComplete="name"
+        textContentType="name"
+        autoCapitalize="words"
+        error={fieldErrors.fullName}
+        focused={focusedField === 'fullName'}
+        onFocus={() => setFocusedField('fullName')}
+        onBlur={() => setFocusedField(null)}
+      />
+
+      <Field
+        label="EMAIL ADDRESS"
+        value={email}
+        onChangeText={setEmail}
+        placeholder="you@example.com"
+        keyboardType="email-address"
+        autoComplete="email"
+        textContentType="emailAddress"
+        error={fieldErrors.email}
+        focused={focusedField === 'email'}
+        onFocus={() => setFocusedField('email')}
+        onBlur={() => setFocusedField(null)}
+      />
+
+      <Field
+        label="PASSWORD"
+        value={password}
+        onChangeText={setPassword}
+        placeholder="At least 8 characters"
+        secure
+        autoComplete="new-password"
+        textContentType="newPassword"
+        error={fieldErrors.password}
+        focused={focusedField === 'password'}
+        onFocus={() => setFocusedField('password')}
+        onBlur={() => setFocusedField(null)}
+      />
+      <StrengthMeter password={password} />
+
+      <Field
+        label="CONFIRM PASSWORD"
+        value={confirmPassword}
+        onChangeText={setConfirmPassword}
+        placeholder="Re-enter your password"
+        secure
+        autoComplete="new-password"
+        textContentType="newPassword"
+        error={fieldErrors.confirmPassword}
+        focused={focusedField === 'confirmPassword'}
+        onFocus={() => setFocusedField('confirmPassword')}
+        onBlur={() => setFocusedField(null)}
+      />
+
+      <TouchableOpacity
+        style={styles.termsRow}
+        onPress={() => setAgreedToTerms((v) => !v)}
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked: agreedToTerms }}
+      >
+        <Ionicons
+          name={agreedToTerms ? 'checkbox' : 'square-outline'}
+          size={18}
+          color={agreedToTerms ? T.indigo : T.textMuted}
+        />
+        <Text style={styles.termsText}>
+          I agree to the Terms of Service and Privacy Policy (RA 10173)
+        </Text>
+      </TouchableOpacity>
+      {fieldErrors.agreedToTerms ? (
+        <Text style={styles.fieldError}>{fieldErrors.agreedToTerms}</Text>
+      ) : null}
+
+      <PrimaryBtn
+        label="Sign Up"
+        onPress={handleSignUp}
+        loading={isLoading}
+        disabled={isOffline}
+      />
+
+      <TouchableOpacity style={styles.switchModeRow} onPress={() => switchScreen('signin')}>
+        <Text style={styles.switchModeText}>
+          Already have an account? <Text style={styles.switchModeLink}>Sign In</Text>
+        </Text>
+      </TouchableOpacity>
+    </>
+  );
+}
+
+function VerifyScreen() {
+  const {
+    checkVerificationStatus,
+    resendVerification,
+    switchScreen,
+    emailForVerification,
+    isLoading,
+    isOffline,
+  } = useAuth();
+
+  const [banner, setBanner] = useState(null);
+  const [toast, setToast] = useState(null);
+
+  const handleCheckVerification = async () => {
+    setBanner(null);
+    const verified = await checkVerificationStatus();
+    if (verified) {
+      setBanner({ type: 'success', message: 'Email verified! You can continue.' });
+    } else {
+      setBanner({
+        type: 'error',
+        message: 'Still not verified. Check your inbox (and spam folder) for the link.',
+      });
     }
   };
 
   const handleResend = async () => {
-    if (cooldown > 0 || loading) return;
-    setError('');
-    setLoading(true);
+    setBanner(null);
     try {
-      await sendOtp(fullPhoneNumber);
-      setOtp(Array(OTP_LENGTH).fill(''));
-      startCooldown();
+      await resendVerification();
+      setToast('Verification email sent — check your inbox.');
+      setBanner({ type: 'success', message: 'Verification email sent — check your inbox.' });
+      setTimeout(() => setToast(null), 3500);
     } catch (err) {
-      setError(mapFirebaseError(err));
-    } finally {
-      setLoading(false);
+      setBanner({ type: 'error', message: err.message || 'Could not resend email.' });
     }
-  };
-
-  const handleOtpChange = (index, value) => {
-    if (!/^\d?$/.test(value)) return;
-    const next = [...otp];
-    next[index] = value;
-    setOtp(next);
-    if (value && index < OTP_LENGTH - 1) {
-      otpInputRefs.current[index + 1]?.focus();
-    }
-  };
-
-  const handleOtpKeyPress = (index, e) => {
-    if (e.nativeEvent.key === 'Backspace' && !otp[index] && index > 0) {
-      otpInputRefs.current[index - 1]?.focus();
-    }
-  };
-
-  const handleVerify = async () => {
-    if (loading || !otp.every((d) => d !== '')) return;
-    setError('');
-    setLoading(true);
-    try {
-      await confirmOtp(otp.join(''));
-      // No manual navigation needed — App.js's RootNavigator watches
-      // isAuthenticated and swaps to TabNavigator automatically.
-    } catch (err) {
-      setError(mapFirebaseError(err));
-      setOtp(Array(OTP_LENGTH).fill(''));
-      otpInputRefs.current[0]?.focus();
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const goBackToHome = () => {
-    resetOtpSession();
-    clearInterval(cooldownTimerRef.current);
-    setError('');
-    setScreen('home');
   };
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#09090f' }}>
-      <StatusBar style="light" />
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={{ flex: 1 }}
-      >
-        <ScrollView
-          className="flex-1 px-6"
-          contentContainerStyle={{ flexGrow: 1, paddingBottom: 24 }}
-          keyboardShouldPersistTaps="handled"
+    <>
+      <Toast message={toast} />
+
+      {banner && (
+        <View
+          style={[
+            styles.banner,
+            banner.type === 'error' ? styles.bannerError : styles.bannerSuccess,
+          ]}
         >
-          {screen === 'home' && (
-            <View className="flex-1 pt-6">
-              {/* Brand header */}
-              <View className="flex-row items-center gap-2.5 mb-10">
-                <View
-                  className="w-9 h-9 rounded-xl items-center justify-center"
-                  style={{ backgroundColor: '#22c55e' }}
-                >
-                  <Text style={{ color: '#fff', fontWeight: '900', fontSize: 14 }}>S</Text>
-                </View>
-                <View>
-                  <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>SentinelPH</Text>
-                  <Text
-                    style={{
-                      color: '#4b5563',
-                      fontSize: 10,
-                      fontFamily: 'JetBrainsMono_400Regular',
-                      letterSpacing: 1.2,
-                    }}
-                  >
-                    CITIZEN PORTAL
-                  </Text>
-                </View>
-              </View>
+          <Text
+            style={[
+              styles.bannerText,
+              { color: banner.type === 'error' ? T.red : T.green },
+            ]}
+          >
+            {banner.message}
+          </Text>
+        </View>
+      )}
 
-              {/* Headline */}
-              <View className="mb-8">
-                <Text
-                  style={{
-                    color: '#22c55e',
-                    fontSize: 11,
-                    fontWeight: '500',
-                    fontFamily: 'JetBrainsMono_400Regular',
-                    letterSpacing: 2.5,
-                    marginBottom: 12,
-                  }}
-                >
-                  REPORT · TRACK · PROTECT
-                </Text>
-                <Text
-                  style={{
-                    color: '#fff',
-                    fontSize: 26,
-                    fontWeight: '800',
-                    letterSpacing: -0.5,
-                    lineHeight: 32,
-                    marginBottom: 8,
-                  }}
-                >
-                  Report Scams.{'\n'}Stay Protected.
-                </Text>
-                <Text style={{ color: '#6b7280', fontSize: 14, lineHeight: 20 }}>
-                  Join thousands of Filipinos helping stop fraud. Enter your mobile number to get started.
-                </Text>
-              </View>
+      <View style={styles.verifyIconWrap}>
+        <Ionicons name="mail-unread-outline" size={36} color={T.indigo} />
+      </View>
+      <Text style={styles.verifyBody}>
+        We sent a verification link to the address below. Tap the link, then come back and
+        check your status.
+      </Text>
 
-              {/* Trust badges */}
-              <View className="flex-row flex-wrap gap-2 mb-8">
-                {['DICT Verified', 'RA 10175', 'End-to-End Encrypted'].map((label) => (
-                  <View
-                    key={label}
-                    className="px-2.5 py-1 rounded-full"
-                    style={{ backgroundColor: '#111118', borderWidth: 1, borderColor: '#1e1e30' }}
-                  >
-                    <Text style={{ color: '#4b5563', fontFamily: 'JetBrainsMono_400Regular', fontSize: 9 }}>
-                      {label}
-                    </Text>
-                  </View>
-                ))}
-              </View>
+      <View style={styles.emailChip}>
+        <Ionicons name="mail-outline" size={14} color={T.indigo} />
+        <Text style={styles.emailChipText}>{emailForVerification || 'your email address'}</Text>
+      </View>
 
-              {/* Phone input */}
-              <View style={{ gap: 16 }}>
-                <View>
-                  <Text
-                    style={{
-                      color: '#6b7280',
-                      fontSize: 11,
-                      fontFamily: 'JetBrainsMono_400Regular',
-                      letterSpacing: 1,
-                      marginBottom: 8,
-                    }}
-                  >
-                    MOBILE NUMBER
-                  </Text>
-                  <View
-                    className="flex-row items-center rounded-xl overflow-hidden"
-                    style={{ borderWidth: 1, borderColor: '#1e1e30', backgroundColor: '#0d0d14' }}
-                  >
-                    <View
-                      className="px-3 py-3.5"
-                      style={{ borderRightWidth: 1, borderRightColor: '#1e1e30' }}
-                    >
-                      <Text style={{ color: '#6b7280', fontSize: 13, fontFamily: 'JetBrainsMono_400Regular' }}>
-                        🇵🇭 +63
-                      </Text>
-                    </View>
-                    <TextInput
-                      value={phone}
-                      onChangeText={(v) => setPhone(v.replace(/\D/g, '').slice(0, 10))}
-                      placeholder="9XX XXX XXXX"
-                      placeholderTextColor="#374151"
-                      keyboardType="number-pad"
-                      maxLength={10}
-                      style={{
-                        flex: 1,
-                        paddingHorizontal: 12,
-                        paddingVertical: 14,
-                        color: '#e2e8f0',
-                        fontSize: 13,
-                        fontFamily: 'JetBrainsMono_400Regular',
-                      }}
-                    />
-                  </View>
-                </View>
+      <PrimaryBtn
+        label="Check Verification Status"
+        onPress={handleCheckVerification}
+        loading={isLoading}
+        disabled={isOffline}
+      />
 
-                {/* Consent checkbox */}
-                <View className="flex-row items-start gap-2.5">
-                  <TouchableOpacity
-                    onPress={() => setAgreed((a) => !a)}
-                    className="w-4 h-4 rounded items-center justify-center"
-                    style={{
-                      marginTop: 2,
-                      backgroundColor: agreed ? '#22c55e' : '#111118',
-                      borderWidth: 1.5,
-                      borderColor: agreed ? '#22c55e' : '#1e1e30',
-                    }}
-                  >
-                    {agreed && <Text style={{ color: '#fff', fontSize: 10, lineHeight: 10 }}>✓</Text>}
-                  </TouchableOpacity>
-                  <Text style={{ color: '#4b5563', fontSize: 11, lineHeight: 16, flex: 1 }}>
-                    I agree to SentinelPH&apos;s <Text style={{ color: '#22c55e' }}>Terms of Service</Text> and{' '}
-                    <Text style={{ color: '#22c55e' }}>Privacy Policy</Text>. My data is protected under RA 10173.
-                  </Text>
-                </View>
+      <OutlineBtn
+        label="Resend Verification Link"
+        onPress={handleResend}
+        loading={isLoading}
+        disabled={isOffline}
+      />
 
-                {error ? <Text style={{ color: '#f87171', fontSize: 11 }}>{error}</Text> : null}
-
-                <TouchableOpacity
-                  onPress={handleSendOtp}
-                  disabled={loading || !phone || !agreed}
-                  className="w-full py-3.5 rounded-xl items-center justify-center flex-row"
-                  style={{
-                    backgroundColor: loading || !phone || !agreed ? '#1a2e1a' : '#22c55e',
-                    gap: 8,
-                  }}
-                >
-                  {loading ? (
-                    <>
-                      <ActivityIndicator size="small" color="#fff" />
-                      <Text style={{ color: '#fff', fontSize: 13, fontWeight: '600' }}>Sending OTP…</Text>
-                    </>
-                  ) : (
-                    <Text
-                      style={{
-                        color: !phone || !agreed ? '#374151' : '#fff',
-                        fontSize: 13,
-                        fontWeight: '600',
-                      }}
-                    >
-                      Send OTP →
-                    </Text>
-                  )}
-                </TouchableOpacity>
-              </View>
-
-              <View style={{ flex: 1 }} />
-              <View className="items-center pt-8 pb-2">
-                <Text style={{ color: '#1f2937', fontSize: 11 }}>
-                  Officer? Use the <Text style={{ color: '#3b82f6' }}>Web Control Center</Text>
-                </Text>
-              </View>
-            </View>
-          )}
-
-          {screen === 'otp' && (
-            <View className="flex-1 pt-6">
-              <TouchableOpacity onPress={goBackToHome} className="mb-8">
-                <Text
-                  style={{ color: '#4b5563', fontSize: 11, fontFamily: 'JetBrainsMono_400Regular' }}
-                >
-                  ← BACK
-                </Text>
-              </TouchableOpacity>
-
-              <View className="mb-8">
-                <Text
-                  style={{
-                    color: '#22c55e',
-                    fontSize: 11,
-                    fontWeight: '500',
-                    fontFamily: 'JetBrainsMono_400Regular',
-                    letterSpacing: 2.5,
-                    marginBottom: 12,
-                  }}
-                >
-                  VERIFICATION
-                </Text>
-                <Text style={{ color: '#fff', fontSize: 26, fontWeight: '800', letterSpacing: -0.5, marginBottom: 8 }}>
-                  Enter OTP Code
-                </Text>
-                <Text style={{ color: '#6b7280', fontSize: 14, lineHeight: 20 }}>
-                  We sent a 6-digit code to{' '}
-                  <Text style={{ color: '#fff', fontWeight: '600', fontFamily: 'JetBrainsMono_400Regular' }}>
-                    +63 {phone}
-                  </Text>
-                </Text>
-              </View>
-
-              <View className="flex-row gap-2 mb-6">
-                {otp.map((digit, index) => (
-                  <TextInput
-                    key={index}
-                    ref={(el) => (otpInputRefs.current[index] = el)}
-                    value={digit}
-                    onChangeText={(v) => handleOtpChange(index, v)}
-                    onKeyPress={(e) => handleOtpKeyPress(index, e)}
-                    keyboardType="number-pad"
-                    maxLength={1}
-                    style={{
-                      flex: 1,
-                      height: 56,
-                      borderRadius: 12,
-                      textAlign: 'center',
-                      fontSize: 20,
-                      fontWeight: '700',
-                      color: '#e2e8f0',
-                      fontFamily: 'JetBrainsMono_400Regular',
-                      backgroundColor: '#0d0d14',
-                      borderWidth: 1.5,
-                      borderColor: digit ? '#22c55e' : '#1e1e30',
-                    }}
-                  />
-                ))}
-              </View>
-
-              {error ? <Text style={{ color: '#f87171', fontSize: 11, marginBottom: 12 }}>{error}</Text> : null}
-
-              <TouchableOpacity
-                onPress={handleVerify}
-                disabled={loading || !otp.every((d) => d !== '')}
-                className="w-full py-3.5 rounded-xl items-center justify-center flex-row mb-4"
-                style={{
-                  backgroundColor: loading || !otp.every((d) => d !== '') ? '#1a2e1a' : '#22c55e',
-                  gap: 8,
-                }}
-              >
-                {loading ? (
-                  <>
-                    <ActivityIndicator size="small" color="#fff" />
-                    <Text style={{ color: '#fff', fontSize: 13, fontWeight: '600' }}>Verifying…</Text>
-                  </>
-                ) : (
-                  <Text
-                    style={{
-                      color: !otp.every((d) => d !== '') ? '#374151' : '#fff',
-                      fontSize: 13,
-                      fontWeight: '600',
-                    }}
-                  >
-                    Verify & Continue →
-                  </Text>
-                )}
-              </TouchableOpacity>
-
-              <Text style={{ textAlign: 'center', color: '#4b5563', fontSize: 11 }}>
-                Didn&apos;t receive it?{' '}
-                <Text
-                  onPress={handleResend}
-                  style={{ color: cooldown > 0 ? '#374151' : '#22c55e' }}
-                >
-                  Resend OTP
-                </Text>{' '}
-                <Text style={{ color: '#1f2937' }}>
-                  {cooldown > 0 ? `· expires in ${formatCountdown(cooldown)}` : '· code expired'}
-                </Text>
-              </Text>
-            </View>
-          )}
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+      <TouchableOpacity style={styles.switchModeRow} onPress={() => switchScreen('signin')}>
+        <Text style={styles.switchModeText}>
+          Wrong email? <Text style={styles.switchModeLink}>Back to Sign In</Text>
+        </Text>
+      </TouchableOpacity>
+    </>
   );
 }
 
-/**
- * Translates Firebase Auth error codes into copy consistent with the
- * screen's tone, instead of surfacing raw "Firebase: Error (auth/...)"
- * strings to citizens.
- */
-function mapFirebaseError(err) {
-  const code = err?.code || '';
-  if (code.includes('invalid-phone-number')) return 'That mobile number doesn\u2019t look right.';
-  if (code.includes('too-many-requests')) return 'Too many attempts. Please try again later.';
-  if (code.includes('invalid-verification-code')) return 'Incorrect code. Please check and try again.';
-  if (code.includes('code-expired')) return 'That code expired — request a new one.';
-  if (code.includes('network-request-failed')) return 'Network error — check your connection.';
-  return err?.message || 'Something went wrong. Please try again.';
+// ---------------------------------------------------------------------------
+// Root screen
+// ---------------------------------------------------------------------------
+
+export default function AuthScreen() {
+  const { currentScreen, switchScreen } = useAuth();
+
+  const titleFor = {
+    signin: 'Sign In',
+    signup: 'Create Account',
+    verify: 'Check your email',
+  };
+
+  return (
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+      >
+        <PhoneShell title={titleFor[currentScreen]}>
+          {currentScreen !== 'verify' && (
+            <Tabs active={currentScreen} onChange={switchScreen} />
+          )}
+          {currentScreen === 'signin' && <SignInScreen />}
+          {currentScreen === 'signup' && <SignUpScreen />}
+          {currentScreen === 'verify' && <VerifyScreen />}
+        </PhoneShell>
+      </ScrollView>
+    </KeyboardAvoidingView>
+  );
 }
+
+// ---------------------------------------------------------------------------
+// Styles
+// ---------------------------------------------------------------------------
+
+const styles = StyleSheet.create({
+  flex: { flex: 1, backgroundColor: T.canvas },
+  scrollContent: {
+    flexGrow: 1,
+    padding: 24,
+    justifyContent: 'center',
+  },
+  shell: {
+    width: '100%',
+  },
+
+  // Brand header
+  headerBlock: {
+    marginBottom: 24,
+    alignItems: 'center',
+  },
+  logoBadge: {
+    width: 52,
+    height: 52,
+    borderRadius: 14,
+    backgroundColor: T.indigoDark,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+    shadowColor: T.indigo,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  logoLetter: {
+    color: T.textPrimary,
+    fontSize: 24,
+    fontWeight: '800',
+  },
+  appName: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: T.textPrimary,
+    letterSpacing: 0.3,
+  },
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: 'rgba(34,197,94,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(34,197,94,0.25)',
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: T.green,
+  },
+  statusPillText: {
+    fontFamily: T.mono,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+    color: T.green,
+  },
+
+  // Toast
+  toast: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: T.card,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: T.borderMedium,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: 16,
+  },
+  toastText: {
+    color: T.textBody,
+    fontSize: 13,
+    fontWeight: '600',
+    flexShrink: 1,
+  },
+
+  // Banners
+  offlineBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(239,68,68,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(239,68,68,0.25)',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+  },
+  offlineBannerText: {
+    color: T.red,
+    fontSize: 13,
+    flexShrink: 1,
+  },
+  banner: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
+    marginBottom: 16,
+  },
+  bannerError: {
+    backgroundColor: 'rgba(239,68,68,0.08)',
+    borderColor: 'rgba(239,68,68,0.25)',
+  },
+  bannerSuccess: {
+    backgroundColor: 'rgba(34,197,94,0.08)',
+    borderColor: 'rgba(34,197,94,0.25)',
+  },
+  bannerText: { fontSize: 13, fontWeight: '500' },
+
+  // Card
+  card: {
+    backgroundColor: T.card,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: T.borderSubtle,
+    padding: 24,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 20,
+    elevation: 6,
+  },
+  cardTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: T.textPrimary,
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+
+  // Tabs
+  tabsRow: {
+    flexDirection: 'row',
+    backgroundColor: T.inputBg,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: T.borderMedium,
+    padding: 4,
+    marginBottom: 20,
+  },
+  tabItem: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 9,
+    alignItems: 'center',
+  },
+  tabItemActive: {
+    backgroundColor: T.indigoDark,
+  },
+  tabText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: T.textMuted,
+  },
+  tabTextActive: {
+    color: T.textPrimary,
+  },
+
+  // Fields
+  fieldGroup: {
+    marginBottom: 2,
+  },
+  label: {
+    fontFamily: T.mono,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.5,
+    color: T.textMuted,
+    marginBottom: 8,
+    marginTop: 14,
+    textTransform: 'uppercase',
+  },
+  inputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: T.borderMedium,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    backgroundColor: T.inputBg,
+  },
+  inputWrapperActive: {
+    borderColor: T.indigo,
+  },
+  input: {
+    flex: 1,
+    paddingVertical: 13,
+    fontSize: 14,
+    color: T.textBody,
+  },
+  eyeButton: {
+    padding: 6,
+  },
+  fieldError: {
+    color: T.red,
+    fontSize: 12,
+    marginTop: 6,
+  },
+
+  // Strength meter
+  strengthContainer: {
+    marginTop: 8,
+  },
+  strengthBarRow: {
+    flexDirection: 'row',
+    gap: 4,
+  },
+  strengthSegment: {
+    flex: 1,
+    height: 3,
+    borderRadius: 2,
+  },
+  strengthLabel: {
+    marginTop: 6,
+    fontFamily: T.mono,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+
+  // Remember me / forgot password
+  rowBetween: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 16,
+  },
+  rememberMeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  rememberMeText: {
+    fontSize: 13,
+    color: T.textBody,
+  },
+  forgotPasswordText: {
+    fontSize: 13,
+    color: T.indigo,
+    fontWeight: '600',
+  },
+
+  // Terms
+  termsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginTop: 16,
+  },
+  termsText: {
+    flex: 1,
+    fontSize: 12,
+    color: T.textBody,
+    lineHeight: 17,
+  },
+
+  // Buttons
+  primaryButton: {
+    backgroundColor: T.indigoDark,
+    borderRadius: 12,
+    paddingVertical: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 20,
+    shadowColor: T.indigo,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  buttonDisabled: {
+    opacity: 0.6,
+  },
+  primaryButtonText: {
+    color: T.textPrimary,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  secondaryButton: {
+    borderRadius: 12,
+    paddingVertical: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: T.borderHighlight,
+    backgroundColor: T.inputBg,
+  },
+  secondaryButtonText: {
+    color: T.indigo,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  switchModeRow: {
+    marginTop: 18,
+    alignItems: 'center',
+  },
+  switchModeText: {
+    fontSize: 13,
+    color: T.textMuted,
+  },
+  switchModeLink: {
+    color: T.indigo,
+    fontWeight: '700',
+  },
+
+  // Verify screen
+  verifyIconWrap: {
+    alignSelf: 'center',
+    backgroundColor: T.inputBg,
+    borderWidth: 1,
+    borderColor: T.borderMedium,
+    borderRadius: 999,
+    padding: 16,
+    marginBottom: 14,
+  },
+  verifyBody: {
+    fontSize: 13,
+    color: T.textMuted,
+    textAlign: 'center',
+    lineHeight: 19,
+    marginBottom: 14,
+  },
+  emailChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    alignSelf: 'center',
+    backgroundColor: T.inputBg,
+    borderWidth: 1,
+    borderColor: T.borderHighlight,
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginBottom: 8,
+  },
+  emailChipText: {
+    fontFamily: T.mono,
+    fontSize: 12,
+    fontWeight: '700',
+    color: T.textPrimary,
+  },
+
+  // Footer
+  footerBlock: {
+    marginTop: 24,
+    alignItems: 'center',
+  },
+  footerText: {
+    fontSize: 11,
+    color: T.textDim,
+    textAlign: 'center',
+    lineHeight: 16,
+  },
+});
