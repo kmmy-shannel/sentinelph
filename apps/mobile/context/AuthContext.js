@@ -5,6 +5,22 @@
 // Firebase Email/Password auth (firebase/auth v10+). Enable the
 // Email/Password provider for this project in the Firebase console
 // before testing.
+//
+// FIX (see HUGGINGFACE... no — see chat diagnosis): `isEmailVerified` is
+// now tracked as its own boolean state, updated explicitly by
+// onAuthStateChanged and by checkVerificationStatus(), rather than
+// derived by spreading the Firebase User object (which drops prototype
+// methods like getIdToken()/reload() and doesn't reliably trigger a
+// re-render since reload() mutates the same object in place).
+//
+// `currentScreen` is now driven by auth state, not just user actions:
+// any time a signed-in user's emailVerified is false — right after
+// sign-up, after signing into an existing unverified account, or on a
+// cold start that restores a stale unverified session — onAuthStateChanged
+// forces currentScreen to 'verify'. App.js's RootNavigator gates the
+// Dashboard on `isAuthenticated && isEmailVerified`, so an unverified user
+// can never reach TabNavigator regardless of what currentScreen is doing;
+// currentScreen only controls which *view* renders inside AuthScreen.
 
 import React, {
   createContext,
@@ -60,6 +76,7 @@ function mapFirebaseAuthError(code) {
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
+  const [emailVerified, setEmailVerified] = useState(false);
   const [initializing, setInitializing] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
@@ -69,12 +86,29 @@ export function AuthProvider({ children }) {
   const [currentScreen, setCurrentScreen] = useState('signin'); // "signin" | "signup" | "verify"
   const [emailForVerification, setEmailForVerification] = useState('');
 
-  // Restores the session on cold start and keeps `user` (including
-  // emailVerified) in sync with sign-in/sign-out from anywhere in the app.
+  // Restores the session on cold start and keeps `user`/`emailVerified` in
+  // sync with sign-in/sign-out from anywhere in the app. Critically, this
+  // is also what forces an unverified user onto the 'verify' screen —
+  // right after sign-up, after logging into an existing unverified
+  // account, or after the session is restored on a cold start.
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser);
       setInitializing(false);
+
+      if (firebaseUser) {
+        setEmailVerified(Boolean(firebaseUser.emailVerified));
+        if (firebaseUser.emailVerified) {
+          setEmailForVerification('');
+        } else {
+          setEmailForVerification(firebaseUser.email || '');
+          setCurrentScreen('verify');
+        }
+      } else {
+        setEmailVerified(false);
+        setEmailForVerification('');
+        setCurrentScreen('signin');
+      }
     });
     return unsubscribe;
   }, []);
@@ -132,6 +166,9 @@ export function AuthProvider({ children }) {
         assertOnline();
         const credential = await signInWithEmailAndPassword(auth, email, password);
         await persistRememberMe(rememberMeArg);
+        // onAuthStateChanged (above) is what actually routes to 'verify'
+        // if this account turns out to be unverified — no need to
+        // duplicate that logic here.
         return credential.user;
       } catch (signInError) {
         const message = signInError.code
@@ -161,13 +198,29 @@ export function AuthProvider({ children }) {
         }
 
         const credential = await createUserWithEmailAndPassword(auth, email, password);
+
         if (fullName) {
           await updateProfile(credential.user, { displayName: fullName });
         }
+
+        // IMPORTANT: this call is now guaranteed to actually be reachable
+        // and its errors visible — previously, onAuthStateChanged firing
+        // as soon as createUserWithEmailAndPassword resolved caused
+        // RootNavigator to swap straight to the Dashboard (isAuthenticated
+        // was true), unmounting AuthScreen/SignUpScreen before this line
+        // even ran its course, and silently swallowing any error thrown
+        // here. RootNavigator now also requires isEmailVerified, so the
+        // navigator stays on AuthScreen for the whole signUp() call.
         await sendEmailVerification(credential.user);
-        setUser(credential.user);
+
         setEmailForVerification(email);
         setCurrentScreen('verify');
+        // user/emailVerified state is also set by onAuthStateChanged, but
+        // we set them here too so the UI updates on this same tick rather
+        // than waiting an extra listener round-trip.
+        setUser(credential.user);
+        setEmailVerified(Boolean(credential.user.emailVerified));
+
         return credential.user;
       } catch (signUpError) {
         const message = signUpError.code
@@ -207,17 +260,26 @@ export function AuthProvider({ children }) {
   // Verification happens via a link the citizen opens outside the app, so
   // we need an explicit way to re-pull the emailVerified flag once they
   // return — Firebase's local user object is not pushed updates for this.
+  //
+  // FIX: emailVerified is tracked as its own state variable rather than
+  // derived by spreading auth.currentUser. reload() mutates the SAME
+  // User instance in place, so setUser(auth.currentUser) alone would not
+  // reliably trigger a re-render (same object reference), and spreading
+  // it (`{ ...auth.currentUser }`) drops prototype methods like
+  // getIdToken()/reload() from anything that reads `user` off context.
   const checkVerificationStatus = useCallback(async () => {
     setError(null);
     setIsLoading(true);
     try {
       if (!auth.currentUser) return false;
       await reload(auth.currentUser);
-      // reload() mutates auth.currentUser in place, but it's not the same
-      // object reference React had — force a state update so consumers
-      // re-render with the fresh emailVerified flag.
-      setUser({ ...auth.currentUser });
-      if (auth.currentUser.emailVerified) {
+
+      const verifiedNow = Boolean(auth.currentUser.emailVerified);
+      setUser(auth.currentUser);
+      setEmailVerified(verifiedNow);
+
+      if (verifiedNow) {
+        setEmailForVerification('');
         return true;
       }
       const message = 'Still not verified. Check your inbox (and spam folder) for the link.';
@@ -231,13 +293,16 @@ export function AuthProvider({ children }) {
   const logout = useCallback(async () => {
     await firebaseSignOut(auth);
     setUser(null);
+    setEmailVerified(false);
     setError(null);
     setEmailForVerification('');
     setCurrentScreen('signin');
   }, []);
 
   // Convenience accessor so screens/services don't need to import Firebase
-  // directly just to read a token.
+  // directly just to read a token. Reads auth.currentUser directly rather
+  // than context's `user` state, so it's unaffected by the state-update
+  // timing discussed above.
   const getIdToken = useCallback(async (forceRefresh = false) => {
     if (!auth.currentUser) return null;
     return auth.currentUser.getIdToken(forceRefresh);
@@ -250,7 +315,7 @@ export function AuthProvider({ children }) {
     isOffline,
     error,
     isAuthenticated: Boolean(user),
-    isEmailVerified: Boolean(user?.emailVerified),
+    isEmailVerified: emailVerified,
     rememberMe,
     currentScreen,
     emailForVerification,

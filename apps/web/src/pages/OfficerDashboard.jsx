@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ClipboardList, Users, CheckCircle2, RefreshCw, AlertCircle } from 'lucide-react';
 import { fetchCases } from '../lib/api';
-import CaseReviewModal from './CaseReviewModal';
+import CaseReviewModal from "../components/CaseReviewModal";
 
 export default function OfficerDashboard() {
   const [cases, setCases] = useState([]);

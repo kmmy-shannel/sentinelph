@@ -1,245 +1,476 @@
-// apps/web/src/context/AuthContext.jsx
-//
-// Auth state for the Officer/Analyst/Auditor web console — Email/Password
-// via Firebase Auth. This surface was already email-based (officers don't
-// have SMS-verifiable numbers on file), so this revision adds:
-//   - explicit persistence control (browserLocalPersistence for
-//     "remember me", browserSessionPersistence otherwise)
-//   - a register() path with mandatory ToS/privacy consent and
-//     email verification, for the rare self-service account case
-//   - fully generic, non-enumerating credential error copy
+// apps/web/src/pages/Login.jsx
+import React, { useState, useRef, useEffect } from 'react';
+import { Navigate } from 'react-router-dom';
+import { Shield, Loader2, Eye, EyeOff, ChevronDown, Check } from 'lucide-react';
+import { useAuth, ROLES } from '../context/AuthContext';
 
-import React, {
-  createContext,
-  useContext,
-  useEffect,
-  useState,
-  useCallback,
-  useMemo,
-} from 'react';
-import {
-  browserLocalPersistence,
-  browserSessionPersistence,
-  createUserWithEmailAndPassword,
-  reload,
-  sendEmailVerification,
-  setPersistence,
-  signInWithEmailAndPassword,
-  signOut as firebaseSignOut,
-  updateProfile,
-  onAuthStateChanged,
-} from 'firebase/auth';
-import { auth } from '../config/firebase';
-import { fetchCurrentUserProfile } from '../lib/api';
+const ROLE_OPTIONS = [
+  {
+    id: ROLES.OFFICER,
+    label: 'Barangay / NBI Officer',
+    dept: 'NBI Cybercrime Division',
+    icon: '🛡️',
+    color: '#3b82f6',
+  },
+  {
+    id: ROLES.ANALYST,
+    label: 'Fraud Analyst',
+    dept: 'NTC Fraud Research Division',
+    icon: '🔍',
+    color: '#a855f7',
+  },
+  {
+    id: ROLES.AUDITOR,
+    label: 'System Auditor',
+    dept: 'DICT Independent Auditor',
+    icon: '⚖️',
+    color: '#22c55e',
+  },
+];
 
-const AuthContext = createContext(undefined);
-
-export const ROLES = {
-  OFFICER: 'officer',
-  ANALYST: 'analyst',
-  AUDITOR: 'auditor',
-};
-
-// Never reveals whether a given email address already has an account —
-// every credential-related failure on both login and registration maps
-// to this single generic message.
-const GENERIC_AUTH_ERROR = 'Invalid credentials or account issue. Please try again.';
-
-function mapFirebaseAuthError(code) {
-  switch (code) {
-    case 'auth/invalid-email':
-      return 'That email address looks invalid.';
-    case 'auth/weak-password':
-      return 'Please choose a stronger password (at least 6 characters).';
-    case 'auth/too-many-requests':
-      return 'Too many attempts. Please wait a moment and try again.';
-    case 'auth/network-request-failed':
-      return 'Network error — check your connection and try again.';
-    case 'auth/user-not-found':
-    case 'auth/wrong-password':
-    case 'auth/invalid-credential':
-    case 'auth/email-already-in-use':
-    case 'auth/user-disabled':
-      return GENERIC_AUTH_ERROR;
-    default:
-      return GENERIC_AUTH_ERROR;
-  }
-}
-
-export function AuthProvider({ children }) {
-  const [firebaseUser, setFirebaseUser] = useState(null);
-  const [profile, setProfile] = useState(null); // { role, displayName, email, ... } from backend
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  const loadProfile = useCallback(async () => {
-    try {
-      const data = await fetchCurrentUserProfile();
-      setProfile(data);
-      return data;
-    } catch (profileError) {
-      console.error('Failed to load user profile from backend:', profileError);
-      setProfile(null);
-      setError('Unable to load your account details. Please try again.');
-      return null;
-    }
-  }, []);
+function RoleDropdown({ value, onChange, placeholder = 'Select your assigned role…' }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const selected = ROLE_OPTIONS.find((r) => r.id === value);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setLoading(true);
-      setFirebaseUser(user);
-
-      if (user) {
-        await loadProfile();
-      } else {
-        setProfile(null);
-      }
-
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, [loadProfile]);
-
-  /**
-   * @param {string} email
-   * @param {string} password
-   * @param {{ rememberMe?: boolean }} [options] rememberMe=true keeps the
-   *   session across browser restarts (browserLocalPersistence); false
-   *   (the default) clears it when the tab/browser closes.
-   */
-  const login = useCallback(
-    async (email, password, options = {}) => {
-      setError(null);
-      try {
-        await setPersistence(
-          auth,
-          options.rememberMe ? browserLocalPersistence : browserSessionPersistence
-        );
-        const credential = await signInWithEmailAndPassword(auth, email, password);
-        const loadedProfile = await loadProfile();
-        return { user: credential.user, profile: loadedProfile };
-      } catch (loginError) {
-        const message = mapFirebaseAuthError(loginError.code);
-        setError(message);
-        throw new Error(message);
-      }
-    },
-    [loadProfile]
-  );
-
-  /**
-   * Self-service registration for staff accounts. Requires explicit ToS +
-   * privacy consent and sends a verification email; the backend profile
-   * (and role assignment) is still provisioned server-side per the
-   * existing onboarding process, so `profile` may be null until an admin
-   * completes that step.
-   */
-  const register = useCallback(
-    async ({ fullName, email, password, agreedToTerms }) => {
-      setError(null);
-
-      if (!agreedToTerms) {
-        const message = 'You must agree to the Terms of Service and Privacy Policy to continue.';
-        setError(message);
-        throw new Error(message);
-      }
-
-      try {
-        await setPersistence(auth, browserSessionPersistence);
-        const credential = await createUserWithEmailAndPassword(auth, email, password);
-        if (fullName) {
-          await updateProfile(credential.user, { displayName: fullName });
-        }
-        await sendEmailVerification(credential.user);
-        setFirebaseUser(credential.user);
-        return credential.user;
-      } catch (registerError) {
-        const message = mapFirebaseAuthError(registerError.code);
-        setError(message);
-        throw new Error(message);
-      }
-    },
-    []
-  );
-
-  const resendVerificationEmail = useCallback(async () => {
-    setError(null);
-    if (!auth.currentUser) {
-      const message = 'No signed-in user to verify.';
-      setError(message);
-      throw new Error(message);
+    function handleClickOutside(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
     }
-    try {
-      await sendEmailVerification(auth.currentUser);
-    } catch (resendError) {
-      const message = mapFirebaseAuthError(resendError.code);
-      setError(message);
-      throw new Error(message);
-    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Verification happens via a link opened outside the SPA (usually a new
-  // tab), so we need an explicit re-pull of emailVerified once the staff
-  // member returns.
-  const reloadUser = useCallback(async () => {
-    if (!auth.currentUser) return null;
-    await reload(auth.currentUser);
-    setFirebaseUser(auth.currentUser);
-    return auth.currentUser;
-  }, []);
+  return (
+    <div ref={ref} className="relative z-20">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl text-sm transition-all"
+        style={{
+          background: '#080810',
+          border: `1.5px solid ${open ? (selected?.color ?? '#6366f1') + '80' : '#1c1c2e'}`,
+          color: selected ? '#e2e8f0' : '#4b5563',
+          boxShadow: open ? `0 0 0 3px ${(selected?.color ?? '#6366f1')}14` : 'none',
+        }}
+      >
+        {selected ? (
+          <>
+            <span className="text-base">{selected.icon}</span>
+            <div className="flex-1 text-left">
+              <div className="text-sm font-medium text-white">{selected.label}</div>
+              <div
+                className="text-xs mt-0.5"
+                style={{ color: selected.color, fontFamily: "'JetBrains Mono', monospace" }}
+              >
+                {selected.dept}
+              </div>
+            </div>
+          </>
+        ) : (
+          <span className="flex-1 text-left text-sm" style={{ color: '#4b5563' }}>
+            {placeholder}
+          </span>
+        )}
+        <ChevronDown
+          size={14}
+          style={{
+            transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+            transition: 'transform 0.2s',
+            flexShrink: 0,
+            color: '#4b5563',
+          }}
+        />
+      </button>
 
-  const logout = useCallback(async () => {
-    await firebaseSignOut(auth);
-    setFirebaseUser(null);
-    setProfile(null);
-  }, []);
-
-  const refreshProfile = useCallback(async () => {
-    if (firebaseUser) {
-      return loadProfile();
-    }
-    return null;
-  }, [firebaseUser, loadProfile]);
-
-  const value = useMemo(
-    () => ({
-      user: firebaseUser,
-      profile,
-      role: profile?.role || null,
-      isAuthenticated: !!firebaseUser && !!profile,
-      isEmailVerified: Boolean(firebaseUser?.emailVerified),
-      loading,
-      error,
-      login,
-      register,
-      logout,
-      resendVerificationEmail,
-      reloadUser,
-      refreshProfile,
-    }),
-    [
-      firebaseUser,
-      profile,
-      loading,
-      error,
-      login,
-      register,
-      logout,
-      resendVerificationEmail,
-      reloadUser,
-      refreshProfile,
-    ]
+      {open && (
+        <div
+          className="absolute top-full left-0 right-0 mt-2 rounded-xl overflow-hidden"
+          style={{ background: '#0d0d1a', border: '1.5px solid #1c1c2e', boxShadow: '0 20px 40px rgba(0,0,0,0.6)', zIndex: 50 }}
+        >
+          {ROLE_OPTIONS.map((role, i) => (
+            <button
+              key={role.id}
+              type="button"
+              onClick={() => {
+                onChange(role.id);
+                setOpen(false);
+              }}
+              className="w-full flex items-center gap-3 px-4 py-3.5 text-left transition-all"
+              style={{
+                borderBottom: i < ROLE_OPTIONS.length - 1 ? '1px solid #13131e' : 'none',
+                background: value === role.id ? role.color + '12' : 'transparent',
+              }}
+              onMouseEnter={(e) => {
+                if (value !== role.id) e.currentTarget.style.background = '#13131e';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = value === role.id ? role.color + '12' : 'transparent';
+              }}
+            >
+              <div
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-sm shrink-0"
+                style={{ background: role.color + '18' }}
+              >
+                {role.icon}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-white">{role.label}</div>
+                <div
+                  className="text-xs mt-0.5 truncate"
+                  style={{ color: role.color, fontFamily: "'JetBrains Mono', monospace", opacity: 0.85 }}
+                >
+                  {role.dept}
+                </div>
+              </div>
+              {value === role.id && <Check size={14} color={role.color} strokeWidth={2.5} />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
-export function useAuth() {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
+export default function Login() {
+  const { login, register, isAuthenticated, role, loading: authLoading } = useAuth();
+
+  const [tab, setTab] = useState('signin'); // 'signin' | 'signup'
+
+  // Shared
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState(null);
+  const [infoMessage, setInfoMessage] = useState(null);
+
+  // Sign-in only
+  const [rememberMe, setRememberMe] = useState(false);
+  const [signinRoleHint, setSigninRoleHint] = useState(''); // cosmetic only, see note above
+
+  // Sign-up only
+  const [fullName, setFullName] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [requestedRole, setRequestedRole] = useState('');
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
+
+  const selectedHint = ROLE_OPTIONS.find((r) => r.id === signinRoleHint);
+
+  if (!authLoading && isAuthenticated) {
+    const dest =
+      role === ROLES.OFFICER
+        ? '/officer'
+        : role === ROLES.ANALYST
+        ? '/analyst'
+        : role === ROLES.AUDITOR
+        ? '/auditor'
+        : '/unauthorized';
+    return <Navigate to={dest} replace />;
   }
-  return context;
+
+  const resetMessages = () => {
+    setFormError(null);
+    setInfoMessage(null);
+  };
+
+  const handleSignIn = async (e) => {
+    e.preventDefault();
+    resetMessages();
+    setSubmitting(true);
+    try {
+      // Note: signinRoleHint is a cosmetic department badge only.
+      // Actual role/permissions come from the backend profile via
+      // AuthContext after Firebase verifies the credentials.
+      await login(email, password, { rememberMe });
+    } catch (err) {
+      setFormError(err.message || 'Unable to sign in. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSignUp = async (e) => {
+    e.preventDefault();
+    resetMessages();
+
+    if (password !== confirmPassword) {
+      setFormError('Passwords do not match.');
+      return;
+    }
+    if (!requestedRole) {
+      setFormError('Please select the role you are requesting access for.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await register({ fullName, email, password, agreedToTerms });
+      setInfoMessage(
+        'Account created. Check your email to verify your address — an administrator still needs to approve your requested role before you can sign in.'
+      );
+      setTab('signin');
+    } catch (err) {
+      setFormError(err.message || 'Unable to create account. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const inputClass =
+    'w-full bg-[#080810] border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-accent transition-all';
+
+  return (
+    <div className="min-h-screen w-full flex items-center justify-center bg-canvas px-4 font-sans">
+      <div className="w-full max-w-sm">
+        <div className="flex flex-col items-center mb-8">
+          <div className="w-14 h-14 rounded-2xl bg-card border border-white/10 flex items-center justify-center mb-4">
+            <Shield size={26} className="text-accent" />
+          </div>
+          <h1 className="text-xl font-bold text-white">SentinelPH Console</h1>
+          <p
+            className="text-slate-500 text-xs mt-1 tracking-wide"
+            style={{ fontFamily: "'JetBrains Mono', monospace" }}
+          >
+            Republic of the Philippines · Verified Access Only
+          </p>
+        </div>
+
+        <div className="bg-card border border-white/10 rounded-2xl p-6 shadow-xl shadow-black/40">
+          {/* Tabs */}
+          <div
+            className="flex rounded-xl p-1 mb-5"
+            style={{ background: '#080810', border: '1px solid #1c1c2e' }}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setTab('signin');
+                resetMessages();
+              }}
+              className="flex-1 text-sm font-medium py-2 rounded-lg transition-all"
+              style={
+                tab === 'signin'
+                  ? { background: '#6366f1', color: 'white' }
+                  : { color: '#64748b' }
+              }
+            >
+              Sign In
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTab('signup');
+                resetMessages();
+              }}
+              className="flex-1 text-sm font-medium py-2 rounded-lg transition-all"
+              style={
+                tab === 'signup'
+                  ? { background: '#6366f1', color: 'white' }
+                  : { color: '#64748b' }
+              }
+            >
+              Request Access
+            </button>
+          </div>
+
+          {formError && (
+            <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 mb-4">
+              {formError}
+            </div>
+          )}
+          {infoMessage && (
+            <div className="text-sm text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-3 py-2 mb-4">
+              {infoMessage}
+            </div>
+          )}
+
+          {tab === 'signin' ? (
+            <form onSubmit={handleSignIn} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">
+                  Email address
+                </label>
+                <input
+                  type="email"
+                  required
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className={inputClass}
+                  placeholder="you@sentinelph.gov.ph"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">
+                  Password
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className={inputClass + ' pr-10'}
+                    placeholder="••••••••"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((s) => !s)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+                    tabIndex={-1}
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">
+                  Department badge (optional)
+                </label>
+                <RoleDropdown
+                  value={signinRoleHint}
+                  onChange={setSigninRoleHint}
+                  placeholder="Show your department badge…"
+                />
+                {selectedHint && (
+                  <p className="text-[11px] text-slate-600 mt-1.5">
+                    Cosmetic only — your actual access level is verified from your account after sign-in.
+                  </p>
+                )}
+              </div>
+
+              <label className="flex items-center gap-2 text-xs text-slate-400 select-none cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="rounded border-white/20 bg-[#080810] text-accent focus:ring-accent focus:ring-offset-0"
+                />
+                Remember me on this device
+              </label>
+
+              <button
+                type="submit"
+                disabled={submitting}
+                className="w-full bg-accent hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-sm font-semibold py-2.5 rounded-xl transition-colors flex items-center justify-center gap-2"
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    Signing in...
+                  </>
+                ) : (
+                  'Sign in'
+                )}
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleSignUp} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">Full name</label>
+                <input
+                  type="text"
+                  required
+                  autoComplete="name"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  className={inputClass}
+                  placeholder="Juan Dela Cruz"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">
+                  Government email address
+                </label>
+                <input
+                  type="email"
+                  required
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className={inputClass}
+                  placeholder="you@sentinelph.gov.ph"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">
+                  Requested role
+                </label>
+                <RoleDropdown value={requestedRole} onChange={setRequestedRole} />
+                <p className="text-[11px] text-slate-600 mt-1.5">
+                  Subject to admin approval before permissions take effect.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">Password</label>
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  autoComplete="new-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className={inputClass}
+                  placeholder="At least 6 characters"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">
+                  Confirm password
+                </label>
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  className={inputClass}
+                  placeholder="Re-enter password"
+                />
+              </div>
+
+              <label className="flex items-start gap-2 text-xs text-slate-400 select-none cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={agreedToTerms}
+                  onChange={(e) => setAgreedToTerms(e.target.checked)}
+                  className="mt-0.5 rounded border-white/20 bg-[#080810] text-accent focus:ring-accent focus:ring-offset-0"
+                />
+                <span>I agree to the Terms of Service and Privacy Policy.</span>
+              </label>
+
+              <button
+                type="submit"
+                disabled={submitting}
+                className="w-full bg-accent hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-sm font-semibold py-2.5 rounded-xl transition-colors flex items-center justify-center gap-2"
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    Creating account...
+                  </>
+                ) : (
+                  'Request access'
+                )}
+              </button>
+            </form>
+          )}
+        </div>
+
+        <p
+          className="text-center text-[11px] text-slate-600 mt-6 tracking-wide"
+          style={{ fontFamily: "'JetBrains Mono', monospace" }}
+        >
+          SentinelPH · NBI · NTC · DICT — Officer / Analyst / Auditor Console
+        </p>
+      </div>
+    </div>
+  );
 }
