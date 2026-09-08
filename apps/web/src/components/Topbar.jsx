@@ -1,14 +1,34 @@
 // apps/web/src/components/Topbar.jsx
 import React from 'react';
-import { useAuth, ROLES } from '../context/AuthContext';
+import { useLocation } from 'react-router-dom';
 
 export default function Topbar() {
-  const { role } = useAuth();
+  const location = useLocation();
 
   const getTitle = () => {
-    if (role === ROLES.OFFICER) return "Jurisdiction Dashboard — NCR";
-    if (role === ROLES.ANALYST) return "Scam Pattern Analytics";
-    if (role === ROLES.AUDITOR) return "Audit Log Viewer";
+    const path = location.pathname;
+
+    // Officer paths
+    if (path === "/officer/dashboard") return "Jurisdiction Dashboard — NCR";
+    if (path === "/officer/queue") return "Review Queue";
+    if (path === "/officer/registry") return "Blacklist Registry";
+    if (path === "/officer/notifications") return "Notifications";
+    if (path === "/officer/account") return "Account";
+
+    // Analyst paths
+    if (path === "/analyst/dashboard") return "Trends Dashboard";
+    if (path === "/analyst/patterns") return "Pattern Explorer";
+    if (path === "/analyst/model") return "AI Model Insights";
+    if (path === "/analyst/reports") return "Regional Reports";
+    if (path === "/analyst/alerts") return "Alerts Configuration";
+
+    // Auditor paths
+    if (path === "/auditor/dashboard") return "Chain Integrity Dashboard";
+    if (path === "/auditor/verify") return "Verification Tool";
+    if (path === "/auditor/trail") return "Audit Trail";
+    if (path === "/auditor/anomalies") return "Anomaly Reports";
+
+    // Default
     return "Dashboard";
   };
 

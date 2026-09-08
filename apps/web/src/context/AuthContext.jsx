@@ -14,24 +14,12 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Load user from localStorage (simulating a saved session)
     const storedUser = localStorage.getItem('sentinelph_user');
     if (storedUser) {
-      try {
-        setUser(JSON.parse(storedUser));
-      } catch (e) {
-        console.error('Failed to parse stored user:', e);
-        localStorage.removeItem('sentinelph_user');
-      }
+      setUser(JSON.parse(storedUser));
     }
     setLoading(false);
   }, []);
-
-  const login = async (credentials) => {
-    // This simulates a successful login. In the future, replace with a fetch call.
-    // For now, we rely on the Demo users saved in Login.jsx
-    return true;
-  };
 
   const logout = async () => {
     localStorage.removeItem('sentinelph_user');
@@ -41,10 +29,8 @@ export function AuthProvider({ children }) {
   const value = {
     isAuthenticated: !!user,
     user,
-    profile: user,
     role: user?.role,
     loading,
-    login,
     logout,
   };
 
@@ -53,8 +39,6 @@ export function AuthProvider({ children }) {
 
 export function useAuth() {
   const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
+  if (!context) throw new Error('useAuth must be used within AuthProvider');
   return context;
 }

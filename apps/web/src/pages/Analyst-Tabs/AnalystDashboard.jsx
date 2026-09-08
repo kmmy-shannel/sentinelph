@@ -1,5 +1,4 @@
-// apps/web/src/pages/AnalystDashboard.jsx
-import React from "react";
+// apps/web/src/pages/Analyst-Tabs/AnalystDashboard.jsx
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, Cell } from "recharts";
 
 const patterns = [
@@ -16,10 +15,17 @@ const flagged = [
   { id: "FL-04397", number: "+63 917 882 1104", label: "Parcel/Delivery",     conf: "91.8%", confC: "#22c55e", status: "Approved" },
 ];
 
+// ✅ SINGLE combined array (This fixes the double dates!)
 const trendData = [
-  { day: "Aug 22", v: 148 }, { day: "Aug 23", v: 162 }, { day: "Aug 24", v: 175 },
-  { day: "Aug 25", v: 190 }, { day: "Aug 26", v: 210 }, { day: "Aug 27", v: 258 }, { day: "Aug 28", v: 312 },
+  { day: "Aug 22", sms: 90, calls: 60 },
+  { day: "Aug 23", sms: 100, calls: 75 },
+  { day: "Aug 24", sms: 110, calls: 90 },
+  { day: "Aug 25", sms: 120, calls: 100 },
+  { day: "Aug 26", sms: 135, calls: 120 },
+  { day: "Aug 27", sms: 150, calls: 145 },
+  { day: "Aug 28", sms: 180, calls: 180 },
 ];
+
 const heatmapData = [
   { region: "Quezon City", v: 980 }, { region: "Makati", v: 720 },
   { region: "Pasig", v: 560 }, { region: "Parañaque", v: 410 },
@@ -49,7 +55,7 @@ export default function AnalystDashboard() {
         ))}
       </div>
 
-      {/* Charts Row */}
+      {/* Charts Row (This is the fixed graph!) */}
       <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: "16px" }}>
         <div style={card}>
           <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff", marginBottom: "4px" }}>7-Day Report Trend</div>
@@ -57,15 +63,24 @@ export default function AnalystDashboard() {
           <ResponsiveContainer width="100%" height={180}>
             <AreaChart data={trendData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
               <defs>
-                <linearGradient id="purpleGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#a855f7" stopOpacity={0.25} />
+                <linearGradient id="smsGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                </linearGradient>
+                <linearGradient id="callGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#a855f7" stopOpacity={0.3} />
                   <stop offset="95%" stopColor="#a855f7" stopOpacity={0} />
                 </linearGradient>
               </defs>
               <XAxis dataKey="day" tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
               <Tooltip contentStyle={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: "8px", color: "#e2e8f0", fontSize: 12 }} />
-              <Area type="monotone" dataKey="v" stroke="#a855f7" strokeWidth={2} fill="url(#purpleGrad)" />
+              
+              {/* SMS (Blue) */}
+              <Area type="monotone" dataKey="sms" stroke="#3b82f6" strokeWidth={2} fill="url(#smsGrad)" />
+              
+              {/* Calls (Purple) */}
+              <Area type="monotone" dataKey="calls" stroke="#a855f7" strokeWidth={2} fill="url(#callGrad)" />
             </AreaChart>
           </ResponsiveContainer>
         </div>
@@ -144,4 +159,4 @@ export default function AnalystDashboard() {
 
     </div>
   );
-} 
+}

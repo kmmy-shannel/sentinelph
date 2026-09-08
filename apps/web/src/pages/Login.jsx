@@ -3,7 +3,6 @@ import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth, ROLES } from "../context/AuthContext";
 
-// Professional SVG Icons
 const ShieldIcon = ({ color }) => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
@@ -25,30 +24,9 @@ const ScalesIcon = ({ color }) => (
 );
 
 const ROLE_OPTIONS = [
-  {
-    id: ROLES.OFFICER,
-    label: "Barangay / NBI Officer",
-    dept: "NBI Cybercrime Division",
-    Icon: ShieldIcon,
-    color: "#3b82f6",
-    path: "/officer",
-  },
-  {
-    id: ROLES.ANALYST,
-    label: "Fraud Analyst",
-    dept: "NTC Fraud Research Division",
-    Icon: MagnifyIcon,
-    color: "#a855f7",
-    path: "/analyst",
-  },
-  {
-    id: ROLES.AUDITOR,
-    label: "System Auditor",
-    dept: "DICT Independent Auditor",
-    Icon: ScalesIcon,
-    color: "#22c55e",
-    path: "/auditor",
-  },
+  { id: ROLES.OFFICER, label: "Barangay / NBI Officer", dept: "NBI Cybercrime Division", Icon: ShieldIcon, color: "#3b82f6", path: "/officer/dashboard" },
+  { id: ROLES.ANALYST, label: "Fraud Analyst", dept: "NTC Fraud Research Division", Icon: MagnifyIcon, color: "#a855f7", path: "/analyst/dashboard" },
+  { id: ROLES.AUDITOR, label: "System Auditor", dept: "DICT Independent Auditor", Icon: ScalesIcon, color: "#22c55e", path: "/auditor/dashboard" },
 ];
 
 const DEMO_USERS = {
@@ -170,14 +148,14 @@ export default function Login() {
           const userData = JSON.parse(storedUser);
           const roleData = ROLE_OPTIONS.find(r => r.id === userData.role);
           if (roleData) {
-            navigate(roleData.path);
+            window.location.href = roleData.path;
             return;
           }
         } catch (e) {
           console.error('Error parsing user data:', e);
         }
       }
-      navigate('/officer');
+      window.location.href = '/officer/dashboard';
     }
   }, [authLoading, isAuthenticated, navigate]);
 
@@ -211,7 +189,17 @@ export default function Login() {
           };
 
           localStorage.setItem('sentinelph_user', JSON.stringify(user));
-          window.location.href = selectedRoleData.path;
+          
+          // FADE OUT ONLY THE LOGIN PAGE CONTAINER (not body!)
+          const loginContainer = document.getElementById('login-page');
+          if (loginContainer) {
+            loginContainer.style.transition = "opacity 0.3s ease";
+            loginContainer.style.opacity = "0";
+          }
+
+          setTimeout(() => {
+            window.location.href = selectedRoleData.path;
+          }, 300);
         } else {
           setError('Invalid role selected');
           setLoading(false);
@@ -224,7 +212,7 @@ export default function Login() {
   }
 
   return (
-    <div style={{ width: "100%", height: "100vh", display: "flex", overflow: "hidden", fontFamily: "'Inter',sans-serif", background: "#06060f", position: "relative" }}>
+    <div id="login-page" style={{ width: "100%", height: "100vh", display: "flex", overflow: "hidden", fontFamily: "'Inter',sans-serif", background: "#06060f", position: "relative", animation: "fadeIn 0.5s ease" }}>
       
       {/* Animated Background Grid */}
       <div style={{ 
@@ -233,7 +221,6 @@ export default function Login() {
         backgroundSize: "52px 52px"
       }} />
 
-      {/* Animated Glowing Orbs */}
       <div style={{ 
         position: "absolute", width: "550px", height: "550px", borderRadius: "50%", 
         filter: "blur(120px)", pointerEvents: "none", zIndex: 0,
@@ -249,7 +236,6 @@ export default function Login() {
         animation: "floatGlow2 15s infinite ease-in-out"
       }} />
 
-      {/* Left panel */}
       <div style={{ width: "44%", flexShrink: 0, display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "48px", position: "relative", zIndex: 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           <div style={{ width: "40px", height: "40px", borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: "16px", color: "#fff", background: "linear-gradient(135deg,#4f46e5,#7c3aed)", boxShadow: "0 0 20px #4f46e540" }}>S</div>
@@ -293,7 +279,6 @@ export default function Login() {
         </div>
       </div>
 
-      {/* Right form panel */}
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "40px 24px", position: "relative", zIndex: 1 }}>
         <div style={{ width: "100%", maxWidth: "420px" }}>
           <div style={{ borderRadius: "20px", padding: "32px", position: "relative", background: "#0b0b16", border: "1px solid #16162a", boxShadow: "0 40px 80px rgba(0,0,0,0.4)" }}>
@@ -417,6 +402,14 @@ export default function Login() {
           0% { bottom: 25%; right: 10%; opacity: 0.3; }
           50% { bottom: 65%; right: 45%; opacity: 0.6; }
           100% { bottom: 35%; right: 20%; opacity: 0.3; }
+        }
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes fadeOut {
+          from { opacity: 1; }
+          to { opacity: 0; }
         }
         
         /* FIX: Force dark mode even when browser autofills */

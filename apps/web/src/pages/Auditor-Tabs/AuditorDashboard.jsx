@@ -1,4 +1,4 @@
-// apps/web/src/pages/AuditorDashboard.jsx
+// apps/web/src/pages/Auditor-Tabs/AuditorDashboard.jsx
 import React from "react";
 
 const ranges = [

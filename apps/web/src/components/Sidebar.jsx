@@ -1,6 +1,6 @@
 // apps/web/src/components/Sidebar.jsx
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth, ROLES } from '../context/AuthContext';
 
 const DashboardIcon = ({ color }) => (
@@ -51,12 +51,24 @@ const LogoutIcon = ({ color }) => (
 
 export default function Sidebar() {
   const { user, role, logout } = useAuth();
-  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState("dashboard");
+  const navigate = useNavigate();
 
   const handleLogout = async () => {
-    await logout();
-    navigate('/login');
+    // Fade out body
+    document.body.style.transition = "opacity 0.3s ease";
+    document.body.style.opacity = "0";
+
+    setTimeout(() => {
+      logout(); // Clears user
+      navigate('/login'); // Change page
+
+      // Reset body after navigation
+      setTimeout(() => {
+        document.body.style.transition = "none";
+        document.body.style.opacity = "1";
+      }, 50);
+    }, 300);
   };
 
   const roleColor = 
@@ -68,37 +80,32 @@ export default function Sidebar() {
   const getNavItems = () => {
     if (role === ROLES.OFFICER) {
       return [
-        { id: "dashboard", label: "Dashboard", Icon: DashboardIcon, to: "/officer" },
-        { id: "queue", label: "Review Queue", Icon: QueueIcon, badge: 14, to: "/officer" },
-        { id: "registry", label: "Blacklist Registry", Icon: RegistryIcon, to: "/officer" },
-        { id: "notifications", label: "Notifications", Icon: NotificationsIcon, badge: 3, to: "/officer" },
-        { id: "account", label: "Account", Icon: AccountIcon, to: "/officer" },
+        { id: "dashboard", label: "Dashboard", Icon: DashboardIcon, to: "/officer/dashboard" },
+        { id: "queue", label: "Review Queue", Icon: QueueIcon, badge: 14, to: "/officer/queue" },
+        { id: "registry", label: "Blacklist Registry", Icon: RegistryIcon, to: "/officer/registry" },
+        { id: "notifications", label: "Notifications", Icon: NotificationsIcon, badge: 3, to: "/officer/notifications" },
+        { id: "account", label: "Account", Icon: AccountIcon, to: "/officer/account" },
       ];
     } else if (role === ROLES.ANALYST) {
       return [
-        { id: "dashboard", label: "Trends Dashboard", Icon: DashboardIcon, to: "/analyst" },
-        { id: "patterns", label: "Pattern Explorer", Icon: QueueIcon, to: "/analyst" },
-        { id: "model", label: "AI Model Insights", Icon: RegistryIcon, to: "/analyst" },
-        { id: "reports", label: "Regional Reports", Icon: NotificationsIcon, to: "/analyst" },
-        { id: "alerts", label: "Alerts Configuration", Icon: AccountIcon, to: "/analyst" },
+        { id: "dashboard", label: "Trends Dashboard", Icon: DashboardIcon, to: "/analyst/dashboard" },
+        { id: "patterns", label: "Pattern Explorer", Icon: QueueIcon, to: "/analyst/patterns" },
+        { id: "model", label: "AI Model Insights", Icon: RegistryIcon, to: "/analyst/model" },
+        { id: "reports", label: "Regional Reports", Icon: NotificationsIcon, to: "/analyst/reports" },
+        { id: "alerts", label: "Alerts Configuration", Icon: AccountIcon, to: "/analyst/alerts" },
       ];
     } else if (role === ROLES.AUDITOR) {
       return [
-        { id: "chain", label: "Chain Integrity", Icon: DashboardIcon, to: "/auditor" },
-        { id: "verify", label: "Verification Tool", Icon: QueueIcon, to: "/auditor" },
-        { id: "trail", label: "Audit Trail", Icon: RegistryIcon, to: "/auditor" },
-        { id: "anomalies", label: "Anomaly Reports", Icon: NotificationsIcon, to: "/auditor" },
+        { id: "dashboard", label: "Dashboard", Icon: DashboardIcon, to: "/auditor/dashboard" },
+        { id: "verify", label: "Verification Tool", Icon: QueueIcon, to: "/auditor/verify" },
+        { id: "trail", label: "Audit Trail", Icon: RegistryIcon, to: "/auditor/trail" },
+        { id: "anomalies", label: "Anomaly Reports", Icon: NotificationsIcon, to: "/auditor/anomalies" },
       ];
     }
     return [];
   };
 
   const NAV = getNavItems();
-
-  const handleTabClick = (item) => {
-    setActiveTab(item.id);
-    navigate(item.to);
-  };
 
   return (
     <aside style={{ width: "220px", flexShrink: 0, height: "100%", display: "flex", flexDirection: "column", background: "#080810", borderRight: "1px solid #13131e" }}>
@@ -121,21 +128,21 @@ export default function Sidebar() {
 
       <nav style={{ flex: 1, padding: "4px 12px", overflowY: "auto" }}>
         {NAV.map(item => (
-          <button
+          <NavLink
             key={item.id}
-            onClick={() => handleTabClick(item)}
-            style={{
+            to={item.to}
+            onClick={() => setActiveTab(item.id)}
+            style={({ isActive }) => ({
               width: "100%", display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px", borderRadius: "8px", marginBottom: "2px", 
-              background: activeTab === item.id ? `${roleColor}18` : "transparent", 
-              border: activeTab === item.id ? `1px solid ${roleColor}30` : "1px solid transparent", 
-              cursor: "pointer",
-              transition: "all 0.2s ease",
-            }}
+              background: isActive || activeTab === item.id ? `${roleColor}18` : "transparent", 
+              border: isActive || activeTab === item.id ? `1px solid ${roleColor}30` : "1px solid transparent", 
+              textDecoration: "none", cursor: "pointer", transition: "all 0.2s ease",
+            })}
           >
             <item.Icon color={activeTab === item.id ? roleColor : "#4b5563"} />
             <span style={{ flex: 1, fontSize: "12px", fontWeight: activeTab === item.id ? 600 : 500, color: activeTab === item.id ? "#fff" : "#6b7280", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
             {item.badge && <span style={{ fontSize: "9px", fontWeight: 700, padding: "2px 5px", borderRadius: "999px", background: "#ef4444", color: "#fff", minWidth: "18px", textAlign: "center" }}>{item.badge}</span>}
-          </button>
+          </NavLink>
         ))}
       </nav>
 
