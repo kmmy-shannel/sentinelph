@@ -1,204 +1,147 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import {
-  BarChart,
-  Bar,
-  LineChart,
-  Line,
-  PieChart,
-  Pie,
-  Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-} from 'recharts';
-import { TrendingUp, MapPin, PieChart as PieChartIcon, RefreshCw } from 'lucide-react';
-import { fetchAnalyticsSummary, fetchAnalyticsByRegion, fetchAnalyticsByType } from '../lib/api';
+// apps/web/src/pages/AnalystDashboard.jsx
+import React from "react";
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, Cell } from "recharts";
 
-const COLORS = ['#1E3A8A', '#2563EB', '#60A5FA', '#F59E0B', '#DC2626', '#059669'];
-
-const FALLBACK_TREND = [
-  { date: 'Week 1', reports: 42 },
-  { date: 'Week 2', reports: 58 },
-  { date: 'Week 3', reports: 51 },
-  { date: 'Week 4', reports: 73 },
+const patterns = [
+  { n: 1, pattern: "Fake OTP verification request",   category: "OTP Phishing",       reports: 4281, wow: "+22%" },
+  { n: 2, pattern: "Bank account suspension threat",   category: "Bank Impersonation",  reports: 3147, wow: "+8%"  },
+  { n: 3, pattern: "Parcel customs clearance fee",     category: "Parcel/Delivery",     reports: 2380, wow: "+31%" },
+  { n: 4, pattern: "30%+ monthly investment returns",  category: "Investment Scam",     reports: 1540, wow: "+4%"  },
+  { n: 5, pattern: "PhilSys ID verification link",    category: "Gov't Impersonation", reports: 1180, wow: "+18%" },
+];
+const flagged = [
+  { id: "FL-04411", number: "+63 921 334 5510", label: "OTP Phishing",       conf: "94.2%", confC: "#22c55e", status: "Pending"  },
+  { id: "FL-04408", number: "+63 908 771 2230", label: "Bank Impersonation",  conf: "79.1%", confC: "#f59e0b", status: "Approved" },
+  { id: "FL-04401", number: "+63 933 445 8810", label: "Investment Scam",     conf: "68.4%", confC: "#ef4444", status: "Pending"  },
+  { id: "FL-04397", number: "+63 917 882 1104", label: "Parcel/Delivery",     conf: "91.8%", confC: "#22c55e", status: "Approved" },
 ];
 
-const FALLBACK_REGION = [
-  { region: 'NCR', reports: 210 },
-  { region: 'Region IV-A', reports: 130 },
-  { region: 'Region III', reports: 98 },
-  { region: 'Region VII', reports: 76 },
-  { region: 'Region XI', reports: 44 },
+const trendData = [
+  { day: "Aug 22", v: 148 }, { day: "Aug 23", v: 162 }, { day: "Aug 24", v: 175 },
+  { day: "Aug 25", v: 190 }, { day: "Aug 26", v: 210 }, { day: "Aug 27", v: 258 }, { day: "Aug 28", v: 312 },
 ];
-const FALLBACK_TYPE = [
-  { type: 'SMS Phishing', count: 145 },
-  { type: 'Bank Impersonation', count: 98 },
-  { type: 'Fake Courier Fee', count: 61 },
-  { type: 'Prize / Lottery Scam', count: 39 },
-  { type: "Gov't Hotline Spoof", count: 27 },
+const heatmapData = [
+  { region: "Quezon City", v: 980 }, { region: "Makati", v: 720 },
+  { region: "Pasig", v: 560 }, { region: "Parañaque", v: 410 },
 ];
+
+const card = { background: "#0e0e18", border: "1px solid #1a1a2a", borderRadius: "12px", padding: "20px" };
+const thS  = { textAlign: "left", paddingBottom: "8px", fontWeight: 500, color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", fontSize: "9px", letterSpacing: "0.06em" };
+const tdS  = { padding: "8px 0", fontSize: "12px", borderTop: "1px solid #13131e" };
 
 export default function AnalystDashboard() {
-  const [range, setRange] = useState('30d');
-  const [summary, setSummary] = useState(null);
-  const [trend, setTrend] = useState(FALLBACK_TREND);
-  const [byRegion, setByRegion] = useState(FALLBACK_REGION);
-  const [byType, setByType] = useState(FALLBACK_TYPE);
-  const [loading, setLoading] = useState(true);
-
-  const loadAnalytics = useCallback(async (selectedRange) => {
-    setLoading(true);
-    try {
-      const [summaryData, regionData, typeData] = await Promise.all([
-        fetchAnalyticsSummary(selectedRange),
-        fetchAnalyticsByRegion(selectedRange),
-        fetchAnalyticsByType(selectedRange),
-      ]);
-
-      setSummary(summaryData);
-      if (Array.isArray(summaryData?.trend) && summaryData.trend.length > 0) {
-        setTrend(summaryData.trend);
-      }
-      if (Array.isArray(regionData) && regionData.length > 0) {
-        setByRegion(regionData);
-      }
-      if (Array.isArray(typeData) && typeData.length > 0) {
-        setByType(typeData);
-      }
-    } catch (error) {
-      console.warn('Falling back to cached analytics data:', error.message);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadAnalytics(range);
-  }, [range, loadAnalytics]);
-
-  const totalReports = summary?.totalReports ?? byType.reduce((sum, item) => sum + item.count, 0);
-  const totalFlagged = summary?.totalFlagged ?? Math.round(totalReports * 0.62);
-  const avgResponseHours = summary?.avgResponseHours ?? 6.4;
-
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-900">Scam Pattern Analytics</h2>
-          <p className="text-slate-500 text-sm mt-1">
-            Trends and hotspot analysis across all confirmed reports.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <select
-            value={range}
-            onChange={(event) => setRange(event.target.value)}
-            className="bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold text-slate-700"
-          >
-            <option value="7d">Last 7 days</option>
-            <option value="30d">Last 30 days</option>
-            <option value="90d">Last 90 days</option>
-          </select>
-          <button
-            onClick={() => loadAnalytics(range)}
-            className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
-          >
-            <RefreshCw size={15} />
-            Refresh
-          </button>
-        </div>
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-        <MetricCard label="Total Reports" value={totalReports.toLocaleString()} />
-        <MetricCard label="Flagged Numbers" value={totalFlagged.toLocaleString()} />
-        <MetricCard label="Avg. Response Time" value={`${avgResponseHours}h`} />
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
-        {/* Trend Line Chart */}
-        <div className="bg-white rounded-2xl border border-slate-100 p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <TrendingUp size={18} className="text-blue-700" />
-            <h3 className="font-bold text-slate-900 text-sm">Report Volume Trend</h3>
+      {/* KPI cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "16px" }}>
+        {[
+          { l: "TOTAL REPORTS (AUG)",  v: "12,841", sc: "#22c55e", sub: "+14.2% WoW  +31.6% MoM" },
+          { l: "AI MODEL ACCURACY",    v: "87.4%",  sc: "#22c55e", sub: "↑ Above 85% target · rolling 7-day" },
+          { l: "FLAGGED FOR REVIEW",   v: "214",    sc: "#f59e0b", sub: "AI-flagged · awaiting classification" },
+          { l: "SCAM TYPES TRACKED",   v: "7",      sc: "#a855f7", sub: "Active clusters · all channels" },
+        ].map(s => (
+          <div key={s.l} style={card}>
+            <div style={{ fontSize: "10px", marginBottom: "8px", color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.07em" }}>{s.l}</div>
+            <div style={{ fontSize: "30px", fontWeight: 800, color: "#fff", marginBottom: "4px", fontFamily: "'JetBrains Mono',monospace" }}>{s.v}</div>
+            <div style={{ fontSize: "11px", color: s.sc }}>{s.sub}</div>
           </div>
-          <ResponsiveContainer width="100%" height={260}>
-            <LineChart data={trend}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-              <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#94A3B8' }} />
-              <YAxis tick={{ fontSize: 12, fill: '#94A3B8' }} />
-              <Tooltip />
-              <Line
-                type="monotone"
-                dataKey="reports"
-                stroke="#1E3A8A"
-                strokeWidth={2.5}
-                dot={{ r: 3 }}
-              />
-            </LineChart>
+        ))}
+      </div>
+
+      {/* Charts Row */}
+      <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: "16px" }}>
+        <div style={card}>
+          <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff", marginBottom: "4px" }}>7-Day Report Trend</div>
+          <div style={{ fontSize: "11px", color: "#4b5563", marginBottom: "16px" }}>Daily incoming reports, your jurisdiction</div>
+          <ResponsiveContainer width="100%" height={180}>
+            <AreaChart data={trendData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+              <defs>
+                <linearGradient id="purpleGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#a855f7" stopOpacity={0.25} />
+                  <stop offset="95%" stopColor="#a855f7" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <XAxis dataKey="day" tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
+              <Tooltip contentStyle={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: "8px", color: "#e2e8f0", fontSize: 12 }} />
+              <Area type="monotone" dataKey="v" stroke="#a855f7" strokeWidth={2} fill="url(#purpleGrad)" />
+            </AreaChart>
           </ResponsiveContainer>
         </div>
-
-        {/* Region Bar Chart */}
-        <div className="bg-white rounded-2xl border border-slate-100 p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <MapPin size={18} className="text-blue-700" />
-            <h3 className="font-bold text-slate-900 text-sm">Reports by Region</h3>
-          </div>
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={byRegion}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-              <XAxis dataKey="region" tick={{ fontSize: 11, fill: '#94A3B8' }} />
-              <YAxis tick={{ fontSize: 12, fill: '#94A3B8' }} />
-              <Tooltip />
-              <Bar dataKey="reports" fill="#2563EB" radius={[6, 6, 0, 0]} />
+        <div style={card}>
+          <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff", marginBottom: "4px" }}>Regional Heatmap</div>
+          <div style={{ fontSize: "11px", color: "#4b5563", marginBottom: "16px" }}>Cumulative reports, Aug 2026</div>
+          <ResponsiveContainer width="100%" height={180}>
+            <BarChart data={heatmapData} layout="vertical" margin={{ top: 0, right: 16, left: 0, bottom: 0 }}>
+              <XAxis type="number" tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
+              <YAxis dataKey="region" type="category" tick={{ fill: "#6b7280", fontSize: 10 }} axisLine={false} tickLine={false} width={80} />
+              <Tooltip contentStyle={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: "8px", color: "#e2e8f0", fontSize: 12 }} />
+              <Bar dataKey="v" radius={[0, 4, 4, 0]}>
+                {heatmapData.map((_, i) => <Cell key={i} fill={`rgba(168,85,247,${0.9 - i * 0.15})`} />)}
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
 
-      {/* Scam Type Pie Chart */}
-      <div className="bg-white rounded-2xl border border-slate-100 p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <PieChartIcon size={18} className="text-blue-700" />
-          <h3 className="font-bold text-slate-900 text-sm">Reports by Scam Type</h3>
-        </div>
-        <ResponsiveContainer width="100%" height={300}>
-          <PieChart>
-            <Pie
-              data={byType}
-              dataKey="count"
-              nameKey="type"
-              cx="50%"
-              cy="50%"
-              outerRadius={100}
-              label={(entry) => entry.type}
-            >
-              {byType.map((entry, index) => (
-                <Cell key={entry.type} fill={COLORS[index % COLORS.length]} />
+      {/* Patterns + AI Accuracy */}
+      <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: "16px" }}>
+        <div style={card}>
+          <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff", marginBottom: "4px" }}>Top Scam Patterns</div>
+          <div style={{ fontSize: "11px", color: "#4b5563", marginBottom: "16px" }}>Ranked by report frequency, Aug 2026</div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead><tr>{["#","PATTERN","CATEGORY","REPORTS","WOW"].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+            <tbody>
+              {patterns.map(p => (
+                <tr key={p.n}>
+                  <td style={{ ...tdS, color: "#374151" }}>{p.n}</td>
+                  <td style={{ ...tdS, fontWeight: 500, color: "#fff" }}>{p.pattern}</td>
+                  <td style={{ ...tdS, color: "#a855f7" }}>{p.category}</td>
+                  <td style={{ ...tdS, fontWeight: 700, color: "#fff", fontFamily: "'JetBrains Mono',monospace" }}>{p.reports.toLocaleString()}</td>
+                  <td style={{ ...tdS, fontWeight: 600, color: p.wow.startsWith("+") ? "#ef4444" : "#22c55e", fontFamily: "'JetBrains Mono',monospace" }}>{p.wow}</td>
+                </tr>
               ))}
-            </Pie>
-            <Tooltip />
-            <Legend wrapperStyle={{ fontSize: 12 }} />
-          </PieChart>
-        </ResponsiveContainer>
+            </tbody>
+          </table>
+        </div>
+
+        <div style={card}>
+          <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff", marginBottom: "4px" }}>AI Detector Accuracy</div>
+          <div style={{ fontSize: "11px", color: "#4b5563", marginBottom: "16px" }}>Target: ≥85% · Rolling 7-day</div>
+          <div style={{ textAlign: "center", marginBottom: "20px" }}>
+            <div style={{ fontSize: "40px", fontWeight: 800, color: "#fff", fontFamily: "'JetBrains Mono',monospace" }}>87.4%</div>
+            <span style={{ display: "inline-block", marginTop: "8px", padding: "4px 12px", borderRadius: "999px", fontSize: "11px", fontWeight: 600, background: "#14412a", color: "#22c55e" }}>● ON TARGET</span>
+          </div>
+          {[{ l: "Precision", v: "88.2%", c: "#3b82f6" }, { l: "Recall", v: "86.5%", c: "#22c55e" }, { l: "F1 Score", v: "87.3%", c: "#f59e0b" }].map(m => (
+            <div key={m.l} style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", marginBottom: "8px" }}>
+              <span style={{ color: "#6b7280" }}>{m.l}</span>
+              <span style={{ fontWeight: 600, color: m.c, fontFamily: "'JetBrains Mono',monospace" }}>{m.v}</span>
+            </div>
+          ))}
+        </div>
       </div>
 
-      {loading && (
-        <p className="text-center text-xs text-slate-400 mt-4">Refreshing analytics...</p>
-      )}
-    </div>
-  );
-}
+      {/* Flagged items */}
+      <div style={card}>
+        <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff", marginBottom: "4px" }}>AI-Flagged — Awaiting Human Classification</div>
+        <div style={{ fontSize: "11px", color: "#4b5563", marginBottom: "16px" }}>Reports the model could not confidently classify</div>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr>{["FLAG ID","NUMBER","AI LABEL","CONFIDENCE","STATUS"].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+          <tbody>
+            {flagged.map(f => (
+              <tr key={f.id}>
+                <td style={{ ...tdS, color: "#a855f7", fontFamily: "'JetBrains Mono',monospace" }}>{f.id}</td>
+                <td style={{ ...tdS, color: "#fff",    fontFamily: "'JetBrains Mono',monospace" }}>{f.number}</td>
+                <td style={{ ...tdS, color: "#9ca3af" }}>{f.label}</td>
+                <td style={{ ...tdS, fontWeight: 600, color: f.confC, fontFamily: "'JetBrains Mono',monospace" }}>{f.conf}</td>
+                <td style={tdS}><span style={{ display: "flex", alignItems: "center", gap: "4px", color: f.status === "Pending" ? "#f59e0b" : "#22c55e" }}><span style={{ width: "6px", height: "6px", borderRadius: "50%", background: f.status === "Pending" ? "#f59e0b" : "#22c55e", display: "inline-block" }} />{f.status}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
-function MetricCard({ label, value }) {
-  return (
-    <div className="bg-white rounded-2xl border border-slate-100 p-5">
-      <p className="text-2xl font-bold text-slate-900">{value}</p>
-      <p className="text-xs text-slate-400 font-medium mt-1">{label}</p>
     </div>
   );
-}
+} 

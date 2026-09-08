@@ -1,112 +1,158 @@
-import React from 'react';
-import { NavLink } from 'react-router-dom';
-import {
-  ShieldCheck,
-  LayoutDashboard,
-  BarChart3,
-  ScrollText,
-  ClipboardCheck,
-  X,
-} from 'lucide-react';
+// apps/web/src/components/Sidebar.jsx
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth, ROLES } from '../context/AuthContext';
 
-const NAV_ITEMS = [
-  {
-    to: '/officer',
-    label: 'Case Review',
-    icon: ClipboardCheck,
-    roles: [ROLES.OFFICER],
-  },
-  {
-    to: '/analyst',
-    label: 'Analytics',
-    icon: BarChart3,
-    roles: [ROLES.ANALYST],
-  },
-  {
-    to: '/auditor',
-    label: 'Audit Log',
-    icon: ScrollText,
-    roles: [ROLES.AUDITOR],
-  },
-];
+const DashboardIcon = ({ color }) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="3" width="7" height="9" rx="1" />
+    <rect x="14" y="3" width="7" height="5" rx="1" />
+    <rect x="14" y="12" width="7" height="9" rx="1" />
+    <rect x="3" y="16" width="7" height="5" rx="1" />
+  </svg>
+);
 
-export default function Sidebar({ isOpen, onClose }) {
-  const { role, profile } = useAuth();
+const QueueIcon = ({ color }) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+    <rect x="8" y="2" width="8" height="4" rx="1" />
+    <path d="M9 12h6M9 16h4" />
+  </svg>
+);
 
-  const visibleItems = NAV_ITEMS.filter((item) => item.roles.includes(role));
+const RegistryIcon = ({ color }) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    <path d="M9 12l2 2 4-4" />
+  </svg>
+);
+
+const NotificationsIcon = ({ color }) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+  </svg>
+);
+
+const AccountIcon = ({ color }) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+  </svg>
+);
+
+const LogoutIcon = ({ color }) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+    <polyline points="16 17 21 12 16 7" />
+    <line x1="21" y1="12" x2="9" y2="12" />
+  </svg>
+);
+
+export default function Sidebar() {
+  const { user, role, logout } = useAuth();
+  const navigate = useNavigate();
+  const [activeTab, setActiveTab] = useState("dashboard");
+
+  const handleLogout = async () => {
+    await logout();
+    navigate('/login');
+  };
+
+  const roleColor = 
+    role === ROLES.OFFICER ? "#3b82f6" : 
+    role === ROLES.ANALYST ? "#a855f7" : 
+    role === ROLES.AUDITOR ? "#22c55e" : 
+    "#3b82f6";
+
+  const getNavItems = () => {
+    if (role === ROLES.OFFICER) {
+      return [
+        { id: "dashboard", label: "Dashboard", Icon: DashboardIcon, to: "/officer" },
+        { id: "queue", label: "Review Queue", Icon: QueueIcon, badge: 14, to: "/officer" },
+        { id: "registry", label: "Blacklist Registry", Icon: RegistryIcon, to: "/officer" },
+        { id: "notifications", label: "Notifications", Icon: NotificationsIcon, badge: 3, to: "/officer" },
+        { id: "account", label: "Account", Icon: AccountIcon, to: "/officer" },
+      ];
+    } else if (role === ROLES.ANALYST) {
+      return [
+        { id: "dashboard", label: "Trends Dashboard", Icon: DashboardIcon, to: "/analyst" },
+        { id: "patterns", label: "Pattern Explorer", Icon: QueueIcon, to: "/analyst" },
+        { id: "model", label: "AI Model Insights", Icon: RegistryIcon, to: "/analyst" },
+        { id: "reports", label: "Regional Reports", Icon: NotificationsIcon, to: "/analyst" },
+        { id: "alerts", label: "Alerts Configuration", Icon: AccountIcon, to: "/analyst" },
+      ];
+    } else if (role === ROLES.AUDITOR) {
+      return [
+        { id: "chain", label: "Chain Integrity", Icon: DashboardIcon, to: "/auditor" },
+        { id: "verify", label: "Verification Tool", Icon: QueueIcon, to: "/auditor" },
+        { id: "trail", label: "Audit Trail", Icon: RegistryIcon, to: "/auditor" },
+        { id: "anomalies", label: "Anomaly Reports", Icon: NotificationsIcon, to: "/auditor" },
+      ];
+    }
+    return [];
+  };
+
+  const NAV = getNavItems();
+
+  const handleTabClick = (item) => {
+    setActiveTab(item.id);
+    navigate(item.to);
+  };
 
   return (
-    <>
-      {/* Mobile overlay */}
-      {isOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 z-30 lg:hidden"
-          onClick={onClose}
-          aria-hidden="true"
-        />
-      )}
+    <aside style={{ width: "220px", flexShrink: 0, height: "100%", display: "flex", flexDirection: "column", background: "#080810", borderRight: "1px solid #13131e" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "16px", borderBottom: "1px solid #0f0f1a" }}>
+        <div style={{ width: "28px", height: "28px", borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: "12px", color: "#fff", background: "linear-gradient(135deg,#4f46e5,#7c3aed)", flexShrink: 0 }}>S</div>
+        <div>
+          <div style={{ fontWeight: 800, color: "#fff", fontSize: "12px" }}>SentinelPH</div>
+          <div style={{ fontSize: "9px", color: "#374151", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>CONTROL CENTER</div>
+        </div>
+      </div>
+      
+      <div style={{ padding: "10px 12px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 10px", borderRadius: "8px", background: `${roleColor}12`, border: `1px solid ${roleColor}25` }}>
+          <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: roleColor, flexShrink: 0 }} />
+          <span style={{ fontSize: "9px", fontWeight: 600, color: roleColor, fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>
+            {role === ROLES.OFFICER ? "NBI CCRU" : role === ROLES.ANALYST ? "NTC FRAUD DIV." : "SYSTEM AUDITOR"}
+          </span>
+        </div>
+      </div>
 
-      <aside
-        className={`fixed lg:static inset-y-0 left-0 z-40 w-64 bg-slate-900 text-slate-200
-          flex flex-col transform transition-transform duration-200 ease-in-out
-          ${isOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}
-      >
-        <div className="flex items-center justify-between px-5 h-16 border-b border-slate-800">
-          <div className="flex items-center gap-2">
-            <ShieldCheck size={22} className="text-blue-400" />
-            <span className="font-bold text-white text-lg tracking-tight">SentinelPH</span>
-          </div>
+      <nav style={{ flex: 1, padding: "4px 12px", overflowY: "auto" }}>
+        {NAV.map(item => (
           <button
-            className="lg:hidden text-slate-400 hover:text-white"
-            onClick={onClose}
-            aria-label="Close sidebar"
+            key={item.id}
+            onClick={() => handleTabClick(item)}
+            style={{
+              width: "100%", display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px", borderRadius: "8px", marginBottom: "2px", 
+              background: activeTab === item.id ? `${roleColor}18` : "transparent", 
+              border: activeTab === item.id ? `1px solid ${roleColor}30` : "1px solid transparent", 
+              cursor: "pointer",
+              transition: "all 0.2s ease",
+            }}
           >
-            <X size={20} />
+            <item.Icon color={activeTab === item.id ? roleColor : "#4b5563"} />
+            <span style={{ flex: 1, fontSize: "12px", fontWeight: activeTab === item.id ? 600 : 500, color: activeTab === item.id ? "#fff" : "#6b7280", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
+            {item.badge && <span style={{ fontSize: "9px", fontWeight: 700, padding: "2px 5px", borderRadius: "999px", background: "#ef4444", color: "#fff", minWidth: "18px", textAlign: "center" }}>{item.badge}</span>}
           </button>
-        </div>
+        ))}
+      </nav>
 
-        <nav className="flex-1 px-3 py-5 space-y-1 overflow-y-auto">
-          <p className="px-3 text-[11px] uppercase tracking-wider text-slate-500 font-semibold mb-2">
-            Workspace
-          </p>
-          {visibleItems.length === 0 ? (
-            <p className="px-3 text-sm text-slate-500">No dashboards available for your role.</p>
-          ) : (
-            visibleItems.map(({ to, label, icon: Icon }) => (
-              <NavLink
-                key={to}
-                to={to}
-                onClick={onClose}
-                className={({ isActive }) =>
-                  `flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors ${
-                    isActive
-                      ? 'bg-blue-600 text-white'
-                      : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-                  }`
-                }
-              >
-                <Icon size={18} />
-                {label}
-              </NavLink>
-            ))
-          )}
-        </nav>
-
-        <div className="px-4 py-4 border-t border-slate-800">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-full bg-slate-700 flex items-center justify-center">
-              <LayoutDashboard size={16} className="text-slate-300" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-sm font-semibold text-white truncate">
-                {profile?.displayName || profile?.email || 'User'}
-              </p>
-              <p className="text-xs text-slate-500 capitalize">{role || 'unassigned'}</p>
-            </div>
+      <div style={{ padding: "12px", borderTop: "1px solid #0f0f1a" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
+          <div style={{ width: "28px", height: "28px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "11px", fontWeight: 700, flexShrink: 0, background: `${roleColor}25`, color: roleColor, border: `1px solid ${roleColor}40` }}>{user?.initials ?? "RC"}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: "11px", fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.name ?? "Insp. R. Cruz"}</div>
+            <div style={{ fontSize: "9px", color: "#374151", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.email ?? "r.cruz@nbi.gov.ph"}</div>
           </div>
         </div>
-      </aside>
-    </>
+        <button onClick={handleLogout} style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "11px", color: "#374151", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+          onMouseEnter={e => { e.currentTarget.style.color = "#ef4444"; e.currentTarget.querySelector('svg').style.stroke = "#ef4444"; }}
+          onMouseLeave={e => { e.currentTarget.style.color = "#374151"; e.currentTarget.querySelector('svg').style.stroke = "#374151"; }}>
+          <LogoutIcon color="#374151" /> Sign out →
+        </button>
+      </div>
+    </aside>
   );
 }

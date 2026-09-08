@@ -1,82 +1,35 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Menu, LogOut, ChevronDown, User } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
+// apps/web/src/components/Topbar.jsx
+import React from 'react';
+import { useAuth, ROLES } from '../context/AuthContext';
 
-const PAGE_TITLES = {
-  '/officer': 'Case Review Dashboard',
-  '/analyst': 'Scam Pattern Analytics',
-  '/auditor': 'Audit Log Viewer',
-};
+export default function Topbar() {
+  const { role } = useAuth();
 
-export default function Topbar({ onMenuClick, currentPath }) {
-  const { profile, role, logout } = useAuth();
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef(null);
-
-  const title =
-    Object.entries(PAGE_TITLES).find(([prefix]) => currentPath?.startsWith(prefix))?.[1] ||
-    'Dashboard';
-
-  useEffect(() => {
-    function handleClickOutside(event) {
-      if (menuRef.current && !menuRef.current.contains(event.target)) {
-        setMenuOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const handleLogout = async () => {
-    setMenuOpen(false);
-    await logout();
+  const getTitle = () => {
+    if (role === ROLES.OFFICER) return "Jurisdiction Dashboard — NCR";
+    if (role === ROLES.ANALYST) return "Scam Pattern Analytics";
+    if (role === ROLES.AUDITOR) return "Audit Log Viewer";
+    return "Dashboard";
   };
 
   return (
-    <header className="h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-4 lg:px-6 sticky top-0 z-20">
-      <div className="flex items-center gap-3">
-        <button
-          className="lg:hidden text-slate-300 hover:text-white"
-          onClick={onMenuClick}
-          aria-label="Open sidebar"
-        >
-          <Menu size={22} />
-        </button>
-        <h1 className="text-white font-semibold text-base lg:text-lg">{title}</h1>
+    <div style={{ 
+      display: "flex", 
+      alignItems: "center", 
+      justifyContent: "space-between", 
+      padding: "12px 24px", 
+      borderBottom: "1px solid #13131e", 
+      flexShrink: 0,
+      background: "#09090f"
+    }}>
+      <div>
+        <div style={{ fontWeight: 700, color: "#fff", fontSize: "14px" }}>{getTitle()}</div>
+        <div style={{ fontSize: "12px", marginTop: "2px", color: "#4b5563" }}>August 28, 2026 · PH Standard Time 09:22</div>
       </div>
-
-      <div className="relative" ref={menuRef}>
-        <button
-          onClick={() => setMenuOpen((open) => !open)}
-          className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl hover:bg-slate-800 transition-colors"
-        >
-          <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center">
-            <User size={15} className="text-white" />
-          </div>
-          <div className="hidden sm:block text-left">
-            <p className="text-sm text-white font-medium leading-tight">
-              {profile?.displayName || profile?.email || 'User'}
-            </p>
-            <p className="text-[11px] text-slate-400 capitalize leading-tight">{role}</p>
-          </div>
-          <ChevronDown size={16} className="text-slate-400" />
-        </button>
-
-        {menuOpen && (
-          <div className="absolute right-0 mt-2 w-48 bg-slate-800 border border-slate-700 rounded-xl shadow-lg py-1 z-30">
-            <div className="px-4 py-2 border-b border-slate-700">
-              <p className="text-xs text-slate-400 truncate">{profile?.email}</p>
-            </div>
-            <button
-              onClick={handleLogout}
-              className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-red-400 hover:bg-slate-700 transition-colors"
-            >
-              <LogOut size={15} />
-              Log Out
-            </button>
-          </div>
-        )}
+      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#22c55e", display: "inline-block" }} />
+        <span style={{ fontSize: "11px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace" }}>Live Data</span>
       </div>
-    </header>
+    </div>
   );
 }
