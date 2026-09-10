@@ -55,15 +55,11 @@ export default function Sidebar() {
   const navigate = useNavigate();
 
   const handleLogout = async () => {
-    // Fade out body
     document.body.style.transition = "opacity 0.3s ease";
     document.body.style.opacity = "0";
-
     setTimeout(() => {
-      logout(); // Clears user
-      navigate('/login'); // Change page
-
-      // Reset body after navigation
+      logout();
+      navigate('/login');
       setTimeout(() => {
         document.body.style.transition = "none";
         document.body.style.opacity = "1";
@@ -93,6 +89,7 @@ export default function Sidebar() {
         { id: "model", label: "AI Model Insights", Icon: RegistryIcon, to: "/analyst/model" },
         { id: "reports", label: "Regional Reports", Icon: NotificationsIcon, to: "/analyst/reports" },
         { id: "alerts", label: "Alerts Configuration", Icon: AccountIcon, to: "/analyst/alerts" },
+        { id: "account", label: "Account", Icon: AccountIcon, to: "/analyst/account" },
       ];
     } else if (role === ROLES.AUDITOR) {
       return [
@@ -100,6 +97,7 @@ export default function Sidebar() {
         { id: "verify", label: "Verification Tool", Icon: QueueIcon, to: "/auditor/verify" },
         { id: "trail", label: "Audit Trail", Icon: RegistryIcon, to: "/auditor/trail" },
         { id: "anomalies", label: "Anomaly Reports", Icon: NotificationsIcon, to: "/auditor/anomalies" },
+        { id: "account", label: "Account", Icon: AccountIcon, to: "/auditor/account" },
       ];
     }
     return [];

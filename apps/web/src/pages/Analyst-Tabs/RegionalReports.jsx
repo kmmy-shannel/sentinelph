@@ -1,4 +1,4 @@
-// src/pages/Analyst-Tabs/RegionalReports.jsx
+// apps/web/src/pages/Analyst-Tabs/RegionalReports.jsx
 import { useState } from "react";
 
 const PREVIEW = [
@@ -16,15 +16,47 @@ const SCHEDULED = [
 ];
 
 export default function RegionalReports() {
-  const [region, setRegion]   = useState("all");
-  const [dateFrom, setFrom]   = useState("2026-08-01");
-  const [dateTo, setTo]       = useState("2026-08-28");
-  const [scamType, setScamType] = useState("all");
+  const [region, setRegion]       = useState("all");
+  const [dateFrom, setFrom]       = useState("2026-08-01");
+  const [dateTo, setTo]           = useState("2026-08-28");
+  const [scamType, setScamType]   = useState("all");
+  const [showPreview, setShowPreview] = useState(false);
+  const [showSuccess, setShowSuccess] = useState(false);
 
   const inputS = { padding: "8px 12px", borderRadius: "8px", fontSize: "12px", background: "#080810", border: "1px solid #1a1a2a", color: "#e2e8f0", outline: "none" };
   const card   = { borderRadius: "12px", padding: "20px", background: "#0e0e18", border: "1px solid #1a1a2a" };
   const thS    = { textAlign: "left", paddingBottom: "8px", fontWeight: 500, color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", fontSize: "9px", letterSpacing: "0.06em" };
   const tdS    = { padding: "10px 0", fontSize: "12px", borderTop: "1px solid #13131e" };
+
+  function triggerSuccess() {
+    setShowSuccess(true);
+    setTimeout(() => setShowSuccess(false), 3000);
+  }
+
+  function handleGenerateReport() {
+    setShowPreview(true);
+    triggerSuccess();
+  }
+
+  function handleExportCSV() {
+    const headers = ["Region", "Total Reports", "Top Scam Type", "Highest Reported Number", "WoW Change"];
+    const rows = PREVIEW.map(r => [r.region, r.reports, r.scamType, r.topNumber, r.change]);
+    const csvContent = [headers, ...rows].map(r => r.map(c => `"${c}"`).join(",")).join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `sentinelph-regional-report-${new Date().toISOString().slice(0,10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    triggerSuccess();
+  }
+
+  function handleExportPDF() {
+    // Simple print-to-PDF approach
+    window.print();
+    triggerSuccess();
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
@@ -63,11 +95,35 @@ export default function RegionalReports() {
           </div>
         </div>
         <div style={{ display: "flex", gap: "8px" }}>
-          <button style={{ padding: "10px 20px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: "#a855f7", color: "#fff", border: "none", cursor: "pointer" }}>Generate Report</button>
-          <button style={{ padding: "10px 16px", borderRadius: "10px", fontSize: "12px", fontWeight: 500, background: "#111120", border: "1px solid #1a1a2a", color: "#9ca3af", cursor: "pointer" }}>Export CSV</button>
-          <button style={{ padding: "10px 16px", borderRadius: "10px", fontSize: "12px", fontWeight: 500, background: "#111120", border: "1px solid #1a1a2a", color: "#9ca3af", cursor: "pointer" }}>Export PDF</button>
+          <button onClick={handleGenerateReport} style={{ padding: "10px 20px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: "#a855f7", color: "#fff", border: "none", cursor: "pointer" }}>Generate Report</button>
+          <button onClick={handleExportCSV} style={{ padding: "10px 16px", borderRadius: "10px", fontSize: "12px", fontWeight: 500, background: "#111120", border: "1px solid #1a1a2a", color: "#9ca3af", cursor: "pointer" }}>Export CSV</button>
+          <button onClick={handleExportPDF} style={{ padding: "10px 16px", borderRadius: "10px", fontSize: "12px", fontWeight: 500, background: "#111120", border: "1px solid #1a1a2a", color: "#9ca3af", cursor: "pointer" }}>Export PDF</button>
         </div>
       </div>
+
+      {showSuccess && (
+        <div style={{ padding: "12px 16px", borderRadius: "10px", fontSize: "13px", fontWeight: 500, background: "#0a1a12", border: "1px solid #22c55e40", color: "#22c55e", display: "flex", alignItems: "center", gap: "10px", animation: "fadeIn 0.3s ease" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+          Action completed successfully.
+        </div>
+      )}
+
+      {/* Generated Preview Panel */}
+      {showPreview && (
+        <div style={{ ...card, borderLeft: "4px solid #a855f7" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+            <div>
+              <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff" }}>Generated Report Preview</div>
+              <div style={{ fontSize: "11px", color: "#4b5563", marginTop: "2px" }}>Based on filters: {region === "all" ? "All Regions" : region} · {dateFrom} to {dateTo}</div>
+            </div>
+            <button onClick={() => setShowPreview(false)} style={{ fontSize: "11px", color: "#6b7280", background: "none", border: "none", cursor: "pointer" }}>Hide</button>
+          </div>
+          <div style={{ padding: "16px", borderRadius: "10px", background: "#080810", border: "1px solid #13131e", fontSize: "12px", color: "#9ca3af", lineHeight: 1.7 }}>
+            <strong style={{ color: "#fff" }}>Summary:</strong> {PREVIEW.length} regions analyzed with a combined {(PREVIEW.reduce((sum, r) => sum + r.reports, 0)).toLocaleString()} reports.
+            Highest activity in <span style={{ color: "#a855f7", fontWeight: 600 }}>{PREVIEW[0].region}</span> with {PREVIEW[0].reports.toLocaleString()} reports ({PREVIEW[0].change} WoW).
+          </div>
+        </div>
+      )}
 
       {/* Data preview */}
       <div style={card}>
@@ -105,6 +161,13 @@ export default function RegionalReports() {
           </div>
         ))}
       </div>
+
+      <style>{`
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(-6px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
     </div>
   );
 }

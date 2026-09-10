@@ -1,27 +1,29 @@
-// apps/web/src/pages/Officer-Tabs/Account.jsx
+// apps/web/src/pages/Auditor-Tabs/Account.jsx
 import { useState } from "react";
-import { ShieldCheck, KeyRound, UserCircle } from 'lucide-react';
 
-export default function Account({ user }) {
+export default function AuditorAccount({ user }) {
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw]         = useState("");
   const [confirmPw, setConfirmPw] = useState("");
+  const [integrityAlert, setIntegrityAlert] = useState(true);
+  const [consensusAlert, setConsensusAlert] = useState(true);
+  const [weeklyDigest,   setWeeklyDigest]   = useState(false);
   const [showOtp, setShowOtp] = useState(false);
   const [otp, setOtp] = useState("");
   const [otpError, setOtpError] = useState(null);
   const [showSuccess, setShowSuccess] = useState(false);
 
   const fields = [
-    { l: "BADGE / ID",             v: user?.badge ?? "NBI-CCRU-0041" },
-    { l: "ORGANIZATION",           v: "NBI Cybercrime Research Unit" },
-    { l: "ASSIGNED JURISDICTION",  v: "NCR" },
-    { l: "ROLE",                   v: "Cybercrime Officer" },
-    { l: "ACCOUNT STATUS",         v: "Active — MFA Verified" },
-    { l: "LAST LOGIN",             v: "Aug 28 09:05 PST" },
+    { l: "BADGE / ID",        v: user?.badge ?? "DICT-AUD-0903" },
+    { l: "ORGANIZATION",      v: "DICT Independent Auditor" },
+    { l: "ACCESS SCOPE",      v: "Read-only · All regions" },
+    { l: "ROLE",              v: "System Auditor" },
+    { l: "ACCOUNT STATUS",    v: "Active — MFA Verified" },
+    { l: "LAST LOGIN",        v: "Aug 28 08:55 PST" },
   ];
 
-  const card = { borderRadius: "12px", padding: "24px", marginBottom: "20px", background: "#0e0e18", border: "1px solid #1a1a2a" };
-  const label = { fontSize: "9px", fontWeight: 500, marginBottom: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" };
+  const card   = { borderRadius: "12px", padding: "24px", marginBottom: "20px", background: "#0e0e18", border: "1px solid #1a1a2a" };
+  const label  = { fontSize: "9px", fontWeight: 500, marginBottom: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" };
   const inputS = { width: "100%", padding: "10px 14px", borderRadius: "10px", fontSize: "13px", background: "#080810", border: "1px solid #1a1a2a", color: "#e2e8f0", outline: "none", boxSizing: "border-box" };
 
   const sanitizePw = (value) => value.replace(/\s/g, "").slice(0, 20);
@@ -73,16 +75,14 @@ export default function Account({ user }) {
 
       {/* Profile */}
       <div style={card}>
-        <div style={{ ...label, marginBottom: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
-          <UserCircle size={14} color="#4b5563" /> PROFILE
-        </div>
+        <div style={{ ...label, marginBottom: "20px" }}>PROFILE</div>
         <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "24px" }}>
-          <div style={{ width: "48px", height: "48px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "14px", fontWeight: 700, flexShrink: 0, background: "#1e3a5f", color: "#60a5fa", border: "1.5px solid #3b82f640" }}>
-            {user?.initials ?? "RC"}
+          <div style={{ width: "48px", height: "48px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "14px", fontWeight: 700, flexShrink: 0, background: "#0d2b1a", color: "#4ade80", border: "1.5px solid #22c55e40" }}>
+            {user?.initials ?? "JS"}
           </div>
           <div>
-            <div style={{ fontWeight: 700, color: "#fff" }}>{user?.name ?? "Insp. R. Cruz"}</div>
-            <div style={{ fontSize: "12px", marginTop: "2px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace" }}>{user?.email ?? "r.cruz@nbi-ccru.gov.ph"}</div>
+            <div style={{ fontWeight: 700, color: "#fff" }}>{user?.name ?? "Dr. J. Santos"}</div>
+            <div style={{ fontSize: "12px", marginTop: "2px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace" }}>{user?.email ?? "j.santos@dict.gov.ph"}</div>
           </div>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px 32px" }}>
@@ -94,19 +94,17 @@ export default function Account({ user }) {
           ))}
         </div>
         <div style={{ marginTop: "16px", padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#080810", border: "1px solid #13131e", color: "#374151" }}>
-          Jurisdiction is assigned by system administrators. Contact your NBI supervisor to request a change.
+          Auditor accounts are strictly read-only. Write access is not permitted under any circumstances. Contact DICT to modify account scope.
         </div>
       </div>
 
       {/* MFA */}
       <div style={card}>
-        <div style={{ ...label, marginBottom: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
-          <ShieldCheck size={14} color="#4b5563" /> MULTI-FACTOR AUTHENTICATION
-        </div>
+        <div style={{ ...label, marginBottom: "20px" }}>MULTI-FACTOR AUTHENTICATION</div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
           <div>
             <div style={{ fontWeight: 600, color: "#fff", fontSize: "14px" }}>Email OTP</div>
-            <div style={{ fontSize: "12px", marginTop: "4px", color: "#4b5563" }}>A 6-digit code is sent to your registered email on each login.</div>
+            <div style={{ fontSize: "12px", marginTop: "4px", color: "#4b5563" }}>A 6-digit code is sent to your registered email on each login. Cannot be disabled for Auditor accounts.</div>
           </div>
           <div style={{ width: "40px", height: "24px", borderRadius: "999px", background: "#22c55e", display: "flex", alignItems: "center", padding: "0 2px", flexShrink: 0 }}>
             <div style={{ width: "20px", height: "20px", borderRadius: "50%", background: "#fff", marginLeft: "auto" }} />
@@ -117,44 +115,68 @@ export default function Account({ user }) {
         </div>
       </div>
 
+      {/* Active sessions */}
+      <div style={card}>
+        <div style={{ ...label, marginBottom: "20px" }}>ACTIVE SESSIONS</div>
+        {[
+          { device: "Chrome · macOS Ventura",   ip: "112.200.18.44",  location: "Quezon City, PH", current: true,  time: "Active now" },
+          { device: "Firefox · Windows 11",     ip: "112.200.18.44",  location: "Quezon City, PH", current: false, time: "Aug 27 18:30" },
+        ].map((s, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0", borderBottom: "1px solid #13131e" }}>
+            <div style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
+              <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: s.current ? "#22c55e" : "#374151", display: "inline-block", marginTop: "5px", flexShrink: 0 }} />
+              <div>
+                <div style={{ fontSize: "13px", fontWeight: 500, color: "#fff" }}>{s.device}</div>
+                <div style={{ fontSize: "11px", marginTop: "2px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace" }}>{s.ip} · {s.location}</div>
+              </div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: "11px", color: s.current ? "#22c55e" : "#4b5563", fontFamily: "'JetBrains Mono',monospace" }}>{s.time}</div>
+              {!s.current && <button style={{ fontSize: "11px", marginTop: "4px", color: "#ef4444", background: "none", border: "none", cursor: "pointer" }}>Revoke</button>}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Alert preferences */}
+      <div style={card}>
+        <div style={{ ...label, marginBottom: "20px" }}>ALERT PREFERENCES</div>
+        {[
+          { l: "Integrity Check Failures", sub: "Notify immediately if nightly hash-chain verification fails", on: integrityAlert, set: setIntegrityAlert },
+          { l: "Consensus Violations",     sub: "Notify if any blacklist entry is found with fewer than 2 votes", on: consensusAlert, set: setConsensusAlert },
+          { l: "Weekly Audit Digest",      sub: "Weekly summary of all audit events and system health", on: weeklyDigest,   set: setWeeklyDigest },
+        ].map((item) => (
+          <div key={item.l} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 0", borderBottom: "1px solid #13131e" }}>
+            <div>
+              <div style={{ fontSize: "13px", fontWeight: 500, color: "#fff" }}>{item.l}</div>
+              <div style={{ fontSize: "11px", marginTop: "2px", color: "#4b5563" }}>{item.sub}</div>
+            </div>
+            <div onClick={() => item.set(!item.on)}
+              style={{ width: "40px", height: "24px", borderRadius: "999px", background: item.on ? "#22c55e" : "#1a1a2a", display: "flex", alignItems: "center", padding: "0 2px", cursor: "pointer", transition: "background 0.2s", flexShrink: 0 }}>
+              <div style={{ width: "20px", height: "20px", borderRadius: "50%", background: "#fff", marginLeft: item.on ? "auto" : 0, transition: "margin 0.2s" }} />
+            </div>
+          </div>
+        ))}
+      </div>
+
       {/* Change password */}
       <div style={card}>
-        <div style={{ ...label, marginBottom: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
-          <KeyRound size={14} color="#4b5563" /> CHANGE PASSWORD
-        </div>
+        <div style={{ ...label, marginBottom: "20px" }}>CHANGE PASSWORD</div>
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           <div>
             <div style={label}>CURRENT PASSWORD</div>
-            <input 
-              type="password" 
-              value={currentPw} 
-              onChange={(e) => setCurrentPw(sanitizePw(e.target.value))}
-              autoComplete="new-password"
-              style={inputS} 
-            />
+            <input type="password" value={currentPw} onChange={(e) => setCurrentPw(sanitizePw(e.target.value))} autoComplete="new-password" style={inputS} />
           </div>
           <div>
             <div style={label}>NEW PASSWORD</div>
-            <input 
-              type="password" 
-              value={newPw} 
-              onChange={(e) => setNewPw(sanitizePw(e.target.value))}
-              autoComplete="new-password"
-              style={inputS} 
-            />
+            <input type="password" value={newPw} onChange={(e) => setNewPw(sanitizePw(e.target.value))} autoComplete="new-password" style={inputS} />
             <div style={{ fontSize: "10px", color: "#4b5563", marginTop: "4px", fontFamily: "'JetBrains Mono',monospace" }}>
               8–20 characters · Letters + Numbers + Special (!@#$%^&*) · No spaces
             </div>
           </div>
           <div>
             <div style={label}>CONFIRM NEW PASSWORD</div>
-            <input 
-              type="password" 
-              value={confirmPw} 
-              onChange={(e) => setConfirmPw(sanitizePw(e.target.value))}
-              autoComplete="new-password"
-              style={inputS} 
-            />
+            <input type="password" value={confirmPw} onChange={(e) => setConfirmPw(sanitizePw(e.target.value))} autoComplete="new-password" style={inputS} />
           </div>
 
           {otpError && !showOtp && (
@@ -177,7 +199,7 @@ export default function Account({ user }) {
           )}
 
           <button onClick={handleUpdatePassword}
-            style={{ alignSelf: "flex-start", padding: "10px 20px", borderRadius: "10px", fontSize: "12px", fontWeight: 600, background: "#3b82f6", color: "#fff", border: "none", cursor: "pointer", marginTop: "4px" }}>
+            style={{ alignSelf: "flex-start", padding: "10px 20px", borderRadius: "10px", fontSize: "12px", fontWeight: 600, background: "#22c55e", color: "#fff", border: "none", cursor: "pointer", marginTop: "4px" }}>
             Update Password
           </button>
         </div>
@@ -189,12 +211,12 @@ export default function Account({ user }) {
           onClick={() => setShowOtp(false)}>
           <div style={{ width: "100%", maxWidth: "440px", margin: "0 16px", borderRadius: "20px", padding: "32px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a", boxShadow: "0 40px 80px rgba(0,0,0,0.5)" }}
             onClick={(e) => e.stopPropagation()}>
-            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: "linear-gradient(90deg,transparent,#3b82f6,transparent)" }} />
+            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: "linear-gradient(90deg,transparent,#22c55e,transparent)" }} />
 
             <div style={{ marginBottom: "20px" }}>
               <div style={{ fontWeight: 700, color: "#fff", fontSize: "18px" }}>OTP Verification</div>
               <div style={{ fontSize: "12px", marginTop: "6px", color: "#4b5563", lineHeight: 1.6 }}>
-                A 6-digit code has been sent to <span style={{ color: "#3b82f6", fontWeight: 600 }}>{user?.email ?? "r.cruz@nbi-ccru.gov.ph"}</span>. Enter it below to confirm the password change.
+                A 6-digit code has been sent to <span style={{ color: "#22c55e", fontWeight: 600 }}>{user?.email ?? "j.santos@dict.gov.ph"}</span>. Enter it below to confirm the password change.
               </div>
             </div>
 
@@ -230,13 +252,13 @@ export default function Account({ user }) {
                 Cancel
               </button>
               <button onClick={handleOtpSubmit}
-                style={{ flex: 1, padding: "12px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: "#3b82f6", border: "none", color: "#fff", cursor: "pointer" }}>
+                style={{ flex: 1, padding: "12px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: "#22c55e", border: "none", color: "#fff", cursor: "pointer" }}>
                 Verify & Update
               </button>
             </div>
 
             <div style={{ textAlign: "center", fontSize: "11px", marginTop: "16px", color: "#4b5563" }}>
-              Didn't receive the code? <span style={{ color: "#3b82f6", cursor: "pointer", fontWeight: 600 }}>Resend OTP</span>
+              Didn't receive the code? <span style={{ color: "#22c55e", cursor: "pointer", fontWeight: 600 }}>Resend OTP</span>
             </div>
           </div>
         </div>

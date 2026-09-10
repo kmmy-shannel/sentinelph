@@ -21,14 +21,15 @@ export default function Topbar() {
     if (path === "/analyst/model") return "AI Model Insights";
     if (path === "/analyst/reports") return "Regional Reports";
     if (path === "/analyst/alerts") return "Alerts Configuration";
+    if (path === "/analyst/account") return "Account";
 
     // Auditor paths
     if (path === "/auditor/dashboard") return "Chain Integrity Dashboard";
     if (path === "/auditor/verify") return "Verification Tool";
     if (path === "/auditor/trail") return "Audit Trail";
     if (path === "/auditor/anomalies") return "Anomaly Reports";
+    if (path === "/auditor/account") return "Account";
 
-    // Default
     return "Dashboard";
   };
 

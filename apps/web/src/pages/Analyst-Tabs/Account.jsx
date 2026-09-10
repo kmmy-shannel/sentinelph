@@ -1,27 +1,29 @@
-// apps/web/src/pages/Officer-Tabs/Account.jsx
+// apps/web/src/pages/Analyst-Tabs/Account.jsx
 import { useState } from "react";
-import { ShieldCheck, KeyRound, UserCircle } from 'lucide-react';
 
-export default function Account({ user }) {
+export default function AnalystAccount({ user }) {
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw]         = useState("");
   const [confirmPw, setConfirmPw] = useState("");
+  const [emailNotifs, setEmailNotifs] = useState(true);
+  const [spikeAlerts, setSpikeAlerts] = useState(true);
+  const [modelDrift,  setModelDrift]  = useState(false);
   const [showOtp, setShowOtp] = useState(false);
   const [otp, setOtp] = useState("");
   const [otpError, setOtpError] = useState(null);
   const [showSuccess, setShowSuccess] = useState(false);
 
   const fields = [
-    { l: "BADGE / ID",             v: user?.badge ?? "NBI-CCRU-0041" },
-    { l: "ORGANIZATION",           v: "NBI Cybercrime Research Unit" },
-    { l: "ASSIGNED JURISDICTION",  v: "NCR" },
-    { l: "ROLE",                   v: "Cybercrime Officer" },
-    { l: "ACCOUNT STATUS",         v: "Active — MFA Verified" },
-    { l: "LAST LOGIN",             v: "Aug 28 09:05 PST" },
+    { l: "BADGE / ID",        v: user?.badge ?? "NTC-FRO-0018" },
+    { l: "ORGANIZATION",      v: "NTC Fraud Research Division" },
+    { l: "REGION SCOPE",      v: "National" },
+    { l: "ROLE",              v: "Fraud Analyst" },
+    { l: "ACCOUNT STATUS",    v: "Active — MFA Verified" },
+    { l: "LAST LOGIN",        v: "Aug 28 08:40 PST" },
   ];
 
-  const card = { borderRadius: "12px", padding: "24px", marginBottom: "20px", background: "#0e0e18", border: "1px solid #1a1a2a" };
-  const label = { fontSize: "9px", fontWeight: 500, marginBottom: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" };
+  const card   = { borderRadius: "12px", padding: "24px", marginBottom: "20px", background: "#0e0e18", border: "1px solid #1a1a2a" };
+  const label  = { fontSize: "9px", fontWeight: 500, marginBottom: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" };
   const inputS = { width: "100%", padding: "10px 14px", borderRadius: "10px", fontSize: "13px", background: "#080810", border: "1px solid #1a1a2a", color: "#e2e8f0", outline: "none", boxSizing: "border-box" };
 
   const sanitizePw = (value) => value.replace(/\s/g, "").slice(0, 20);
@@ -73,16 +75,14 @@ export default function Account({ user }) {
 
       {/* Profile */}
       <div style={card}>
-        <div style={{ ...label, marginBottom: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
-          <UserCircle size={14} color="#4b5563" /> PROFILE
-        </div>
+        <div style={{ ...label, marginBottom: "20px" }}>PROFILE</div>
         <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "24px" }}>
-          <div style={{ width: "48px", height: "48px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "14px", fontWeight: 700, flexShrink: 0, background: "#1e3a5f", color: "#60a5fa", border: "1.5px solid #3b82f640" }}>
-            {user?.initials ?? "RC"}
+          <div style={{ width: "48px", height: "48px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "14px", fontWeight: 700, flexShrink: 0, background: "#2d1a4a", color: "#c084fc", border: "1.5px solid #a855f740" }}>
+            {user?.initials ?? "AM"}
           </div>
           <div>
-            <div style={{ fontWeight: 700, color: "#fff" }}>{user?.name ?? "Insp. R. Cruz"}</div>
-            <div style={{ fontSize: "12px", marginTop: "2px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace" }}>{user?.email ?? "r.cruz@nbi-ccru.gov.ph"}</div>
+            <div style={{ fontWeight: 700, color: "#fff" }}>{user?.name ?? "Ana Mercado"}</div>
+            <div style={{ fontSize: "12px", marginTop: "2px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace" }}>{user?.email ?? "a.mercado@ntc.gov.ph"}</div>
           </div>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px 32px" }}>
@@ -94,15 +94,13 @@ export default function Account({ user }) {
           ))}
         </div>
         <div style={{ marginTop: "16px", padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#080810", border: "1px solid #13131e", color: "#374151" }}>
-          Jurisdiction is assigned by system administrators. Contact your NBI supervisor to request a change.
+          Role scope and region access are managed by the NTC system administrator.
         </div>
       </div>
 
       {/* MFA */}
       <div style={card}>
-        <div style={{ ...label, marginBottom: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
-          <ShieldCheck size={14} color="#4b5563" /> MULTI-FACTOR AUTHENTICATION
-        </div>
+        <div style={{ ...label, marginBottom: "20px" }}>MULTI-FACTOR AUTHENTICATION</div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
           <div>
             <div style={{ fontWeight: 600, color: "#fff", fontSize: "14px" }}>Email OTP</div>
@@ -117,44 +115,45 @@ export default function Account({ user }) {
         </div>
       </div>
 
+      {/* Notification preferences */}
+      <div style={card}>
+        <div style={{ ...label, marginBottom: "20px" }}>NOTIFICATION PREFERENCES</div>
+        {[
+          { l: "Email Digest",         sub: "Daily summary of flagged reports and model accuracy", on: emailNotifs, set: setEmailNotifs },
+          { l: "Volume Spike Alerts",  sub: "Notify when any region exceeds the configured threshold", on: spikeAlerts, set: setSpikeAlerts },
+          { l: "AI Model Drift Alert", sub: "Notify when rolling accuracy drops below 85%", on: modelDrift,  set: setModelDrift },
+        ].map((item) => (
+          <div key={item.l} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 0", borderBottom: "1px solid #13131e" }}>
+            <div>
+              <div style={{ fontSize: "13px", fontWeight: 500, color: "#fff" }}>{item.l}</div>
+              <div style={{ fontSize: "11px", marginTop: "2px", color: "#4b5563" }}>{item.sub}</div>
+            </div>
+            <div onClick={() => item.set(!item.on)}
+              style={{ width: "40px", height: "24px", borderRadius: "999px", background: item.on ? "#a855f7" : "#1a1a2a", display: "flex", alignItems: "center", padding: "0 2px", cursor: "pointer", transition: "background 0.2s", flexShrink: 0 }}>
+              <div style={{ width: "20px", height: "20px", borderRadius: "50%", background: "#fff", marginLeft: item.on ? "auto" : 0, transition: "margin 0.2s" }} />
+            </div>
+          </div>
+        ))}
+      </div>
+
       {/* Change password */}
       <div style={card}>
-        <div style={{ ...label, marginBottom: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
-          <KeyRound size={14} color="#4b5563" /> CHANGE PASSWORD
-        </div>
+        <div style={{ ...label, marginBottom: "20px" }}>CHANGE PASSWORD</div>
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           <div>
             <div style={label}>CURRENT PASSWORD</div>
-            <input 
-              type="password" 
-              value={currentPw} 
-              onChange={(e) => setCurrentPw(sanitizePw(e.target.value))}
-              autoComplete="new-password"
-              style={inputS} 
-            />
+            <input type="password" value={currentPw} onChange={(e) => setCurrentPw(sanitizePw(e.target.value))} autoComplete="new-password" style={inputS} />
           </div>
           <div>
             <div style={label}>NEW PASSWORD</div>
-            <input 
-              type="password" 
-              value={newPw} 
-              onChange={(e) => setNewPw(sanitizePw(e.target.value))}
-              autoComplete="new-password"
-              style={inputS} 
-            />
+            <input type="password" value={newPw} onChange={(e) => setNewPw(sanitizePw(e.target.value))} autoComplete="new-password" style={inputS} />
             <div style={{ fontSize: "10px", color: "#4b5563", marginTop: "4px", fontFamily: "'JetBrains Mono',monospace" }}>
               8–20 characters · Letters + Numbers + Special (!@#$%^&*) · No spaces
             </div>
           </div>
           <div>
             <div style={label}>CONFIRM NEW PASSWORD</div>
-            <input 
-              type="password" 
-              value={confirmPw} 
-              onChange={(e) => setConfirmPw(sanitizePw(e.target.value))}
-              autoComplete="new-password"
-              style={inputS} 
-            />
+            <input type="password" value={confirmPw} onChange={(e) => setConfirmPw(sanitizePw(e.target.value))} autoComplete="new-password" style={inputS} />
           </div>
 
           {otpError && !showOtp && (
@@ -177,7 +176,7 @@ export default function Account({ user }) {
           )}
 
           <button onClick={handleUpdatePassword}
-            style={{ alignSelf: "flex-start", padding: "10px 20px", borderRadius: "10px", fontSize: "12px", fontWeight: 600, background: "#3b82f6", color: "#fff", border: "none", cursor: "pointer", marginTop: "4px" }}>
+            style={{ alignSelf: "flex-start", padding: "10px 20px", borderRadius: "10px", fontSize: "12px", fontWeight: 600, background: "#a855f7", color: "#fff", border: "none", cursor: "pointer", marginTop: "4px" }}>
             Update Password
           </button>
         </div>
@@ -189,12 +188,12 @@ export default function Account({ user }) {
           onClick={() => setShowOtp(false)}>
           <div style={{ width: "100%", maxWidth: "440px", margin: "0 16px", borderRadius: "20px", padding: "32px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a", boxShadow: "0 40px 80px rgba(0,0,0,0.5)" }}
             onClick={(e) => e.stopPropagation()}>
-            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: "linear-gradient(90deg,transparent,#3b82f6,transparent)" }} />
+            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: "linear-gradient(90deg,transparent,#a855f7,transparent)" }} />
 
             <div style={{ marginBottom: "20px" }}>
               <div style={{ fontWeight: 700, color: "#fff", fontSize: "18px" }}>OTP Verification</div>
               <div style={{ fontSize: "12px", marginTop: "6px", color: "#4b5563", lineHeight: 1.6 }}>
-                A 6-digit code has been sent to <span style={{ color: "#3b82f6", fontWeight: 600 }}>{user?.email ?? "r.cruz@nbi-ccru.gov.ph"}</span>. Enter it below to confirm the password change.
+                A 6-digit code has been sent to <span style={{ color: "#a855f7", fontWeight: 600 }}>{user?.email ?? "a.mercado@ntc.gov.ph"}</span>. Enter it below to confirm the password change.
               </div>
             </div>
 
@@ -230,13 +229,13 @@ export default function Account({ user }) {
                 Cancel
               </button>
               <button onClick={handleOtpSubmit}
-                style={{ flex: 1, padding: "12px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: "#3b82f6", border: "none", color: "#fff", cursor: "pointer" }}>
+                style={{ flex: 1, padding: "12px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: "#a855f7", border: "none", color: "#fff", cursor: "pointer" }}>
                 Verify & Update
               </button>
             </div>
 
             <div style={{ textAlign: "center", fontSize: "11px", marginTop: "16px", color: "#4b5563" }}>
-              Didn't receive the code? <span style={{ color: "#3b82f6", cursor: "pointer", fontWeight: 600 }}>Resend OTP</span>
+              Didn't receive the code? <span style={{ color: "#a855f7", cursor: "pointer", fontWeight: 600 }}>Resend OTP</span>
             </div>
           </div>
         </div>

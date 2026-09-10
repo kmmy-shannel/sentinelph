@@ -1,18 +1,53 @@
 // apps/web/src/pages/Auditor-Tabs/AnomalyReports.jsx
+import { useState } from "react";
+
 export default function AnomalyReports() {
+  const [lastChecked, setLastChecked] = useState("Aug 28, 2026 05:08 PST");
+  const [refreshing, setRefreshing] = useState(false);
+  const [showSuccess, setShowSuccess] = useState(false);
+
+  function handleRefresh() {
+    setRefreshing(true);
+    setTimeout(() => {
+      const now = new Date();
+      const formatted = now.toLocaleString("en-US", {
+        month: "short", day: "numeric", year: "numeric",
+        hour: "2-digit", minute: "2-digit", hour12: false
+      });
+      setLastChecked(`${formatted} PST`);
+      setRefreshing(false);
+      setShowSuccess(true);
+      setTimeout(() => setShowSuccess(false), 3000);
+    }, 1500);
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
 
       {/* Status banner */}
-      <div style={{ padding: "24px", borderRadius: "12px", background: "#061a0f", border: "1.5px solid #22c55e40", display: "flex", alignItems: "center", gap: "16px" }}>
-        <div style={{ width: "48px", height: "48px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: "#14412a", border: "2px solid #22c55e", flexShrink: 0 }}>
-          <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M4 11l5 5 9-9" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      <div style={{ padding: "24px", borderRadius: "12px", background: "#061a0f", border: "1.5px solid #22c55e40", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+          <div style={{ width: "48px", height: "48px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: "#14412a", border: "2px solid #22c55e", flexShrink: 0 }}>
+            <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M4 11l5 5 9-9" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </div>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: "16px", color: "#22c55e" }}>No Anomalies Detected</div>
+            <div style={{ fontSize: "12px", marginTop: "4px", color: "#4b5563" }}>All nightly integrity jobs and consensus audits have passed. Last checked: {lastChecked}.</div>
+          </div>
         </div>
-        <div>
-          <div style={{ fontWeight: 800, fontSize: "16px", color: "#22c55e" }}>No Anomalies Detected</div>
-          <div style={{ fontSize: "12px", marginTop: "4px", color: "#4b5563" }}>All nightly integrity jobs and consensus audits have passed. Last checked: Aug 28, 2026 05:08 PST.</div>
-        </div>
+        <button onClick={handleRefresh} disabled={refreshing}
+          style={{ padding: "10px 20px", borderRadius: "10px", fontSize: "12px", fontWeight: 600, border: "none", cursor: refreshing ? "not-allowed" : "pointer", background: refreshing ? "#111118" : "#22c55e", color: refreshing ? "#374151" : "#fff", display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+          {refreshing && <span style={{ width: "14px", height: "14px", borderRadius: "50%", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", animation: "spin 0.7s linear infinite", display: "inline-block" }} />}
+          {refreshing ? "Checking…" : "Refresh"}
+        </button>
       </div>
+
+      {showSuccess && (
+        <div style={{ padding: "12px 16px", borderRadius: "10px", fontSize: "13px", fontWeight: 500, background: "#0a1a12", border: "1px solid #22c55e40", color: "#22c55e", display: "flex", alignItems: "center", gap: "10px", animation: "fadeIn 0.3s ease" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+          Check complete. Still no anomalies detected.
+        </div>
+      )}
 
       {/* History table */}
       <div style={{ borderRadius: "12px", overflow: "hidden", background: "#0e0e18", border: "1px solid #1a1a2a" }}>
@@ -57,6 +92,13 @@ export default function AnomalyReports() {
         ))}
       </div>
 
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(-6px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
     </div>
   );
 }

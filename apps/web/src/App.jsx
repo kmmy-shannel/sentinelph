@@ -1,4 +1,4 @@
-// apps/web/src/App.jsx (Auditor routes included)
+// apps/web/src/App.jsx
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
@@ -19,12 +19,14 @@ import PatternExplorer from './pages/Analyst-Tabs/PatternExplorer';
 import AIModelInsights from './pages/Analyst-Tabs/AIModelInsights';
 import RegionalReports from './pages/Analyst-Tabs/RegionalReports';
 import AlertsConfiguration from './pages/Analyst-Tabs/AlertsConfiguration';
+import AnalystAccount from './pages/Analyst-Tabs/Account';
 
 // Auditor Tabs
 import AuditorDashboard from './pages/Auditor-Tabs/AuditorDashboard';
 import VerificationTool from './pages/Auditor-Tabs/VerificationTool';
 import AuditTrail from './pages/Auditor-Tabs/AuditTrail';
 import AnomalyReports from './pages/Auditor-Tabs/AnomalyReports';
+import AuditorAccount from './pages/Auditor-Tabs/Account';
 
 import CustomLayout from './layouts/CustomLayout';
 
@@ -53,6 +55,7 @@ export default function App() {
             <Route path="/analyst/model" element={<AIModelInsights />} />
             <Route path="/analyst/reports" element={<RegionalReports />} />
             <Route path="/analyst/alerts" element={<AlertsConfiguration />} />
+            <Route path="/analyst/account" element={<AnalystAccount />} />
           </Route>
 
           {/* Auditor Routes */}
@@ -61,9 +64,10 @@ export default function App() {
             <Route path="/auditor/verify" element={<VerificationTool />} />
             <Route path="/auditor/trail" element={<AuditTrail />} />
             <Route path="/auditor/anomalies" element={<AnomalyReports />} />
+            <Route path="/auditor/account" element={<AuditorAccount />} />
           </Route>
 
-          {/* Catch-all */}
+          {/* Catch-all: Redirect to Login */}
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </BrowserRouter>

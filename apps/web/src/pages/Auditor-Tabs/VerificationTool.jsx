@@ -1,4 +1,4 @@
-    // apps/web/src/pages/Auditor-Tabs/VerificationTool.jsx
+// apps/web/src/pages/Auditor-Tabs/VerificationTool.jsx
 import { useState } from "react";
 
 const HISTORY = [
@@ -13,11 +13,33 @@ export default function VerificationTool() {
   const [to, setTo]     = useState("1204881");
   const [running, setRunning] = useState(false);
   const [done, setDone]       = useState(false);
+  const [logs, setLogs]       = useState([]);
 
   function handleRun() {
     setRunning(true);
     setDone(false);
-    setTimeout(() => { setRunning(false); setDone(true); }, 2200);
+    setLogs([]);
+
+    // Fake live log messages
+    const steps = [
+      `→ Loading block range #${from}–#${to}...`,
+      `→ Fetching stored hashes from chain...`,
+      `→ Recomputing SHA-256 for each block...`,
+      `→ Comparing Hₙ to stored Hₙ...`,
+      `✓ Verification complete. 0 discrepancies detected.`,
+    ];
+
+    steps.forEach((step, i) => {
+      setTimeout(() => {
+        setLogs(prev => [...prev, step]);
+      }, i * 500);
+    });
+
+    // Finish after all steps
+    setTimeout(() => {
+      setRunning(false);
+      setDone(true);
+    }, steps.length * 500 + 300);
   }
 
   const inputS = { padding: "10px 14px", borderRadius: "10px", fontSize: "13px", background: "#080810", border: "1px solid #1a1a2a", color: "#e2e8f0", outline: "none", fontFamily: "'JetBrains Mono',monospace" };
@@ -59,6 +81,15 @@ export default function VerificationTool() {
             {running ? "Running…" : "Recompute"}
           </button>
         </div>
+
+        {/* Live log output */}
+        {logs.length > 0 && (
+          <div style={{ marginTop: "16px", padding: "14px 16px", borderRadius: "10px", background: "#080810", border: "1px solid #13131e", fontFamily: "'JetBrains Mono',monospace", fontSize: "11px", color: "#9ca3af", lineHeight: 1.9 }}>
+            {logs.map((log, i) => (
+              <div key={i} style={{ color: log.startsWith("✓") ? "#22c55e" : "#9ca3af" }}>{log}</div>
+            ))}
+          </div>
+        )}
 
         {done && (
           <div style={{ marginTop: "16px", padding: "14px 16px", borderRadius: "10px", background: "#061a0f", border: "1px solid #22c55e40", display: "flex", alignItems: "center", gap: "12px" }}>

@@ -159,8 +159,12 @@ export default function Login() {
     }
   }, [authLoading, isAuthenticated, navigate]);
 
+  // SECURITY: Strip spaces
+  const sanitizePw = (value) => value.replace(/\s/g, "");
+  const sanitizeBadge = (value) => value.toUpperCase().replace(/\s/g, "");
+
   const inputStyle = (name) => ({
-    width: "100%", padding: "13px 16px", borderRadius: "12px", fontSize: "14px",
+    width: "100%", padding: "14px 18px", borderRadius: "12px", fontSize: "14px",
     background: "#080810",
     border: `1.5px solid ${focusField === name ? accent + "80" : "#1c1c2e"}`,
     color: "#e2e8f0", outline: "none",
@@ -190,7 +194,6 @@ export default function Login() {
 
           localStorage.setItem('sentinelph_user', JSON.stringify(user));
           
-          // FADE OUT ONLY THE LOGIN PAGE CONTAINER (not body!)
           const loginContainer = document.getElementById('login-page');
           if (loginContainer) {
             loginContainer.style.transition = "opacity 0.3s ease";
@@ -236,7 +239,8 @@ export default function Login() {
         animation: "floatGlow2 15s infinite ease-in-out"
       }} />
 
-      <div style={{ width: "44%", flexShrink: 0, display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "48px", position: "relative", zIndex: 1 }}>
+      {/* LEFT PANEL (reduced from 44% to 42%) */}
+      <div style={{ width: "42%", flexShrink: 0, display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "48px", position: "relative", zIndex: 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           <div style={{ width: "40px", height: "40px", borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: "16px", color: "#fff", background: "linear-gradient(135deg,#4f46e5,#7c3aed)", boxShadow: "0 0 20px #4f46e540" }}>S</div>
           <div>
@@ -250,17 +254,17 @@ export default function Login() {
             <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: accent, display: "inline-block" }} />
             AUTHORIZED PERSONNEL ONLY
           </div>
-          <h1 style={{ fontWeight: 800, color: "#fff", lineHeight: 1.05, marginBottom: "20px", fontSize: "clamp(26px,2.6vw,42px)", letterSpacing: "-0.03em" }}>
+          <h1 style={{ fontWeight: 800, color: "#fff", lineHeight: 1.05, marginBottom: "20px", fontSize: "clamp(28px,3vw,46px)", letterSpacing: "-0.03em" }}>
             Integrated Scam<br />Detection &<br />
             <span style={{ color: accent, transition: "color 0.5s" }}>Reporting Platform</span>
           </h1>
-          <p style={{ fontSize: "13px", lineHeight: 1.7, color: "#4b5563", maxWidth: "300px", marginBottom: "36px" }}>
-            Access is scoped to your jurisdiction and permissions. All sessions are cryptographically logged and tamper-evident.
+          <p style={{ fontSize: "14px", lineHeight: 1.8, color: "#4b5563", maxWidth: "420px", marginBottom: "36px" }}>
+            Access is scoped to your jurisdiction and permissions. All sessions are cryptographically logged and tamper-evident. Monitor, review, and act on scam reports across the Philippines in real time.
           </p>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "16px", padding: "20px", borderRadius: "16px", background: "#0d0d18", border: "1px solid #13131e" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "16px", padding: "24px", borderRadius: "16px", background: "#0d0d18", border: "1px solid #13131e" }}>
             {[{ v: "48,291", l: "Reports Filed" }, { v: "1,843", l: "Cases Closed" }, { v: "99.97%", l: "Uptime" }].map((s) => (
               <div key={s.l} style={{ textAlign: "center" }}>
-                <div style={{ fontWeight: 800, color: "#fff", fontSize: "16px", fontFamily: "'JetBrains Mono',monospace" }}>{s.v}</div>
+                <div style={{ fontWeight: 800, color: "#fff", fontSize: "18px", fontFamily: "'JetBrains Mono',monospace" }}>{s.v}</div>
                 <div style={{ fontSize: "11px", marginTop: "4px", color: "#374151" }}>{s.l}</div>
               </div>
             ))}
@@ -279,14 +283,15 @@ export default function Login() {
         </div>
       </div>
 
+      {/* RIGHT PANEL (increased from 56% to 58%) */}
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "40px 24px", position: "relative", zIndex: 1 }}>
-        <div style={{ width: "100%", maxWidth: "420px" }}>
-          <div style={{ borderRadius: "20px", padding: "32px", position: "relative", background: "#0b0b16", border: "1px solid #16162a", boxShadow: "0 40px 80px rgba(0,0,0,0.4)" }}>
+        <div style={{ width: "100%", maxWidth: "480px" }}>
+          <div style={{ borderRadius: "20px", padding: "40px", position: "relative", background: "#0b0b16", border: "1px solid #16162a", boxShadow: "0 40px 80px rgba(0,0,0,0.4)" }}>
             <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: `linear-gradient(90deg,transparent,${accent},transparent)`, transition: "background 0.5s" }} />
 
             <div style={{ position: "relative", zIndex: 1 }}>
-              <div style={{ marginBottom: "24px" }}>
-                <h2 style={{ fontSize: "20px", fontWeight: 800, color: "#fff", marginBottom: "6px", letterSpacing: "-0.02em" }}>Sign In</h2>
+              <div style={{ marginBottom: "28px" }}>
+                <h2 style={{ fontSize: "22px", fontWeight: 800, color: "#fff", marginBottom: "6px", letterSpacing: "-0.02em" }}>Sign In</h2>
                 <p style={{ fontSize: "13px", color: "#4b5563" }}>Select your role and enter your credentials.</p>
               </div>
 
@@ -305,25 +310,26 @@ export default function Login() {
               )}
 
               <form onSubmit={handleSubmit}>
-                <div style={{ marginBottom: "16px" }}>
+                <div style={{ marginBottom: "18px" }}>
                   <div style={{ fontSize: "11px", marginBottom: "8px", fontWeight: 500, color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>ASSIGNED ROLE</div>
                   <RoleDropdown value={role} onChange={setRole} />
                 </div>
 
-                <div style={{ marginBottom: "16px" }}>
+                <div style={{ marginBottom: "18px" }}>
                   <div style={{ fontSize: "11px", marginBottom: "8px", fontWeight: 500, color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>BADGE / EMPLOYEE ID</div>
                   <input
                     type="text"
                     value={badgeId}
-                    onChange={(e) => setBadgeId(e.target.value.toUpperCase())}
+                    onChange={(e) => setBadgeId(sanitizeBadge(e.target.value))}
                     placeholder="e.g. NBI-CCRU-0041"
                     onFocus={() => setFocusField("badge")}
                     onBlur={() => setFocusField(null)}
+                    autoComplete="off"
                     style={{ ...inputStyle("badge"), fontFamily: "'JetBrains Mono',monospace" }}
                   />
                 </div>
 
-                <div style={{ marginBottom: "8px" }}>
+                <div style={{ marginBottom: "10px" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
                     <div style={{ fontSize: "11px", fontWeight: 500, color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>PASSWORD</div>
                     <button type="button" style={{ fontSize: "12px", fontWeight: 600, color: accent, background: "none", border: "none", cursor: "pointer" }}>Forgot password?</button>
@@ -332,10 +338,11 @@ export default function Login() {
                     <input
                       type={showPass ? "text" : "password"}
                       value={password}
-                      onChange={(e) => setPassword(e.target.value)}
+                      onChange={(e) => setPassword(sanitizePw(e.target.value))}
                       placeholder="Enter your password"
                       onFocus={() => setFocusField("password")}
                       onBlur={() => setFocusField(null)}
+                      autoComplete="new-password"
                       style={{ ...inputStyle("password"), paddingRight: "48px" }}
                     />
                     <button type="button" onClick={() => setShowPass(!showPass)}
@@ -354,14 +361,17 @@ export default function Login() {
                       )}
                     </button>
                   </div>
+                  <div style={{ fontSize: "10px", color: "#4b5563", marginTop: "6px", fontFamily: "'JetBrains Mono',monospace" }}>
+                    No spaces allowed
+                  </div>
                 </div>
 
                 <button
                   type="submit"
                   disabled={!canSubmit}
                   style={{
-                    width: "100%", padding: "14px", borderRadius: "12px", fontSize: "14px", fontWeight: 700, border: "none",
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", marginTop: "20px",
+                    width: "100%", padding: "15px", borderRadius: "12px", fontSize: "14px", fontWeight: 700, border: "none",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", marginTop: "24px",
                     background: canSubmit ? `linear-gradient(135deg,${accent},${accent}cc)` : "#111118",
                     color: canSubmit ? "#fff" : "#374151",
                     boxShadow: canSubmit ? `0 0 30px ${accent}35` : "none",
@@ -374,7 +384,7 @@ export default function Login() {
                 </button>
               </form>
 
-              <p style={{ textAlign: "center", fontSize: "12px", marginTop: "20px", color: "#374151" }}>
+              <p style={{ textAlign: "center", fontSize: "12px", marginTop: "24px", color: "#374151" }}>
                 No account? <span style={{ color: "#4b5563" }}>Contact your system administrator to request access.</span>
               </p>
             </div>
@@ -386,7 +396,6 @@ export default function Login() {
         </div>
       </div>
 
-      {/* Animations + Autofill Fix */}
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes slideDown {
@@ -407,12 +416,7 @@ export default function Login() {
           from { opacity: 0; }
           to { opacity: 1; }
         }
-        @keyframes fadeOut {
-          from { opacity: 1; }
-          to { opacity: 0; }
-        }
         
-        /* FIX: Force dark mode even when browser autofills */
         input:-webkit-autofill,
         input:-webkit-autofill:hover, 
         input:-webkit-autofill:focus, 
