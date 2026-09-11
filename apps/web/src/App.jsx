@@ -1,108 +1,76 @@
+// apps/web/src/App.jsx
 import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate, Link } from 'react-router-dom';
-import { ShieldOff } from 'lucide-react';
-import { AuthProvider, useAuth, ROLES } from './context/AuthContext';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { AuthProvider } from './context/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
-import DashboardLayout from './layouts/DashboardLayout';
 import Login from './pages/Login';
-import OfficerDashboard from './pages/OfficerDashboard';
-import AnalystDashboard from './pages/AnalystDashboard';
-import AuditorDashboard from './pages/AuditorDashboard';
+import Unauthorized from './pages/Unauthorized';
 
-function UnauthorizedPage() {
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-100 px-4">
-      <div className="text-center max-w-sm">
-        <div className="w-14 h-14 rounded-2xl bg-red-100 flex items-center justify-center mx-auto mb-4">
-          <ShieldOff size={26} className="text-red-600" />
-        </div>
-        <h1 className="text-xl font-bold text-slate-900">Access Denied</h1>
-        <p className="text-slate-500 text-sm mt-2">
-          Your account role does not have permission to view this dashboard.
-        </p>
-        <Link
-          to="/login"
-          className="inline-block mt-5 bg-blue-900 text-white text-sm font-semibold px-5 py-2.5 rounded-xl hover:bg-blue-800 transition-colors"
-        >
-          Back to Login
-        </Link>
-      </div>
-    </div>
-  );
-}
+// Officer Tabs
+import OfficerDashboard from './pages/Officer-Tabs/OfficerDashboard';
+import ReviewQueue from './pages/Officer-Tabs/ReviewQueue';
+import BlacklistRegistry from './pages/Officer-Tabs/BlacklistRegistry';
+import Notifications from './pages/Officer-Tabs/Notifications';
+import Account from './pages/Officer-Tabs/Account';
 
-function RootRedirect() {
-  const { isAuthenticated, role, loading } = useAuth();
+// Analyst Tabs
+import AnalystDashboard from './pages/Analyst-Tabs/AnalystDashboard';
+import PatternExplorer from './pages/Analyst-Tabs/PatternExplorer';
+import AIModelInsights from './pages/Analyst-Tabs/AIModelInsights';
+import RegionalReports from './pages/Analyst-Tabs/RegionalReports';
+import AlertsConfiguration from './pages/Analyst-Tabs/AlertsConfiguration';
+import AnalystAccount from './pages/Analyst-Tabs/Account';
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-100">
-        <p className="text-slate-400 text-sm">Loading...</p>
-      </div>
-    );
-  }
+// Auditor Tabs
+import AuditorDashboard from './pages/Auditor-Tabs/AuditorDashboard';
+import VerificationTool from './pages/Auditor-Tabs/VerificationTool';
+import AuditTrail from './pages/Auditor-Tabs/AuditTrail';
+import AnomalyReports from './pages/Auditor-Tabs/AnomalyReports';
+import AuditorAccount from './pages/Auditor-Tabs/Account';
 
-  if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
-  }
-
-  switch (role) {
-    case ROLES.OFFICER:
-      return <Navigate to="/officer" replace />;
-    case ROLES.ANALYST:
-      return <Navigate to="/analyst" replace />;
-    case ROLES.AUDITOR:
-      return <Navigate to="/auditor" replace />;
-    default:
-      return <Navigate to="/unauthorized" replace />;
-  }
-}
+import CustomLayout from './layouts/CustomLayout';
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <AuthProvider>
+    <AuthProvider>
+      <BrowserRouter>
         <Routes>
+          <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<Login />} />
-          <Route path="/unauthorized" element={<UnauthorizedPage />} />
-          <Route path="/" element={<RootRedirect />} />
+          <Route path="/unauthorized" element={<Unauthorized />} />
 
-          <Route
-            element={
-              <ProtectedRoute allowedRoles={[ROLES.OFFICER, ROLES.ANALYST, ROLES.AUDITOR]}>
-                <DashboardLayout />
-              </ProtectedRoute>
-            }
-          >
-            <Route
-              path="/officer"
-              element={
-                <ProtectedRoute allowedRoles={[ROLES.OFFICER]}>
-                  <OfficerDashboard />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/analyst"
-              element={
-                <ProtectedRoute allowedRoles={[ROLES.ANALYST]}>
-                  <AnalystDashboard />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/auditor"
-              element={
-                <ProtectedRoute allowedRoles={[ROLES.AUDITOR]}>
-                  <AuditorDashboard />
-                </ProtectedRoute>
-              }
-            />
+          {/* Officer Routes */}
+          <Route element={<ProtectedRoute allowedRoles={['officer']}><CustomLayout /></ProtectedRoute>}>
+            <Route path="/officer/dashboard" element={<OfficerDashboard />} />
+            <Route path="/officer/queue" element={<ReviewQueue />} />
+            <Route path="/officer/registry" element={<BlacklistRegistry />} />
+            <Route path="/officer/notifications" element={<Notifications />} />
+            <Route path="/officer/account" element={<Account />} />
           </Route>
 
-          <Route path="*" element={<Navigate to="/" replace />} />
+          {/* Analyst Routes */}
+          <Route element={<ProtectedRoute allowedRoles={['analyst']}><CustomLayout /></ProtectedRoute>}>
+            <Route path="/analyst/dashboard" element={<AnalystDashboard />} />
+            <Route path="/analyst/patterns" element={<PatternExplorer />} />
+            <Route path="/analyst/model" element={<AIModelInsights />} />
+            <Route path="/analyst/reports" element={<RegionalReports />} />
+            <Route path="/analyst/alerts" element={<AlertsConfiguration />} />
+            <Route path="/analyst/account" element={<AnalystAccount />} />
+          </Route>
+
+          {/* Auditor Routes */}
+          <Route element={<ProtectedRoute allowedRoles={['auditor']}><CustomLayout /></ProtectedRoute>}>
+            <Route path="/auditor/dashboard" element={<AuditorDashboard />} />
+            <Route path="/auditor/verify" element={<VerificationTool />} />
+            <Route path="/auditor/trail" element={<AuditTrail />} />
+            <Route path="/auditor/anomalies" element={<AnomalyReports />} />
+            <Route path="/auditor/account" element={<AuditorAccount />} />
+          </Route>
+
+          {/* Catch-all: Redirect to Login */}
+          <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
-      </AuthProvider>
-    </BrowserRouter>
+      </BrowserRouter>
+    </AuthProvider>
   );
 }

@@ -1,129 +1,122 @@
 // apps/web/src/pages/Login.jsx
-import React, { useState, useRef, useEffect } from 'react';
-import { Navigate } from 'react-router-dom';
-import { Shield, Loader2, Eye, EyeOff, ChevronDown, Check } from 'lucide-react';
-import { useAuth, ROLES } from '../context/AuthContext';
+import { useState, useRef, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth, ROLES } from "../context/AuthContext";
+
+const ShieldIcon = ({ color }) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    <path d="M9 12l2 2 4-4" />
+  </svg>
+);
+
+const MagnifyIcon = ({ color }) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="11" cy="11" r="8" />
+    <line x1="21" y1="21" x2="16.65" y2="16.65" />
+  </svg>
+);
+
+const ScalesIcon = ({ color }) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 3v18M5 7l7-4 7 4M5 7l-3 7h6L5 7zM19 7l-3 7h6l-3-7z" />
+  </svg>
+);
 
 const ROLE_OPTIONS = [
-  {
-    id: ROLES.OFFICER,
-    label: 'Barangay / NBI Officer',
-    dept: 'NBI Cybercrime Division',
-    icon: '🛡️',
-    color: '#3b82f6',
-  },
-  {
-    id: ROLES.ANALYST,
-    label: 'Fraud Analyst',
-    dept: 'NTC Fraud Research Division',
-    icon: '🔍',
-    color: '#a855f7',
-  },
-  {
-    id: ROLES.AUDITOR,
-    label: 'System Auditor',
-    dept: 'DICT Independent Auditor',
-    icon: '⚖️',
-    color: '#22c55e',
-  },
+  { id: ROLES.OFFICER, label: "Barangay / NBI Officer", dept: "NBI Cybercrime Division", Icon: ShieldIcon, color: "#3b82f6", path: "/officer/dashboard" },
+  { id: ROLES.ANALYST, label: "Fraud Analyst", dept: "NTC Fraud Research Division", Icon: MagnifyIcon, color: "#a855f7", path: "/analyst/dashboard" },
+  { id: ROLES.AUDITOR, label: "System Auditor", dept: "DICT Independent Auditor", Icon: ScalesIcon, color: "#22c55e", path: "/auditor/dashboard" },
 ];
 
-function RoleDropdown({ value, onChange, placeholder = 'Select your assigned role…' }) {
+const DEMO_USERS = {
+  officer: { name: "Insp. R. Cruz", badge: "NBI-CCRU-0041", email: "r.cruz@nbi-ccru.gov.ph", dept: "NBI Cybercrime Division", initials: "RC" },
+  analyst: { name: "Ana Mercado", badge: "NTC-FRO-0018", email: "a.mercado@ntc.gov.ph", dept: "NTC Fraud Research Division", initials: "AM" },
+  auditor: { name: "Dr. J. Santos", badge: "DICT-AUD-0903", email: "j.santos@dict.gov.ph", dept: "DICT Independent Auditor", initials: "JS" },
+};
+
+function RoleDropdown({ value, onChange }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const selected = ROLE_OPTIONS.find((r) => r.id === value);
 
   useEffect(() => {
-    function handleClickOutside(e) {
+    function handle(e) {
       if (ref.current && !ref.current.contains(e.target)) setOpen(false);
     }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
   }, []);
 
   return (
-    <div ref={ref} className="relative z-20">
+    <div ref={ref} style={{ position: "relative", zIndex: 20 }}>
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl text-sm transition-all"
+        onClick={() => setOpen(!open)}
         style={{
-          background: '#080810',
-          border: `1.5px solid ${open ? (selected?.color ?? '#6366f1') + '80' : '#1c1c2e'}`,
-          color: selected ? '#e2e8f0' : '#4b5563',
-          boxShadow: open ? `0 0 0 3px ${(selected?.color ?? '#6366f1')}14` : 'none',
+          width: "100%", display: "flex", alignItems: "center", gap: "12px",
+          padding: "14px 16px", borderRadius: "12px", fontSize: "14px",
+          background: "#080810",
+          border: `1.5px solid ${open ? (selected?.color ?? "#6366f1") + "80" : "#1c1c2e"}`,
+          color: selected ? "#e2e8f0" : "#4b5563",
+          boxShadow: open ? `0 0 0 3px ${(selected?.color ?? "#6366f1")}14` : "none",
+          cursor: "pointer", transition: "all 0.2s", textAlign: "left",
         }}
       >
         {selected ? (
           <>
-            <span className="text-base">{selected.icon}</span>
-            <div className="flex-1 text-left">
-              <div className="text-sm font-medium text-white">{selected.label}</div>
-              <div
-                className="text-xs mt-0.5"
-                style={{ color: selected.color, fontFamily: "'JetBrains Mono', monospace" }}
-              >
-                {selected.dept}
-              </div>
+            <div style={{ width: "36px", height: "36px", borderRadius: "10px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: selected.color + "18" }}>
+              <selected.Icon color={selected.color} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 500, color: "#fff", fontSize: "13px" }}>{selected.label}</div>
+              <div style={{ fontSize: "11px", marginTop: "2px", color: selected.color, fontFamily: "'JetBrains Mono',monospace" }}>{selected.dept}</div>
             </div>
           </>
         ) : (
-          <span className="flex-1 text-left text-sm" style={{ color: '#4b5563' }}>
-            {placeholder}
-          </span>
+          <span style={{ flex: 1, color: "#4b5563" }}>Select your assigned role…</span>
         )}
-        <ChevronDown
-          size={14}
-          style={{
-            transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
-            transition: 'transform 0.2s',
-            flexShrink: 0,
-            color: '#4b5563',
-          }}
-        />
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
+          style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.3s", flexShrink: 0 }}>
+          <path d="M3 5l4 4 4-4" stroke="#4b5563" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
       </button>
 
       {open && (
-        <div
-          className="absolute top-full left-0 right-0 mt-2 rounded-xl overflow-hidden"
-          style={{ background: '#0d0d1a', border: '1.5px solid #1c1c2e', boxShadow: '0 20px 40px rgba(0,0,0,0.6)', zIndex: 50 }}
-        >
+        <div style={{
+          position: "absolute", top: "calc(100% + 8px)", left: 0, right: 0,
+          background: "#0d0d1a", border: "1.5px solid #1c1c2e", borderRadius: "12px",
+          overflow: "hidden", boxShadow: "0 20px 40px rgba(0,0,0,0.6)", zIndex: 50,
+        }}>
           {ROLE_OPTIONS.map((role, i) => (
             <button
               key={role.id}
               type="button"
-              onClick={() => {
-                onChange(role.id);
-                setOpen(false);
-              }}
-              className="w-full flex items-center gap-3 px-4 py-3.5 text-left transition-all"
+              onClick={() => { onChange(role.id); setOpen(false); }}
               style={{
-                borderBottom: i < ROLE_OPTIONS.length - 1 ? '1px solid #13131e' : 'none',
-                background: value === role.id ? role.color + '12' : 'transparent',
+                width: "100%", display: "flex", alignItems: "center", gap: "12px",
+                padding: "14px 16px", textAlign: "left", cursor: "pointer",
+                borderBottom: i < ROLE_OPTIONS.length - 1 ? "1px solid #13131e" : "none",
+                background: value === role.id ? role.color + "12" : "transparent",
+                transition: "background 0.3s",
+                animation: `slideDown ${0.3 + (i * 0.3)}s ease forwards`,
+                opacity: 0,
               }}
-              onMouseEnter={(e) => {
-                if (value !== role.id) e.currentTarget.style.background = '#13131e';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = value === role.id ? role.color + '12' : 'transparent';
-              }}
+              onMouseEnter={(e) => { if (value !== role.id) e.currentTarget.style.background = "#13131e"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = value === role.id ? role.color + "12" : "transparent"; }}
             >
-              <div
-                className="w-8 h-8 rounded-lg flex items-center justify-center text-sm shrink-0"
-                style={{ background: role.color + '18' }}
-              >
-                {role.icon}
+              <div style={{ width: "36px", height: "36px", borderRadius: "10px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: role.color + "18" }}>
+                <role.Icon color={role.color} />
               </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium text-white">{role.label}</div>
-                <div
-                  className="text-xs mt-0.5 truncate"
-                  style={{ color: role.color, fontFamily: "'JetBrains Mono', monospace", opacity: 0.85 }}
-                >
-                  {role.dept}
-                </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: "13px", fontWeight: 500, color: "#fff" }}>{role.label}</div>
+                <div style={{ fontSize: "11px", marginTop: "2px", color: role.color, fontFamily: "'JetBrains Mono',monospace", opacity: 0.85 }}>{role.dept}</div>
               </div>
-              {value === role.id && <Check size={14} color={role.color} strokeWidth={2.5} />}
+              {value === role.id && (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M2.5 7l3.5 3.5 5.5-6" stroke={role.color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
             </button>
           ))}
         </div>
@@ -133,344 +126,479 @@ function RoleDropdown({ value, onChange, placeholder = 'Select your assigned rol
 }
 
 export default function Login() {
-  const { login, register, isAuthenticated, role, loading: authLoading } = useAuth();
+  const navigate = useNavigate();
+  const { isAuthenticated, loading: authLoading } = useAuth();
+  const [role, setRole] = useState("");
+  const [badgeId, setBadgeId] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPass, setShowPass] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [focusField, setFocusField] = useState(null);
+  const [error, setError] = useState(null);
 
-  const [tab, setTab] = useState('signin'); // 'signin' | 'signup'
+  // Forgot Password state
+  const [showForgotPw, setShowForgotPw] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotStage, setForgotStage] = useState("email");
+  const [forgotOtp, setForgotOtp] = useState("");
+  const [forgotError, setForgotError] = useState(null);
+  const [forgotSuccess, setForgotSuccess] = useState(false);
 
-  // Shared
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError] = useState(null);
-  const [infoMessage, setInfoMessage] = useState(null);
+  const selectedRole = ROLE_OPTIONS.find((r) => r.id === role);
+  const accent = selectedRole?.color ?? "#6366f1";
+  const canSubmit = role && badgeId && password && !loading;
 
-  // Sign-in only
-  const [rememberMe, setRememberMe] = useState(false);
-  const [signinRoleHint, setSigninRoleHint] = useState(''); // cosmetic only, see note above
+  useEffect(() => {
+    if (!authLoading && isAuthenticated) {
+      const storedUser = localStorage.getItem('sentinelph_user');
+      if (storedUser) {
+        try {
+          const userData = JSON.parse(storedUser);
+          const roleData = ROLE_OPTIONS.find(r => r.id === userData.role);
+          if (roleData) {
+            window.location.href = roleData.path;
+            return;
+          }
+        } catch (e) {
+          console.error('Error parsing user data:', e);
+        }
+      }
+      window.location.href = '/officer/dashboard';
+    }
+  }, [authLoading, isAuthenticated, navigate]);
 
-  // Sign-up only
-  const [fullName, setFullName] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [requestedRole, setRequestedRole] = useState('');
-  const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const sanitizePw = (value) => value.replace(/\s/g, "");
+  const sanitizeBadge = (value) => value.toUpperCase().replace(/\s/g, "");
 
-  const selectedHint = ROLE_OPTIONS.find((r) => r.id === signinRoleHint);
+  const inputStyle = (name) => ({
+    width: "100%", padding: "14px 18px", borderRadius: "12px", fontSize: "14px",
+    background: "#080810",
+    border: `1.5px solid ${focusField === name ? accent + "80" : "#1c1c2e"}`,
+    color: "#e2e8f0", outline: "none",
+    boxShadow: focusField === name ? `0 0 0 3px ${accent}14` : "none",
+    transition: "all 0.3s", boxSizing: "border-box",
+  });
 
-  if (!authLoading && isAuthenticated) {
-    const dest =
-      role === ROLES.OFFICER
-        ? '/officer'
-        : role === ROLES.ANALYST
-        ? '/analyst'
-        : role === ROLES.AUDITOR
-        ? '/auditor'
-        : '/unauthorized';
-    return <Navigate to={dest} replace />;
+  function handleSubmit(e) {
+    e.preventDefault();
+    if (!canSubmit) return;
+
+    setError(null);
+    setLoading(true);
+
+    setTimeout(() => {
+      try {
+        const selectedRoleData = ROLE_OPTIONS.find((r) => r.id === role);
+        const userData = DEMO_USERS[role];
+
+        if (selectedRoleData && userData) {
+          const user = {
+            role: role,
+            ...userData,
+            isAuthenticated: true,
+            loginTime: new Date().toISOString()
+          };
+
+          localStorage.setItem('sentinelph_user', JSON.stringify(user));
+
+          const loginContainer = document.getElementById('login-page');
+          if (loginContainer) {
+            loginContainer.style.transition = "opacity 0.3s ease";
+            loginContainer.style.opacity = "0";
+          }
+
+          setTimeout(() => {
+            window.location.href = selectedRoleData.path;
+          }, 300);
+        } else {
+          setError('Invalid role selected');
+          setLoading(false);
+        }
+      } catch (err) {
+        setError('Login failed. Please try again.');
+        setLoading(false);
+      }
+    }, 800);
   }
 
-  const resetMessages = () => {
-    setFormError(null);
-    setInfoMessage(null);
-  };
-
-  const handleSignIn = async (e) => {
-    e.preventDefault();
-    resetMessages();
-    setSubmitting(true);
-    try {
-      // Note: signinRoleHint is a cosmetic department badge only.
-      // Actual role/permissions come from the backend profile via
-      // AuthContext after Firebase verifies the credentials.
-      await login(email, password, { rememberMe });
-    } catch (err) {
-      setFormError(err.message || 'Unable to sign in. Please try again.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleSignUp = async (e) => {
-    e.preventDefault();
-    resetMessages();
-
-    if (password !== confirmPassword) {
-      setFormError('Passwords do not match.');
-      return;
-    }
-    if (!requestedRole) {
-      setFormError('Please select the role you are requesting access for.');
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      await register({ fullName, email, password, agreedToTerms });
-      setInfoMessage(
-        'Account created. Check your email to verify your address — an administrator still needs to approve your requested role before you can sign in.'
-      );
-      setTab('signin');
-    } catch (err) {
-      setFormError(err.message || 'Unable to create account. Please try again.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const inputClass =
-    'w-full bg-[#080810] border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-accent transition-all';
-
   return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-canvas px-4 font-sans">
-      <div className="w-full max-w-sm">
-        <div className="flex flex-col items-center mb-8">
-          <div className="w-14 h-14 rounded-2xl bg-card border border-white/10 flex items-center justify-center mb-4">
-            <Shield size={26} className="text-accent" />
+    <div id="login-page" className="login-container" style={{ width: "100%", minHeight: "100vh", display: "flex", overflow: "hidden", fontFamily: "'Inter',sans-serif", background: "#06060f", position: "relative", animation: "fadeIn 0.5s ease" }}>
+
+      <div style={{ 
+        position: "absolute", inset: 0, pointerEvents: "none", zIndex: 0,
+        backgroundImage: "linear-gradient(rgba(15,15,30,0.9) 1px, transparent 1px), linear-gradient(90deg, rgba(15,15,30,0.9) 1px, transparent 1px)", 
+        backgroundSize: "52px 52px"
+      }} />
+
+      <div style={{ 
+        position: "absolute", width: "550px", height: "550px", borderRadius: "50%", 
+        filter: "blur(120px)", pointerEvents: "none", zIndex: 0,
+        background: accent + "15", 
+        animation: "floatGlow 12s infinite ease-in-out",
+        transition: "background 1s"
+      }} />
+
+      <div style={{ 
+        position: "absolute", width: "350px", height: "350px", borderRadius: "50%", 
+        filter: "blur(100px)", pointerEvents: "none", zIndex: 0,
+        background: "#3730a318", 
+        animation: "floatGlow2 15s infinite ease-in-out"
+      }} />
+
+      <div className="login-left-panel" style={{ width: "42%", flexShrink: 0, display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "48px", position: "relative", zIndex: 1 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <div style={{ width: "40px", height: "40px", borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: "16px", color: "#fff", background: "linear-gradient(135deg,#4f46e5,#7c3aed)", boxShadow: "0 0 20px #4f46e540" }}>S</div>
+          <div>
+            <div style={{ fontWeight: 800, color: "#fff", fontSize: "15px", letterSpacing: "-0.01em" }}>SentinelPH</div>
+            <div style={{ fontSize: "10px", color: "#374151", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.1em" }}>WEB CONTROL CENTER</div>
           </div>
-          <h1 className="text-xl font-bold text-white">SentinelPH Console</h1>
-          <p
-            className="text-slate-500 text-xs mt-1 tracking-wide"
-            style={{ fontFamily: "'JetBrains Mono', monospace" }}
-          >
-            Republic of the Philippines · Verified Access Only
+        </div>
+
+        <div>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: "8px", padding: "6px 12px", borderRadius: "999px", marginBottom: "24px", fontSize: "11px", fontWeight: 500, letterSpacing: "0.08em", fontFamily: "'JetBrains Mono',monospace", background: accent + "15", border: `1px solid ${accent}30`, color: accent }}>
+            <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: accent, display: "inline-block" }} />
+            AUTHORIZED PERSONNEL ONLY
+          </div>
+          <h1 style={{ fontWeight: 800, color: "#fff", lineHeight: 1.05, marginBottom: "20px", fontSize: "clamp(28px,3vw,46px)", letterSpacing: "-0.03em" }}>
+            Integrated Scam<br />Detection &<br />
+            <span style={{ color: accent, transition: "color 0.5s" }}>Reporting Platform</span>
+          </h1>
+          <p style={{ fontSize: "14px", lineHeight: 1.8, color: "#4b5563", maxWidth: "420px", marginBottom: "36px" }}>
+            Access is scoped to your jurisdiction and permissions. All sessions are cryptographically logged and tamper-evident. Monitor, review, and act on scam reports across the Philippines in real time.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "16px", padding: "24px", borderRadius: "16px", background: "#0d0d18", border: "1px solid #13131e" }}>
+            {[{ v: "48,291", l: "Reports Filed" }, { v: "1,843", l: "Cases Closed" }, { v: "99.97%", l: "Uptime" }].map((s) => (
+              <div key={s.l} style={{ textAlign: "center" }}>
+                <div style={{ fontWeight: 800, color: "#fff", fontSize: "18px", fontFamily: "'JetBrains Mono',monospace" }}>{s.v}</div>
+                <div style={{ fontSize: "11px", marginTop: "4px", color: "#374151" }}>{s.l}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+            <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#22c55e", display: "inline-block" }} />
+            <span style={{ fontSize: "11px", color: "#374151", fontFamily: "'JetBrains Mono',monospace" }}>System Operational · v2.4.1</span>
+          </div>
+          <p style={{ fontSize: "11px", color: "#1f2937", lineHeight: 1.6 }}>
+            Unauthorized access is a criminal offense under RA 10175<br />
+            Philippine Cybercrime Prevention Act
           </p>
         </div>
+      </div>
 
-        <div className="bg-card border border-white/10 rounded-2xl p-6 shadow-xl shadow-black/40">
-          {/* Tabs */}
-          <div
-            className="flex rounded-xl p-1 mb-5"
-            style={{ background: '#080810', border: '1px solid #1c1c2e' }}
-          >
-            <button
-              type="button"
-              onClick={() => {
-                setTab('signin');
-                resetMessages();
-              }}
-              className="flex-1 text-sm font-medium py-2 rounded-lg transition-all"
-              style={
-                tab === 'signin'
-                  ? { background: '#6366f1', color: 'white' }
-                  : { color: '#64748b' }
-              }
-            >
-              Sign In
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setTab('signup');
-                resetMessages();
-              }}
-              className="flex-1 text-sm font-medium py-2 rounded-lg transition-all"
-              style={
-                tab === 'signup'
-                  ? { background: '#6366f1', color: 'white' }
-                  : { color: '#64748b' }
-              }
-            >
-              Request Access
-            </button>
+      <div className="login-right-panel" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "40px 24px", position: "relative", zIndex: 1, minWidth: 0 }}>
+        <div style={{ width: "100%", maxWidth: "480px" }}>
+          <div style={{ borderRadius: "20px", padding: "40px", position: "relative", background: "#0b0b16", border: "1px solid #16162a", boxShadow: "0 40px 80px rgba(0,0,0,0.4)" }}>
+            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: `linear-gradient(90deg,transparent,${accent},transparent)`, transition: "background 0.5s" }} />
+
+            <div style={{ position: "relative", zIndex: 1 }}>
+              <div style={{ marginBottom: "28px" }}>
+                <h2 style={{ fontSize: "22px", fontWeight: 800, color: "#fff", marginBottom: "6px", letterSpacing: "-0.02em" }}>Sign In</h2>
+                <p style={{ fontSize: "13px", color: "#4b5563" }}>Select your role and enter your credentials.</p>
+              </div>
+
+              {error && (
+                <div style={{
+                  padding: "12px 16px",
+                  borderRadius: "12px",
+                  background: "#ef444420",
+                  border: "1px solid #ef444430",
+                  color: "#ef4444",
+                  fontSize: "14px",
+                  marginBottom: "16px"
+                }}>
+                  {error}
+                </div>
+              )}
+
+              <form onSubmit={handleSubmit}>
+                <div style={{ marginBottom: "18px" }}>
+                  <div style={{ fontSize: "11px", marginBottom: "8px", fontWeight: 500, color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>ASSIGNED ROLE</div>
+                  <RoleDropdown value={role} onChange={setRole} />
+                </div>
+
+                <div style={{ marginBottom: "18px" }}>
+                  <div style={{ fontSize: "11px", marginBottom: "8px", fontWeight: 500, color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>BADGE / EMPLOYEE ID</div>
+                  <input
+                    type="text"
+                    value={badgeId}
+                    onChange={(e) => setBadgeId(sanitizeBadge(e.target.value))}
+                    placeholder="e.g. NBI-CCRU-0041"
+                    onFocus={() => setFocusField("badge")}
+                    onBlur={() => setFocusField(null)}
+                    autoComplete="off"
+                    style={{ ...inputStyle("badge"), fontFamily: "'JetBrains Mono',monospace" }}
+                  />
+                </div>
+
+                <div style={{ marginBottom: "10px" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                    <div style={{ fontSize: "11px", fontWeight: 500, color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>PASSWORD</div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowForgotPw(true);
+                        setForgotStage("email");
+                        setForgotEmail("");
+                        setForgotOtp("");
+                        setForgotError(null);
+                        setForgotSuccess(false);
+                      }}
+                      style={{ fontSize: "12px", fontWeight: 600, color: accent, background: "none", border: "none", cursor: "pointer" }}
+                    >
+                      Forgot password?
+                    </button>
+                  </div>
+                  <div style={{ position: "relative" }}>
+                    <input
+                      type={showPass ? "text" : "password"}
+                      value={password}
+                      onChange={(e) => setPassword(sanitizePw(e.target.value))}
+                      placeholder="Enter your password"
+                      onFocus={() => setFocusField("password")}
+                      onBlur={() => setFocusField(null)}
+                      autoComplete="new-password"
+                      style={{ ...inputStyle("password"), paddingRight: "48px" }}
+                    />
+                    <button type="button" onClick={() => setShowPass(!showPass)}
+                      style={{ position: "absolute", right: "14px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
+                      {showPass ? (
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                          <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z" stroke="#6b7280" strokeWidth="1.2" />
+                          <circle cx="8" cy="8" r="2" stroke="#6b7280" strokeWidth="1.2" />
+                          <line x1="2" y1="14" x2="14" y2="2" stroke="#6b7280" strokeWidth="1.2" strokeLinecap="round" />
+                        </svg>
+                      ) : (
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                          <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z" stroke="#6b7280" strokeWidth="1.2" />
+                          <circle cx="8" cy="8" r="2" stroke="#6b7280" strokeWidth="1.2" />
+                        </svg>
+                      )}
+                    </button>
+                  </div>
+                  <div style={{ fontSize: "10px", color: "#4b5563", marginTop: "6px", fontFamily: "'JetBrains Mono',monospace" }}>
+                    No spaces allowed
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={!canSubmit}
+                  style={{
+                    width: "100%", padding: "15px", borderRadius: "12px", fontSize: "14px", fontWeight: 700, border: "none",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", marginTop: "24px",
+                    background: canSubmit ? `linear-gradient(135deg,${accent},${accent}cc)` : "#111118",
+                    color: canSubmit ? "#fff" : "#374151",
+                    boxShadow: canSubmit ? `0 0 30px ${accent}35` : "none",
+                    cursor: canSubmit ? "pointer" : "not-allowed",
+                    transition: "all 0.3s",
+                  }}
+                >
+                  {loading && <span style={{ width: "16px", height: "16px", borderRadius: "50%", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", animation: "spin 0.7s linear infinite", display: "inline-block", flexShrink: 0 }} />}
+                  {loading ? "Authenticating…" : "Sign In to SentinelPH"}
+                </button>
+              </form>
+
+              <p style={{ textAlign: "center", fontSize: "12px", marginTop: "24px", color: "#374151" }}>
+                No account? <span style={{ color: "#4b5563" }}>Contact your system administrator to request access.</span>
+              </p>
+            </div>
           </div>
 
-          {formError && (
-            <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 mb-4">
-              {formError}
-            </div>
-          )}
-          {infoMessage && (
-            <div className="text-sm text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-3 py-2 mb-4">
-              {infoMessage}
-            </div>
-          )}
-
-          {tab === 'signin' ? (
-            <form onSubmit={handleSignIn} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1.5">
-                  Email address
-                </label>
-                <input
-                  type="email"
-                  required
-                  autoComplete="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className={inputClass}
-                  placeholder="you@sentinelph.gov.ph"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1.5">
-                  Password
-                </label>
-                <div className="relative">
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    required
-                    autoComplete="current-password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className={inputClass + ' pr-10'}
-                    placeholder="••••••••"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((s) => !s)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
-                    tabIndex={-1}
-                  >
-                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1.5">
-                  Department badge (optional)
-                </label>
-                <RoleDropdown
-                  value={signinRoleHint}
-                  onChange={setSigninRoleHint}
-                  placeholder="Show your department badge…"
-                />
-                {selectedHint && (
-                  <p className="text-[11px] text-slate-600 mt-1.5">
-                    Cosmetic only — your actual access level is verified from your account after sign-in.
-                  </p>
-                )}
-              </div>
-
-              <label className="flex items-center gap-2 text-xs text-slate-400 select-none cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  className="rounded border-white/20 bg-[#080810] text-accent focus:ring-accent focus:ring-offset-0"
-                />
-                Remember me on this device
-              </label>
-
-              <button
-                type="submit"
-                disabled={submitting}
-                className="w-full bg-accent hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-sm font-semibold py-2.5 rounded-xl transition-colors flex items-center justify-center gap-2"
-              >
-                {submitting ? (
-                  <>
-                    <Loader2 size={16} className="animate-spin" />
-                    Signing in...
-                  </>
-                ) : (
-                  'Sign in'
-                )}
-              </button>
-            </form>
-          ) : (
-            <form onSubmit={handleSignUp} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1.5">Full name</label>
-                <input
-                  type="text"
-                  required
-                  autoComplete="name"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  className={inputClass}
-                  placeholder="Juan Dela Cruz"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1.5">
-                  Government email address
-                </label>
-                <input
-                  type="email"
-                  required
-                  autoComplete="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className={inputClass}
-                  placeholder="you@sentinelph.gov.ph"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1.5">
-                  Requested role
-                </label>
-                <RoleDropdown value={requestedRole} onChange={setRequestedRole} />
-                <p className="text-[11px] text-slate-600 mt-1.5">
-                  Subject to admin approval before permissions take effect.
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1.5">Password</label>
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  required
-                  autoComplete="new-password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className={inputClass}
-                  placeholder="At least 6 characters"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1.5">
-                  Confirm password
-                </label>
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  required
-                  autoComplete="new-password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  className={inputClass}
-                  placeholder="Re-enter password"
-                />
-              </div>
-
-              <label className="flex items-start gap-2 text-xs text-slate-400 select-none cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={agreedToTerms}
-                  onChange={(e) => setAgreedToTerms(e.target.checked)}
-                  className="mt-0.5 rounded border-white/20 bg-[#080810] text-accent focus:ring-accent focus:ring-offset-0"
-                />
-                <span>I agree to the Terms of Service and Privacy Policy.</span>
-              </label>
-
-              <button
-                type="submit"
-                disabled={submitting}
-                className="w-full bg-accent hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-sm font-semibold py-2.5 rounded-xl transition-colors flex items-center justify-center gap-2"
-              >
-                {submitting ? (
-                  <>
-                    <Loader2 size={16} className="animate-spin" />
-                    Creating account...
-                  </>
-                ) : (
-                  'Request access'
-                )}
-              </button>
-            </form>
-          )}
+          <p style={{ textAlign: "center", fontSize: "11px", marginTop: "16px", color: "#1f2937" }}>
+            Protected under RA 10175 · Philippine Cybercrime Prevention Act
+          </p>
         </div>
-
-        <p
-          className="text-center text-[11px] text-slate-600 mt-6 tracking-wide"
-          style={{ fontFamily: "'JetBrains Mono', monospace" }}
-        >
-          SentinelPH · NBI · NTC · DICT — Officer / Analyst / Auditor Console
-        </p>
       </div>
+
+      {/* FORGOT PASSWORD MODAL */}
+      {showForgotPw && (
+        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}>
+          <div style={{ width: "100%", maxWidth: "440px", margin: "0 16px", borderRadius: "20px", padding: "32px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a", boxShadow: "0 40px 80px rgba(0,0,0,0.5)" }}>
+            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: `linear-gradient(90deg,transparent,${accent},transparent)` }} />
+
+            <button
+              onClick={() => setShowForgotPw(false)}
+              style={{ position: "absolute", top: "16px", right: "16px", color: "#4b5563", background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}
+              aria-label="Close"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+
+            <div style={{ marginBottom: "24px" }}>
+              <div style={{ fontSize: "20px", fontWeight: 800, color: "#fff", marginBottom: "6px" }}>
+                Reset Password
+              </div>
+              <div style={{ fontSize: "13px", color: "#4b5563", lineHeight: 1.6 }}>
+                {forgotStage === "email"
+                  ? "Enter your registered email address. We'll send you a 6-digit code to reset your password."
+                  : `We've sent a 6-digit code to ${forgotEmail}. Enter it below to verify.`}
+              </div>
+            </div>
+
+            {forgotSuccess ? (
+              <div style={{ padding: "16px", borderRadius: "12px", background: "#0a1a12", border: "1px solid #22c55e40", color: "#22c55e", textAlign: "center" }}>
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: "8px" }}>
+                  <path d="M20 6L9 17l-5-5" />
+                </svg>
+                <div style={{ fontSize: "14px", fontWeight: 600, marginBottom: "4px" }}>Code verified!</div>
+                <div style={{ fontSize: "12px", opacity: 0.8 }}>Contact your administrator to set a new password.</div>
+              </div>
+            ) : (
+              <>
+                {forgotStage === "email" && (
+                  <>
+                    <div style={{ marginBottom: "20px" }}>
+                      <div style={{ fontSize: "11px", fontWeight: 500, color: "#6b7280", marginBottom: "8px", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>EMAIL ADDRESS</div>
+                      <input
+                        type="email"
+                        value={forgotEmail}
+                        onChange={(e) => setForgotEmail(e.target.value)}
+                        placeholder="your.email@gov.ph"
+                        autoFocus
+                        style={{
+                          width: "100%", padding: "14px 16px", borderRadius: "12px", fontSize: "14px",
+                          background: "#080810", border: `1.5px solid ${focusField === "forgot-email" ? accent + "80" : "#1c1c2e"}`,
+                          color: "#e2e8f0", outline: "none", boxSizing: "border-box",
+                        }}
+                        onFocus={() => setFocusField("forgot-email")}
+                        onBlur={() => setFocusField(null)}
+                      />
+                    </div>
+
+                    {forgotError && (
+                      <div style={{ marginBottom: "16px", padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#ef444420", border: "1px solid #ef444430", color: "#ef4444" }}>
+                        {forgotError}
+                      </div>
+                    )}
+
+                    <button
+                      onClick={() => {
+                        if (!forgotEmail.trim() || !forgotEmail.includes("@")) {
+                          setForgotError("Please enter a valid email address.");
+                          return;
+                        }
+                        setForgotError(null);
+                        setForgotStage("otp");
+                      }}
+                      style={{ width: "100%", padding: "14px", borderRadius: "12px", fontSize: "14px", fontWeight: 700, border: "none", background: accent, color: "#fff", cursor: "pointer" }}
+                    >
+                      Send Reset Code
+                    </button>
+                  </>
+                )}
+
+                {forgotStage === "otp" && (
+                  <>
+                    <div style={{ marginBottom: "20px" }}>
+                      <div style={{ fontSize: "11px", fontWeight: 500, color: "#6b7280", marginBottom: "8px", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>6-DIGIT CODE</div>
+                      <input
+                        type="text"
+                        value={forgotOtp}
+                        onChange={(e) => setForgotOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                        placeholder="000000"
+                        maxLength={6}
+                        autoFocus
+                        style={{
+                          width: "100%", padding: "14px", borderRadius: "12px",
+                          fontSize: "24px", textAlign: "center", letterSpacing: "8px",
+                          background: "#080810", border: "1.5px solid #1a1a2a",
+                          color: "#fff", outline: "none", fontFamily: "'JetBrains Mono',monospace",
+                          boxSizing: "border-box",
+                        }}
+                      />
+                    </div>
+
+                    {forgotError && (
+                      <div style={{ marginBottom: "16px", padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#ef444420", border: "1px solid #ef444430", color: "#ef4444" }}>
+                        {forgotError}
+                      </div>
+                    )}
+
+                    <button
+                      onClick={() => {
+                        if (forgotOtp.length !== 6) {
+                          setForgotError("Please enter the full 6-digit code.");
+                          return;
+                        }
+                        setForgotError(null);
+                        setForgotSuccess(true);
+                      }}
+                      style={{ width: "100%", padding: "14px", borderRadius: "12px", fontSize: "14px", fontWeight: 700, border: "none", background: accent, color: "#fff", cursor: "pointer" }}
+                    >
+                      Verify Code
+                    </button>
+
+                    <div style={{ textAlign: "center", fontSize: "12px", marginTop: "16px", color: "#4b5563" }}>
+                      Didn't receive the code? <span style={{ color: accent, cursor: "pointer", fontWeight: 600 }} onClick={() => setForgotStage("email")}>Resend</span>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes slideDown {
+          from { opacity: 0; transform: translateY(-12px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes floatGlow {
+          0% { top: 10%; left: 25%; opacity: 0.4; }
+          50% { top: 55%; left: 75%; opacity: 0.8; }
+          100% { top: 20%; left: 35%; opacity: 0.4; }
+        }
+        @keyframes floatGlow2 {
+          0% { bottom: 25%; right: 10%; opacity: 0.3; }
+          50% { bottom: 65%; right: 45%; opacity: 0.6; }
+          100% { bottom: 35%; right: 20%; opacity: 0.3; }
+        }
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes fadeOut {
+          from { opacity: 1; }
+          to { opacity: 0; }
+        }
+        input:-webkit-autofill,
+        input:-webkit-autofill:hover, 
+        input:-webkit-autofill:focus, 
+        input:-webkit-autofill:active {
+          -webkit-box-shadow: 0 0 0 1000px #080810 inset !important;
+          -webkit-text-fill-color: #e2e8f0 !important;
+          transition: background-color 5000s ease-in-out 0s;
+        }
+
+        @media (max-width: 1024px) {
+          .login-container {
+            flex-direction: column !important;
+            overflow-y: auto !important;
+          }
+          .login-left-panel {
+            width: 100% !important;
+            padding: 32px !important;
+            min-height: auto !important;
+          }
+          .login-right-panel {
+            width: 100% !important;
+            padding: 24px 16px !important;
+          }
+        }
+        @media (max-width: 480px) {
+          .login-left-panel {
+            padding: 24px !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }
