@@ -14,6 +14,8 @@ const healthRoutes = require('./routes/health');
 const reportRoutes = require('./routes/reports');
 const blacklistRoutes = require('./routes/blacklist');
 const auditorRoutes = require('./routes/auditor');
+const adminRoutes = require('./routes/admin');
+const authRoutes = require('./routes/auth');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -61,6 +63,9 @@ app.use('/health', healthRoutes);
 app.use('/api/v1/reports', reportRoutes);
 app.use('/api/v1/blacklist', blacklistRoutes);
 app.use('/api/v1/auditor', auditorRoutes);
+app.use('/api/v1/admin', adminRoutes);
+app.use('/api/v1/auth', require('./routes/activation'));
+app.use('/api/v1/auth', authRoutes);
 
 app.get('/', (req, res) => {
   res.status(200).json({

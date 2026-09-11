@@ -1,3 +1,5 @@
+# services/ai/app/main.py
+
 """
 app/main.py
 ------------
@@ -5,19 +7,19 @@ SentinelPH — AI Scam Detection Pipeline — FastAPI Microservice.
 
 Endpoints:
     GET  /health   -> liveness + model-load status
-    POST /predict  -> scam probability + categorical label for a report
+    POST /predict  -> scam probability, risk level + explainable reasons
 
 STRICT GUARDRAIL (SRS Requirement 5):
     This service is READ-ONLY / ADVISORY with respect to SentinelPH's
     core data. It has no database credentials, no write access to
     MongoDB, and no knowledge of the blacklist. It can NEVER blacklist a
     number or bypass the Express gateway's Two-Officer approval state
-    machine — it only returns a probability + label that the Express
-    Gateway attaches to a report as metadata for human officers to
-    consider. Enforcement of this boundary lives on the Express side
-    (see services/api/controllers/reportController.js), not here — but
-    this service is intentionally built with zero capability to do
-    anything else, as defense in depth.
+    machine — it only returns a probability + label + explanation that
+    the Express Gateway attaches to a report as metadata for human
+    officers to consider. Enforcement of this boundary lives on the
+    Express side (see services/api/controllers/reportController.js),
+    not here — but this service is intentionally built with zero
+    capability to do anything else, as defense in depth.
 """
 
 import os
@@ -39,14 +41,12 @@ from app.schemas import HealthResponse, PredictRequest, PredictResponse  # noqa:
 from app.utils.ocr import OCRError, extract_text_from_base64
 from app.utils.text_normalize import normalize_text
 
-# Security configuration
 API_KEY = os.environ.get("AI_SERVICE_API_KEY", "").strip()
 PROTECTED_PATHS = {"/predict"}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: attempt to load model artifacts once, log clear status.
     clf = get_classifier()
     if not clf.loaded:
         logger.warning(
@@ -64,15 +64,14 @@ async def lifespan(app: FastAPI):
             test_acc,
         )
     yield
-    # Shutdown: nothing to clean up (no DB connections held by this service).
 
 
 app = FastAPI(
     title="SentinelPH AI Scam Detection Service",
     description=(
-        "Advisory-only scam probability scoring for SMS/text and "
-        "screenshot evidence. Never writes to the SentinelPH database "
-        "and never bypasses the Two-Officer approval workflow."
+        "Advisory-only scam probability + explainable-reason scoring for "
+        "SMS/text and screenshot evidence. Never writes to the SentinelPH "
+        "database and never bypasses the Two-Officer approval workflow."
     ),
     version=settings.SERVICE_VERSION,
     lifespan=lifespan,
@@ -118,6 +117,7 @@ def health() -> HealthResponse:
         model_loaded=False,
         message="No model artifacts loaded.",
     )
+
 
 @app.post(
     "/predict",
@@ -165,26 +165,32 @@ def predict(payload: PredictRequest) -> PredictResponse:
     clean_text = normalize_text(raw_combined)
 
     try:
-        probability = clf.predict(clean_text)
+        result = clf.analyze(raw_text=raw_combined, normalized_text=clean_text)
     except ModelNotLoadedError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
 
+    probability = result["probability_score"]
     label = classify_score(probability)
 
     logger.info(
         "predict report_id={} ocr_used={} chars={} prob={:.4f} "
-        "label={} took_ms={:.1f}",
-        payload.report_id, ocr_used, len(clean_text), probability, label,
+        "risk={} reasons={} label={} took_ms={:.1f}",
+        payload.report_id, ocr_used, len(clean_text), probability,
+        result["risk_level"], len(result["explanation_reasons"]), label,
         (time.time() - t0) * 1000,
     )
 
     return PredictResponse(
         report_id=payload.report_id,
-        probability_score=round(probability, 4),
+        probability_score=probability,
         label=label,
+        is_scam=result["is_scam"],
+        confidence_score=result["confidence_score"],
+        risk_level=result["risk_level"],
+        explanation_reasons=result["explanation_reasons"],
         ocr_used=ocr_used,
         ocr_extracted_chars=ocr_char_count,
         model_version=clf.model_version,

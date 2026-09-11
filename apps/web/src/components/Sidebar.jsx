@@ -68,11 +68,10 @@ export default function Sidebar({ isOpen, onClose }) {
       }, 50);
     }, 300);
   }
-
   const roleColor =
     role === ROLES.OFFICER ? "#3b82f6" :
-    role === ROLES.ANALYST ? "#a855f7" :
-    role === ROLES.AUDITOR ? "#22c55e" :
+    role === ROLES.ADMIN ? "#a855f7" :
+    role === ROLES.SUPERADMIN ? "#22c55e" :
     "#3b82f6";
 
   const getNavItems = () => {
@@ -84,22 +83,21 @@ export default function Sidebar({ isOpen, onClose }) {
         { id: "notifications", label: "Notifications", Icon: NotificationsIcon, badge: 3, to: "/officer/notifications" },
         { id: "account", label: "Account", Icon: AccountIcon, to: "/officer/account" },
       ];
-    } else if (role === ROLES.ANALYST) {
+    } else if (role === ROLES.ADMIN) {
       return [
-        { id: "dashboard", label: "Trends Dashboard", Icon: DashboardIcon, to: "/analyst/dashboard" },
-        { id: "patterns", label: "Pattern Explorer", Icon: QueueIcon, to: "/analyst/patterns" },
-        { id: "model", label: "AI Model Insights", Icon: RegistryIcon, to: "/analyst/model" },
-        { id: "reports", label: "Regional Reports", Icon: NotificationsIcon, to: "/analyst/reports" },
-        { id: "alerts", label: "Alerts Configuration", Icon: AccountIcon, to: "/analyst/alerts" },
-        { id: "account", label: "Account", Icon: AccountIcon, to: "/analyst/account" },
+        { id: "dashboard", label: "Dashboard", Icon: DashboardIcon, to: "/admin/dashboard" },
+        { id: "officers", label: "Officers", Icon: QueueIcon, to: "/admin/officers" },
+        { id: "model", label: "AI Insights", Icon: RegistryIcon, to: "/admin/model" },
+        { id: "reports", label: "Analytics & Reports", Icon: NotificationsIcon, to: "/admin/reports" },
+        { id: "account", label: "Account", Icon: AccountIcon, to: "/admin/account" },
       ];
-    } else if (role === ROLES.AUDITOR) {
+    } else if (role === ROLES.SUPERADMIN) {
       return [
-        { id: "dashboard", label: "Dashboard", Icon: DashboardIcon, to: "/auditor/dashboard" },
-        { id: "verify", label: "Verification Tool", Icon: QueueIcon, to: "/auditor/verify" },
-        { id: "trail", label: "Audit Trail", Icon: RegistryIcon, to: "/auditor/trail" },
-        { id: "anomalies", label: "Anomaly Reports", Icon: NotificationsIcon, to: "/auditor/anomalies" },
-        { id: "account", label: "Account", Icon: AccountIcon, to: "/auditor/account" },
+        { id: "dashboard", label: "Dashboard", Icon: DashboardIcon, to: "/superadmin/dashboard" },
+        { id: "verify", label: "Verification Tool", Icon: QueueIcon, to: "/superadmin/verify" },
+        { id: "trail", label: "Audit Trail", Icon: RegistryIcon, to: "/superadmin/trail" },
+        { id: "anomalies", label: "Anomaly Reports", Icon: NotificationsIcon, to: "/superadmin/anomalies" },
+        { id: "account", label: "Account", Icon: AccountIcon, to: "/superadmin/account" },
       ];
     }
     return [];
@@ -141,9 +139,9 @@ export default function Sidebar({ isOpen, onClose }) {
         <div style={{ padding: "10px 12px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 10px", borderRadius: "8px", background: `${roleColor}12`, border: `1px solid ${roleColor}25` }}>
             <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: roleColor, flexShrink: 0 }} />
-            <span style={{ fontSize: "9px", fontWeight: 600, color: roleColor, fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>
-              {role === ROLES.OFFICER ? "NBI CCRU" : role === ROLES.ANALYST ? "NTC FRAUD DIV." : "SYSTEM AUDITOR"}
-            </span>
+         <span style={{ fontSize: "10px", fontWeight: 700, color: roleColor, fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.05em" }}>
+  {role === ROLES.OFFICER ? "NBI CCRU" : role === ROLES.ADMIN ? "AGENCY ADMIN" : "SUPER ADMIN"}
+</span>
           </div>
         </div>
 

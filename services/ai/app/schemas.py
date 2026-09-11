@@ -1,37 +1,22 @@
+# services/ai/app/schemas.py
+
 """
-app/schemas.py
-----------------
 Pydantic models defining the /predict request/response contract between
 the Express API Gateway and this FastAPI microservice.
 """
 
-from typing import Literal, Optional
+from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class PredictRequest(BaseModel):
-    """
-    Exactly one evidence source must be provided:
-      - `text`            : plain report text (e.g. the SMS body)
-      - `image_base64`    : base64-encoded screenshot (data-URI prefix OK)
-
-    Both may be supplied together (e.g. report text + a supporting
-    screenshot); in that case the OCR-extracted text is appended to the
-    plain text before vectorization.
-    """
-
-    text: Optional[str] = Field(
-        default=None, description="Plain report text, e.g. the raw SMS body."
-    )
-    image_base64: Optional[str] = Field(
-        default=None,
-        description="Base64-encoded screenshot evidence, optionally "
-        "prefixed with a data:image/...;base64, URI header.",
-    )
-    report_id: Optional[str] = Field(
-        default=None,
-        description="Optional Express-side report ID, echoed back for "
-        "correlation/logging on the gateway side.",
+    text: Optional[str] = Field(default=None)
+    image_base64: Optional[str] = Field(default=None)
+    report_id: Optional[str] = Field(default=None)
+    scam_type: Optional[str] = Field(
+        default="UNKNOWN",
+        description="Deprecated client field, accepted but ignored — "
+        "the model predicts category internally.",
     )
 
     @model_validator(mode="after")
@@ -45,8 +30,12 @@ class PredictRequest(BaseModel):
         return self
 
 
+class ExplanationReason(BaseModel):
+    category: str
+    description: str
+
+
 class PredictResponse(BaseModel):
-    # Fixes Pydantic warning for fields starting with 'model_'
     model_config = ConfigDict(protected_namespaces=())
 
     report_id: Optional[str] = None
@@ -55,6 +44,24 @@ class PredictResponse(BaseModel):
         description="Model-estimated probability the content is scam-like.",
     )
     label: Literal["likely_scam", "uncertain", "likely_legitimate"]
+
+    # --- Layer 1: Instant AI Warning fields ---
+    is_scam: bool = Field(
+        ..., description="Convenience boolean: probability_score >= 0.5."
+    )
+    confidence_score: float = Field(
+        ..., ge=0.0, le=1.0,
+        description="Model confidence in the assigned label (mirrors probability_score).",
+    )
+    risk_level: Literal["HIGH", "MEDIUM", "LOW"] = Field(
+        ..., description="Coarse risk bucket for UI banner rendering."
+    )
+    explanation_reasons: List[ExplanationReason] = Field(
+        default_factory=list,
+        description="Human-readable reasons (ML + heuristic) explaining the score, "
+        "for the 'WHY THIS MESSAGE WAS FLAGGED' UI section.",
+    )
+
     ocr_used: bool = Field(
         ..., description="Whether OCR extraction was performed on this request."
     )
@@ -73,7 +80,6 @@ class PredictResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    # Fixes Pydantic warning for fields starting with 'model_'
     model_config = ConfigDict(protected_namespaces=())
 
     status: Literal["ok", "degraded"]

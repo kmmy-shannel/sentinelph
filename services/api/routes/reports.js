@@ -7,6 +7,7 @@ const Report = require('../models/Report');
 const BlacklistEntry = require('../models/BlacklistEntry');
 const AuditLog = require('../models/AuditLog');
 const { getGenesisHash, verifyReportChain } = require('../utils/hashChain');
+const { analyzeReportPreview } = require('../controllers/reportController');
 
 const router = express.Router();
 
@@ -15,26 +16,34 @@ const router = express.Router();
 const AUTO_CANDIDATE_THRESHOLD = 3;
 
 /**
- * Calls the internal AI Scam Detector microservice (Section 4.d) to
- * classify report text. Fails gracefully: if the service is unreachable
- * or slow (>2s), the report still proceeds with an 'uncertain' flag
- * rather than blocking submission — the AI signal is advisory only.
+ * Calls the internal AI Scam Detector microservice to classify text.
+ * Resolves process.env.AI_SERVICE_URL and passes authentication header.
  */
-async function classifyReportText(text) {
-  const aiUrl = process.env.AI_DETECTOR_URL;
+async function classifyReportText({ text, imageBase64 } = {}) {
+  const baseUrl = process.env.AI_SERVICE_URL || process.env.AI_DETECTOR_URL;
 
-  if (!aiUrl) {
-    return { label: 'uncertain', probability: null, source: 'unavailable' };
+  if (!baseUrl) {
+    return { available: false, label: 'uncertain', probability: null, riskLevel: 'UNKNOWN', explanationReasons: [] };
   }
 
+  const aiUrl = baseUrl.endsWith('/predict') ? baseUrl : `${baseUrl.replace(/\/+$/, '')}/predict`;
+  const apiKey = process.env.AI_SERVICE_API_KEY;
+
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 2000);
+  const timeoutId = setTimeout(() => controller.abort(), 3000);
 
   try {
     const response = await fetch(aiUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': apiKey || '',
+      },
+      // Forward either or both — matches PredictRequest's "at least one" contract.
+      body: JSON.stringify({
+        text: text || undefined,
+        image_base64: imageBase64 || undefined,
+      }),
       signal: controller.signal,
     });
 
@@ -45,15 +54,17 @@ async function classifyReportText(text) {
     const data = await response.json();
 
     return {
-      label: ['likely_scam', 'uncertain', 'likely_legitimate'].includes(data.label)
-        ? data.label
-        : 'uncertain',
-      probability: typeof data.scam_probability === 'number' ? data.scam_probability : null,
+      available: true,
+      isScam: Boolean(data.is_scam),
+      label: data.is_scam ? 'likely_scam' : 'likely_legitimate',
+      probability: typeof data.confidence_score === 'number' ? data.confidence_score : null,
+      riskLevel: data.risk_level || 'LOW',
+      explanationReasons: data.explanation_reasons || [],
       source: 'ai-detector',
     };
   } catch (err) {
-    console.error('[Reports] AI detector call failed, defaulting to uncertain:', err.message);
-    return { label: 'uncertain', probability: null, source: 'unavailable' };
+    console.error('[Reports] AI detector call failed, defaulting to fallback:', err.message);
+    return { available: false, label: 'uncertain', probability: null, riskLevel: 'UNKNOWN', explanationReasons: [] };
   } finally {
     clearTimeout(timeoutId);
   }
@@ -62,10 +73,18 @@ async function classifyReportText(text) {
 function validateSubmission(body) {
   const errors = [];
 
-  if (!body.textData || typeof body.textData !== 'string' || body.textData.trim().length === 0) {
-    errors.push('textData is required and must be a non-empty string.');
-  } else if (body.textData.length > 2000) {
+  const hasText = typeof body.textData === 'string' && body.textData.trim().length > 0;
+  const hasImage = typeof body.imageBase64 === 'string' && body.imageBase64.trim().length > 0;
+
+  // Neither field is individually required — but at least one must be present.
+  if (!hasText && !hasImage) {
+    errors.push('Either textData or imageBase64 is required.');
+  }
+  if (hasText && body.textData.length > 2000) {
     errors.push('textData must be 2000 characters or fewer.');
+  }
+  if (hasImage && body.imageBase64.length > 5_000_000) {
+    errors.push('imageBase64 payload is too large.');
   }
 
   if (!body.reportedNumber || typeof body.reportedNumber !== 'string' || body.reportedNumber.trim().length === 0) {
@@ -93,12 +112,6 @@ function validateSubmission(body) {
   return errors;
 }
 
-/**
- * If a reported number now has AUTO_CANDIDATE_THRESHOLD or more
- * independent reports and no BlacklistEntry exists yet, opens one in
- * 'pending' state for officer review. Never throws — failures here
- * must not roll back a successful, already-chained report submission.
- */
 async function maybeOpenBlacklistCandidate(reportedNumber, region) {
   try {
     const existing = await BlacklistEntry.findOne({ phoneNumber: reportedNumber });
@@ -128,7 +141,12 @@ async function maybeOpenBlacklistCandidate(reportedNumber, region) {
 }
 
 // =====================================================================
-// POST /api/v1/reports  — Submit a new report (Citizen only)
+// POST /api/v1/reports/analyze — Real-time live check endpoint for Mobile UI
+// =====================================================================
+router.post('/analyze', analyzeReportPreview);
+
+// =====================================================================
+// POST /api/v1/reports — Submit a new report (Citizen only)
 // =====================================================================
 router.post(
   '/',
@@ -141,21 +159,21 @@ router.post(
       throw new ApiError(400, validationErrors.join(' '), 'VALIDATION_ERROR');
     }
 
-    const { textData, reportedNumber, nullifier, location } = req.body;
+    const { textData, imageBase64, reportedNumber, nullifier, location } = req.body;
 
-    // 1. AI classification (advisory only — never blocks or auto-decides).
-    const aiFlag = await classifyReportText(textData);
+    // 1. AI classification (advisory only) — text and/or image
+    const aiFlag = await classifyReportText({ text: textData, imageBase64 });
 
-    // 2. Fetch the current chain tail.
+    // 2. Fetch the current chain tail
     const tail = await Report.findOne().sort({ sequence: -1 }).select('sequence hash').lean();
     const previousHash = tail ? tail.hash : getGenesisHash();
     const nextSequence = tail ? tail.sequence + 1 : 0;
 
-    // 3. Create and persist — the pre-save hook computes `hash`.
+    // 3. Create and persist
     let report;
     try {
       report = await Report.create({
-        textData: textData.trim(),
+        textData: textData ? textData.trim() : undefined,
         reportedNumber: reportedNumber.trim(),
         nullifier: nullifier.trim(),
         location: location || {},
@@ -173,9 +191,8 @@ router.post(
       throw err;
     }
 
-    // 4. Audit trail (append-only, itself outside the report's own hash chain
-    //    but permanently recorded).
-    await AuditLog.record({
+    // 4. Audit trail
+       await AuditLog.record({
       userId: req.user.uid,
       role: req.user.role,
       action: 'REPORT_SUBMITTED',
@@ -183,9 +200,8 @@ router.post(
       metadata: { reportId: report.reportId, reportedNumber: report.reportedNumber },
     });
 
-    // 5. Non-blocking: check whether this pushes the number past the
-    //    auto-candidate threshold for officer review.
-    await maybeOpenBlacklistCandidate(report.reportedNumber, report.location?.region);
+    // 5. Non-blocking candidate check
+     await maybeOpenBlacklistCandidate(report.reportedNumber, report.location?.region);
 
     return res.status(201).json({
       success: true,
@@ -203,7 +219,7 @@ router.post(
 );
 
 // =====================================================================
-// GET /api/v1/reports  — List/paginate reports (Officer, Analyst, Auditor)
+// GET /api/v1/reports — List/paginate reports
 // =====================================================================
 router.get(
   '/',
@@ -223,9 +239,6 @@ router.get(
       query.reportedNumber = req.query.reportedNumber;
     }
 
-    // Officers default-scope to their own jurisdiction; an explicit
-    // region query that contradicts their jurisdiction is rejected,
-    // since multi-jurisdiction assignment is not modeled in this phase.
     if (req.user.role === 'officer') {
       if (req.query.region && req.user.jurisdiction && req.query.region !== req.user.jurisdiction) {
         throw new ApiError(403, 'Officers may only query reports within their assigned jurisdiction.', 'JURISDICTION_MISMATCH');
@@ -261,7 +274,6 @@ router.get(
 
 // =====================================================================
 // GET /api/v1/reports/chain/verify — Recompute & verify chain integrity
-// (Auditor only)
 // =====================================================================
 router.get(
   '/chain/verify',
@@ -296,8 +308,7 @@ router.get(
 );
 
 // =====================================================================
-// GET /api/v1/reports/:reportId  — Fetch a single report
-// (Officer, Analyst, Auditor)
+// GET /api/v1/reports/:reportId — Fetch a single report
 // =====================================================================
 router.get(
   '/:reportId',

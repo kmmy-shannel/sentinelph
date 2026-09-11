@@ -1,7 +1,9 @@
 // apps/web/src/pages/Login.jsx
 import { useState, useRef, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+
 import { useAuth, ROLES } from "../context/AuthContext";
+import { signInWithEmailAndPassword } from "firebase/auth";
+import { auth } from "../config/firebase";
 
 const ShieldIcon = ({ color }) => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -25,14 +27,14 @@ const ScalesIcon = ({ color }) => (
 
 const ROLE_OPTIONS = [
   { id: ROLES.OFFICER, label: "Barangay / NBI Officer", dept: "NBI Cybercrime Division", Icon: ShieldIcon, color: "#3b82f6", path: "/officer/dashboard" },
-  { id: ROLES.ANALYST, label: "Fraud Analyst", dept: "NTC Fraud Research Division", Icon: MagnifyIcon, color: "#a855f7", path: "/analyst/dashboard" },
-  { id: ROLES.AUDITOR, label: "System Auditor", dept: "DICT Independent Auditor", Icon: ScalesIcon, color: "#22c55e", path: "/auditor/dashboard" },
+  { id: ROLES.ADMIN, label: "Agency Admin", dept: "NTC Fraud Research Division", Icon: MagnifyIcon, color: "#a855f7", path: "/admin/dashboard" },
+  { id: ROLES.SUPERADMIN, label: "System Super Admin", dept: "DICT Independent Auditor", Icon: ScalesIcon, color: "#22c55e", path: "/superadmin/dashboard" },
 ];
 
 const DEMO_USERS = {
   officer: { name: "Insp. R. Cruz", badge: "NBI-CCRU-0041", email: "r.cruz@nbi-ccru.gov.ph", dept: "NBI Cybercrime Division", initials: "RC" },
-  analyst: { name: "Ana Mercado", badge: "NTC-FRO-0018", email: "a.mercado@ntc.gov.ph", dept: "NTC Fraud Research Division", initials: "AM" },
-  auditor: { name: "Dr. J. Santos", badge: "DICT-AUD-0903", email: "j.santos@dict.gov.ph", dept: "DICT Independent Auditor", initials: "JS" },
+  admin: { name: "Ana Mercado", badge: "NTC-FRO-0018", email: "a.mercado@ntc.gov.ph", dept: "NTC Fraud Research Division", initials: "AM" },
+  superadmin: { name: "Dr. J. Santos", badge: "DICT-AUD-0903", email: "j.santos@dict.gov.ph", dept: "DICT Independent Auditor", initials: "JS" },
 };
 
 function RoleDropdown({ value, onChange }) {
@@ -126,10 +128,9 @@ function RoleDropdown({ value, onChange }) {
 }
 
 export default function Login() {
-  const navigate = useNavigate();
-  const { isAuthenticated, loading: authLoading } = useAuth();
+  const { isAuthenticated, role: authRole, loading: authLoading } = useAuth();
   const [role, setRole] = useState("");
-  const [badgeId, setBadgeId] = useState("");
+ const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -146,26 +147,16 @@ export default function Login() {
 
   const selectedRole = ROLE_OPTIONS.find((r) => r.id === role);
   const accent = selectedRole?.color ?? "#6366f1";
-  const canSubmit = role && badgeId && password && !loading;
+ const canSubmit = role && email && password && !loading;
+ 
 
-  useEffect(() => {
-    if (!authLoading && isAuthenticated) {
-      const storedUser = localStorage.getItem('sentinelph_user');
-      if (storedUser) {
-        try {
-          const userData = JSON.parse(storedUser);
-          const roleData = ROLE_OPTIONS.find(r => r.id === userData.role);
-          if (roleData) {
-            window.location.href = roleData.path;
-            return;
-          }
-        } catch (e) {
-          console.error('Error parsing user data:', e);
-        }
-      }
-      window.location.href = '/officer/dashboard';
+
+    useEffect(() => {
+    if (!authLoading && isAuthenticated && authRole) {
+      const roleData = ROLE_OPTIONS.find(r => r.id === authRole);
+      window.location.href = roleData?.path || '/unauthorized';
     }
-  }, [authLoading, isAuthenticated, navigate]);
+  }, [authLoading, isAuthenticated, authRole]);
 
   const sanitizePw = (value) => value.replace(/\s/g, "");
   const sanitizeBadge = (value) => value.toUpperCase().replace(/\s/g, "");
@@ -179,47 +170,48 @@ export default function Login() {
     transition: "all 0.3s", boxSizing: "border-box",
   });
 
-  function handleSubmit(e) {
-    e.preventDefault();
-    if (!canSubmit) return;
+ async function handleSubmit(e) {
+  e.preventDefault();
+  if (!canSubmit) return;
 
-    setError(null);
-    setLoading(true);
+  setError(null);
+  setLoading(true);
 
-    setTimeout(() => {
-      try {
-        const selectedRoleData = ROLE_OPTIONS.find((r) => r.id === role);
-        const userData = DEMO_USERS[role];
+  try {
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    const tokenResult = await cred.user.getIdTokenResult(true);
+    const actualRole = tokenResult.claims.role;
 
-        if (selectedRoleData && userData) {
-          const user = {
-            role: role,
-            ...userData,
-            isAuthenticated: true,
-            loginTime: new Date().toISOString()
-          };
+    if (!actualRole) {
+      await auth.signOut();
+      setError('Your account has no assigned role. Contact your system administrator.');
+      setLoading(false);
+      return;
+    }
 
-          localStorage.setItem('sentinelph_user', JSON.stringify(user));
+    if (actualRole !== role) {
+      await auth.signOut();
+      const correctPortal = ROLE_OPTIONS.find(r => r.id === actualRole)?.label || actualRole;
+      setError(`This account is registered as "${correctPortal}", not the portal you selected.`);
+      setLoading(false);
+      return;
+    }
 
-          const loginContainer = document.getElementById('login-page');
-          if (loginContainer) {
-            loginContainer.style.transition = "opacity 0.3s ease";
-            loginContainer.style.opacity = "0";
-          }
-
-          setTimeout(() => {
-            window.location.href = selectedRoleData.path;
-          }, 300);
-        } else {
-          setError('Invalid role selected');
-          setLoading(false);
-        }
-      } catch (err) {
-        setError('Login failed. Please try again.');
-        setLoading(false);
-      }
-    }, 800);
+     // Success — AuthContext's onAuthStateChanged will pick up the new
+    // role via getIdTokenResult, which triggers the redirect effect
+    // above. No manual navigation here, so there's no race.
+  } catch (err) {
+    console.error('[Login] Firebase sign-in failed:', err);
+    if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found') {
+      setError('Invalid email or password.');
+    } else if (err.code === 'auth/too-many-requests') {
+      setError('Too many failed attempts. Please try again later.');
+    } else {
+      setError('Login failed. Please try again.');
+    }
+    setLoading(false);
   }
+}
 
   return (
     <div id="login-page" className="login-container" style={{ width: "100%", minHeight: "100vh", display: "flex", overflow: "hidden", fontFamily: "'Inter',sans-serif", background: "#06060f", position: "relative", animation: "fadeIn 0.5s ease" }}>
@@ -320,18 +312,18 @@ export default function Login() {
                 </div>
 
                 <div style={{ marginBottom: "18px" }}>
-                  <div style={{ fontSize: "11px", marginBottom: "8px", fontWeight: 500, color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>BADGE / EMPLOYEE ID</div>
-                  <input
-                    type="text"
-                    value={badgeId}
-                    onChange={(e) => setBadgeId(sanitizeBadge(e.target.value))}
-                    placeholder="e.g. NBI-CCRU-0041"
-                    onFocus={() => setFocusField("badge")}
-                    onBlur={() => setFocusField(null)}
-                    autoComplete="off"
-                    style={{ ...inputStyle("badge"), fontFamily: "'JetBrains Mono',monospace" }}
-                  />
-                </div>
+  <div style={{ fontSize: "11px", marginBottom: "8px", fontWeight: 500, color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>EMAIL ADDRESS</div>
+  <input
+    type="email"
+    value={email}
+    onChange={(e) => setEmail(e.target.value.trim())}
+    placeholder="e.g. r.cruz@nbi-ccru.gov.ph"
+    onFocus={() => setFocusField("email")}
+    onBlur={() => setFocusField(null)}
+    autoComplete="username"
+    style={inputStyle("email")}
+  />
+</div>
 
                 <div style={{ marginBottom: "10px" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>

@@ -1,4 +1,6 @@
-const VALID_ROLES = ['citizen', 'officer', 'analyst', 'auditor'];
+// Extended to include admin/superadmin for the Hierarchical Invitation-Based
+// Provisioning System, alongside the original operational roles.
+const VALID_ROLES = ['citizen', 'officer', 'analyst', 'auditor', 'admin', 'superadmin'];
 
 /**
  * Factory: returns Express middleware that only allows requests through
@@ -6,7 +8,7 @@ const VALID_ROLES = ['citizen', 'officer', 'analyst', 'auditor'];
  * the roles passed in. Must run AFTER verifyFirebaseToken on the route.
  *
  * Usage: router.get('/queue', verifyFirebaseToken, requireRole('officer'), handler)
- *        router.get('/reports', verifyFirebaseToken, requireRole('officer', 'analyst', 'auditor'), handler)
+ *        router.post('/invite-officer', verifyFirebaseToken, requireRole('admin', 'superadmin'), handler)
  */
 function requireRole(...allowedRoles) {
   const roles = allowedRoles.flat();

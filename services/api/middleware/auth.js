@@ -1,6 +1,8 @@
 const { initFirebase } = require('../config/firebase');
 
-const VALID_ROLES = ['citizen', 'officer', 'analyst', 'auditor'];
+// Extended to include admin/superadmin for the Hierarchical Invitation-Based
+// Provisioning System (admin.js routes) on top of the original operational roles.
+const VALID_ROLES = ['citizen', 'officer', 'analyst', 'auditor', 'admin', 'superadmin'];
 
 /**
  * Verifies the Firebase ID token sent in the Authorization header
