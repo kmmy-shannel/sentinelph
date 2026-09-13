@@ -2,25 +2,19 @@
 //
 // Coordinates flushing the local reports_outbox to
 // POST /api/v1/reports whenever connectivity is available.
-//
-// Usage:
-//   - Call `initSyncListener()` once near app boot to auto-flush whenever
-//     the device transitions from offline -> online.
-//   - Call `syncNow()` manually (e.g. from OfflineSyncIndicator's
-//     "Sync Now" button or pull-to-refresh).
 
 import NetInfo from '@react-native-community/netinfo';
 import api, { OfflineError } from '../lib/api';
 import { getPendingReports, markReportSynced, markReportSyncFailed } from './sqlite';
 
-// parseInt on undefined -> NaN, so guard with a fallback rather than
-// letting a missing/malformed env var silently disable the retry cap.
+const DEFAULT_SCAM_TYPE = 'UNKNOWN';
+
 const parsedMaxAttempts = parseInt(process.env.EXPO_PUBLIC_SQLITE_MAX_SYNC_ATTEMPTS, 10);
 const MAX_SYNC_ATTEMPTS = Number.isFinite(parsedMaxAttempts) ? parsedMaxAttempts : 5;
 
 let isSyncing = false;
 let netInfoUnsubscribe = null;
-let listeners = new Set(); // UI subscribers wanting sync status updates
+let listeners = new Set();
 
 export function subscribeSyncStatus(callback) {
   listeners.add(callback);
@@ -37,10 +31,12 @@ function emitStatus(status) {
   });
 }
 
-/**
- * Attaches a NetInfo listener that triggers a sync pass any time the
- * device regains connectivity. Returns an unsubscribe function.
- */
+function normalizeScamType(value) {
+  if (typeof value !== 'string') return DEFAULT_SCAM_TYPE;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : DEFAULT_SCAM_TYPE;
+}
+
 export function initSyncListener() {
   if (netInfoUnsubscribe) return netInfoUnsubscribe;
 
@@ -71,11 +67,6 @@ export function stopSyncListener() {
   }
 }
 
-/**
- * Flushes all pending reports to the backend, one at a time, so a single
- * failure doesn't block reports that would otherwise succeed.
- * Returns a summary: { synced: number, failed: number, remaining: number }
- */
 export async function syncNow() {
   if (isSyncing) {
     return { synced: 0, failed: 0, remaining: 0, skipped: true };
@@ -92,17 +83,17 @@ export async function syncNow() {
 
     for (const report of pending) {
       if (report.syncAttempts >= MAX_SYNC_ATTEMPTS) {
-        // Give up on reports that have failed too many times — surfaced
-        // to the user via MyReportsScreen's "Failed" badge instead.
         continue;
       }
 
       try {
+        const scamType = normalizeScamType(report.scamType);
+
         const response = await api.post('/api/v1/reports', {
-          scamType: report.scamType,
+          scamType,
           content: report.content,
           evidenceFiles: report.evidenceFiles,
-          voiceNoteUri: report.voiceNoteUri,
+          evidenceImage: report.evidenceImage,
           location:
             report.latitude != null && report.longitude != null
               ? { latitude: report.latitude, longitude: report.longitude }
@@ -117,7 +108,6 @@ export async function syncNow() {
         synced += 1;
       } catch (err) {
         if (err instanceof OfflineError) {
-          // Connection dropped mid-flush — stop the loop, remaining stay queued.
           break;
         }
         await markReportSyncFailed(report.localId, err?.message || 'Unknown sync error');

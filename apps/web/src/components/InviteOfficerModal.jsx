@@ -2,6 +2,31 @@
 import React, { useState } from 'react';
 import apiClient from '../lib/api';
 
+// Canonical PH region list — must match shared/regions.js exactly.
+// Hardcoded here (rather than imported) because Vite's dev server
+// resolves workspace imports differently from Metro, and duplicating
+// the 17 short strings is a lower-risk trade-off than debugging
+// cross-workspace ESM interop.
+const PH_REGIONS = [
+  'NCR',
+  'CAR',
+  'Region I',
+  'Region II',
+  'Region III',
+  'Region IV-A',
+  'MIMAROPA',
+  'Region V',
+  'Region VI',
+  'Region VII',
+  'Region VIII',
+  'Region IX',
+  'Region X',
+  'Region XI',
+  'Region XII',
+  'Region XIII',
+  'BARMM',
+];
+
 const INITIAL_FORM = {
   fullName: '',
   email: '',
@@ -157,14 +182,30 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
                 required
                 disabled={isSubmitting}
               />
-              <Field
-                label="Jurisdiction"
-                value={form.jurisdiction}
-                onChange={handleChange('jurisdiction')}
-                placeholder="Quezon City / NCR"
-                required
-                disabled={isSubmitting}
-              />
+                          <label className="block">
+                <span className="block text-xs font-medium mb-1.5" style={{ color: '#94a3b8' }}>
+                  Region / Jurisdiction
+                </span>
+                <select
+                  value={form.jurisdiction}
+                  onChange={handleChange('jurisdiction')}
+                  required
+                  disabled={isSubmitting}
+                  className="w-full rounded-lg px-3 py-2 text-sm outline-none transition-colors focus:ring-1"
+                  style={{
+                    backgroundColor: '#080810',
+                    border: '1px solid #1a1a2a',
+                    color: '#f9fafb',
+                  }}
+                >
+                  <option value="">Select a region…</option>
+                  {PH_REGIONS.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
               <div className="flex items-center justify-end gap-3 pt-2">
                 <button

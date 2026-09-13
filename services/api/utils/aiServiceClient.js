@@ -2,15 +2,12 @@
 /**
  * Thin HTTP client for the FastAPI AI Scam Detection microservice.
  *
- * GUARDRAIL (SRS Requirement 5): This client only ever READS a
- * probability/label/explanation from the AI service. Nothing here — or
- * anywhere downstream — is permitted to write to the BlacklistEntry
- * collection or skip the Two-Officer approval state machine. The AI's
- * output is stored on the Report document as `aiFlag` metadata for
- * human officers to see; it is advisory only.
+ * GUARDRAIL (SRS Requirement 5): advisory-only. Never writes to
+ * BlacklistEntry, never bypasses the Two-Officer approval state machine.
  */
 
 const axios = require('axios');
+const FormData = require('form-data');
 
 const baseURL =
   process.env.AI_SERVICE_BASE_URL ||
@@ -30,17 +27,8 @@ const aiClient = axios.create({
 });
 
 /**
- * Calls POST {baseURL}/predict and returns a normalized "aiFlag" object,
- * now including Layer 1 explainability fields (risk_level, reasons).
- *
- * Never throws for a "service down" scenario — degrades gracefully so a
- * report can still be submitted/reviewed even if the ML service is offline.
- *
- * @param {Object} params
- * @param {string} [params.text]
- * @param {string} [params.imageBase64]
- * @param {string} [params.reportId]
- * @returns {Promise<Object>} aiFlag object, safe to store on the report.
+ * Calls POST {baseURL}/predict and returns a normalized "aiFlag" object.
+ * Never throws for a "service down" scenario — degrades gracefully.
  */
 async function getAiScamAssessment({ text, imageBase64, reportId } = {}) {
   if (!text && !imageBase64) {
@@ -58,6 +46,8 @@ async function getAiScamAssessment({ text, imageBase64, reportId } = {}) {
     riskLevel: 'UNKNOWN',
     explanationReasons: [],
     ocrUsed: false,
+    ocrText: null,               // NEW — stable shape for consumers
+    ocrExtractedChars: 0,        // NEW
     modelVersion: null,
     advisoryOnly: true,
     checkedAt: new Date().toISOString(),
@@ -76,14 +66,16 @@ async function getAiScamAssessment({ text, imageBase64, reportId } = {}) {
     return {
       available: true,
       probabilityScore: data.probability_score,
-      label: data.label, // 'likely_scam' | 'uncertain' | 'likely_legitimate'
+      label: data.label,
       isScam: data.is_scam,
       confidenceScore: data.confidence_score,
-      riskLevel: data.risk_level, // 'HIGH' | 'MEDIUM' | 'LOW'
-      explanationReasons: data.explanation_reasons || [], // [{category, description}]
+      riskLevel: data.risk_level,
+      explanationReasons: data.explanation_reasons || [],
       ocrUsed: data.ocr_used,
+      ocrText: data.ocr_text || null,                       // NEW
+      ocrExtractedChars: data.ocr_extracted_chars ?? 0,     // NEW
       modelVersion: data.model_version,
-      advisoryOnly: data.advisory_only === true, // must always be true
+      advisoryOnly: data.advisory_only === true,
       checkedAt: new Date().toISOString(),
       error: null,
     };
@@ -93,18 +85,13 @@ async function getAiScamAssessment({ text, imageBase64, reportId } = {}) {
       const detail = err.response.data?.detail || err.response.data?.error || 'Unknown error';
 
       if (status === 503) {
-        console.warn(
-          '[aiServiceClient] AI service not ready / model not loaded:',
-          detail
-        );
+        console.warn('[aiServiceClient] AI service not ready / model not loaded:', detail);
         return { ...fallback, label: 'unavailable', error: 'MODEL_NOT_TRAINED' };
       }
-
       if (status === 401) {
         console.error('[aiServiceClient] Unauthorized: Invalid or missing X-API-KEY.');
         return { ...fallback, error: 'UNAUTHORIZED' };
       }
-
       console.error(`[aiServiceClient] AI service returned ${status}:`, detail);
       return { ...fallback, error: `HTTP_${status}` };
     }
@@ -120,11 +107,68 @@ async function getAiScamAssessment({ text, imageBase64, reportId } = {}) {
 }
 
 /**
- * Direct wrapper for calling /predict. Returns raw FastAPI response data
- * (already includes is_scam / confidence_score / risk_level / explanation_reasons).
- * @param {Object} payload - { text, image_base64, report_id }
- * @returns {Promise<Object>} PredictResponse schema
+ * Forwards an uploaded screenshot buffer to the FastAPI `/ocr` endpoint
+ * using multipart/form-data, returning { text, confidence, available }.
  */
+async function forwardImageForOcr({ buffer, originalname, mimetype, scamType = 'UNKNOWN' }) {
+  const form = new FormData();
+  form.append('file', buffer, {
+    filename: originalname || 'screenshot.jpg',
+    contentType: mimetype || 'image/jpeg',
+  });
+  form.append('scamType', scamType || 'UNKNOWN');
+
+  try {
+    const response = await axios.post(`${baseURL}/ocr`, form, {
+      headers: {
+        ...form.getHeaders(),
+        'X-API-KEY': apiKey,
+      },
+      timeout,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+    });
+
+    const data = response.data || {};
+    return {
+      available: true,
+      text: data.text ?? data.extracted_text ?? '',
+      confidence: data.confidence ?? null,
+      // NEW: pass through Layer-1 fields the /ocr endpoint may include
+      isScam: data.is_scam ?? null,
+      confidenceScore: data.confidence_score ?? null,
+      riskLevel: data.risk_level ?? 'UNKNOWN',
+      explanationReasons: data.explanation_reasons ?? [],
+      error: null,
+    };
+  } catch (err) {
+    if (err.response) {
+      console.error(`[aiServiceClient:ocr] ${err.response.status}:`, err.response.data);
+      return {
+        available: false,
+        text: '',
+        confidence: null,
+        isScam: null,
+        confidenceScore: null,
+        riskLevel: 'UNKNOWN',
+        explanationReasons: [],
+        error: `HTTP_${err.response.status}`,
+      };
+    }
+    console.error('[aiServiceClient:ocr] forward failed:', err.message);
+    return {
+      available: false,
+      text: '',
+      confidence: null,
+      isScam: null,
+      confidenceScore: null,
+      riskLevel: 'UNKNOWN',
+      explanationReasons: [],
+      error: err.code === 'ECONNABORTED' ? 'TIMEOUT' : 'NETWORK_ERROR',
+    };
+  }
+}
+
 async function classifyReportText(payload) {
   try {
     const response = await aiClient.post('/predict', payload);
@@ -153,6 +197,7 @@ async function checkAiHealth() {
 
 module.exports = {
   getAiScamAssessment,
+  forwardImageForOcr,
   classifyReportText,
   checkAiHealth,
 };

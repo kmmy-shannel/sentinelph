@@ -5,7 +5,13 @@
 // (shows last-fetched list, no crash).
 
 import React, { useCallback, useState } from 'react';
-import { View, Text, TouchableOpacity, FlatList, RefreshControl } from 'react-native';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  FlatList,
+  RefreshControl,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 
@@ -19,8 +25,20 @@ function Badge({ label, color }) {
   };
   const s = palette[color] || palette.amber;
   return (
-    <View className="px-2 py-0.5 rounded-full self-start" style={{ backgroundColor: s.bg, borderWidth: 1, borderColor: s.border }}>
-      <Text style={{ color: s.text, fontSize: 10, fontWeight: '600' }}>{label}</Text>
+    <View
+      style={{
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        borderRadius: 999,
+        backgroundColor: s.bg,
+        borderWidth: 1,
+        borderColor: s.border,
+        alignSelf: 'flex-start',
+      }}
+    >
+      <Text style={{ color: s.text, fontSize: 10, fontWeight: '600' }}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -59,11 +77,13 @@ export default function AlertsScreen() {
   };
 
   const markAsRead = async (id) => {
-    setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, read: true } : a)));
+    setAlerts((prev) =>
+      prev.map((a) => (a.id === id ? { ...a, read: true } : a))
+    );
     try {
       await api.patch(`/api/v1/alerts/${id}/read`);
     } catch {
-      // Best-effort — local state already reflects read status.
+      // Best-effort.
     }
   };
 
@@ -80,27 +100,83 @@ export default function AlertsScreen() {
 
   return (
     <SafeAreaView edges={['top']} style={{ flex: 1, backgroundColor: '#0a1120' }}>
-      <View className="flex-row items-center justify-between px-4 pt-3 pb-2">
-        <View className="flex-row items-center gap-2">
-          <Text style={{ color: '#e2e8f0', fontSize: 14, fontWeight: '600' }}>Alerts</Text>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          paddingHorizontal: 16,
+          paddingTop: 12,
+          paddingBottom: 8,
+          gap: 12,
+        }}
+      >
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            flexShrink: 1,
+          }}
+        >
+          <Text style={{ color: '#e2e8f0', fontSize: 15, fontWeight: '600' }}>
+            Alerts
+          </Text>
           {unread > 0 && (
-            <View className="w-4 h-4 rounded-full items-center justify-center" style={{ backgroundColor: '#f43f5e' }}>
-              <Text style={{ fontSize: 9, color: 'white', fontWeight: '700' }}>{unread}</Text>
+            <View
+              style={{
+                minWidth: 18,
+                height: 18,
+                paddingHorizontal: 5,
+                borderRadius: 9,
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: '#f43f5e',
+              }}
+            >
+              <Text
+                style={{ fontSize: 10, color: 'white', fontWeight: '700' }}
+              >
+                {unread}
+              </Text>
             </View>
           )}
         </View>
-        <TouchableOpacity onPress={markAllRead}>
-          <Text style={{ color: '#4f46e5', fontSize: 12, fontWeight: '500' }}>Mark all read</Text>
+        <TouchableOpacity
+          onPress={markAllRead}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Text style={{ color: '#4f46e5', fontSize: 12, fontWeight: '500' }}>
+            Mark all read
+          </Text>
         </TouchableOpacity>
       </View>
 
       <FlatList
         data={alerts}
         keyExtractor={(item) => item.id}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#818cf8" />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#818cf8"
+          />
+        }
+        contentContainerStyle={{ paddingBottom: 24 }}
         ListEmptyComponent={
-          <View className="items-center justify-center px-6" style={{ paddingTop: 80 }}>
-            <Text style={{ color: '#475569', fontSize: 13 }}>No alerts yet</Text>
+          <View
+            style={{
+              alignItems: 'center',
+              justifyContent: 'center',
+              paddingTop: 80,
+              paddingHorizontal: 32,
+            }}
+          >
+            <Text
+              style={{ color: '#475569', fontSize: 13, textAlign: 'center' }}
+            >
+              No alerts yet
+            </Text>
           </View>
         }
         renderItem={({ item }) => {
@@ -108,31 +184,60 @@ export default function AlertsScreen() {
           return (
             <TouchableOpacity
               onPress={() => markAsRead(item.id)}
-              className="flex-row gap-3 px-4 py-3"
               style={{
+                flexDirection: 'row',
+                gap: 12,
+                paddingHorizontal: 16,
+                paddingVertical: 14,
                 borderBottomWidth: 1,
                 borderBottomColor: 'rgba(148,163,184,0.07)',
-                backgroundColor: item.read ? 'transparent' : 'rgba(79,70,229,0.04)',
+                backgroundColor: item.read
+                  ? 'transparent'
+                  : 'rgba(79,70,229,0.04)',
               }}
+              activeOpacity={0.7}
             >
-              <View style={{ marginTop: 4 }}>
+              <View style={{ paddingTop: 5 }}>
                 <View
-                  className="w-2 h-2 rounded-full"
-                  style={{ backgroundColor: item.read ? 'transparent' : '#818cf8' }}
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: 4,
+                    backgroundColor: item.read ? 'transparent' : '#818cf8',
+                  }}
                 />
               </View>
-              <View style={{ flex: 1 }}>
-                <View className="flex-row items-start justify-between gap-2 mb-0.5">
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'flex-start',
+                    justifyContent: 'space-between',
+                    gap: 8,
+                    marginBottom: 4,
+                  }}
+                >
                   <Text
-                    style={{ color: item.read ? '#64748b' : '#e2e8f0', fontSize: 12, fontWeight: '600', flex: 1 }}
+                    style={{
+                      color: item.read ? '#64748b' : '#e2e8f0',
+                      fontSize: 13,
+                      fontWeight: '600',
+                      flex: 1,
+                    }}
                     numberOfLines={2}
                   >
                     {item.title}
                   </Text>
-                  <Text style={{ color: '#334155', fontSize: 9 }}>{item.time}</Text>
+                  <Text style={{ color: '#334155', fontSize: 10 }}>
+                    {item.time}
+                  </Text>
                 </View>
-                <Text style={{ color: '#475569', fontSize: 11, lineHeight: 16 }}>{item.body}</Text>
-                <View style={{ marginTop: 6 }}>
+                <Text
+                  style={{ color: '#475569', fontSize: 11, lineHeight: 16 }}
+                >
+                  {item.body}
+                </Text>
+                <View style={{ marginTop: 8 }}>
                   <Badge label={badge.label} color={badge.color} />
                 </View>
               </View>

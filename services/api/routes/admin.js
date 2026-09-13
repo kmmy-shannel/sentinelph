@@ -4,6 +4,7 @@ const { verifyFirebaseToken } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
 const User = require('../models/User');
 const { sendActivationEmail } = require('../utils/email');
+const { PH_REGIONS, isValidRegion } = require('../../../shared/regions');
 
 const router = express.Router();
 
@@ -52,7 +53,20 @@ router.post(
         });
       }
 
-      const normalizedEmail = String(email).trim().toLowerCase();
+         const normalizedEmail = String(email).trim().toLowerCase();
+
+      // Region whitelist — must be one of the canonical Roman-numeral
+      // names in shared/regions.js. A typo here would create an officer
+      // whose jurisdiction filter matches nothing, so this check prevents
+      // the invite from ever being issued with an unknown region.
+      const normalizedJurisdiction = String(jurisdiction).trim();
+      if (!isValidRegion(normalizedJurisdiction)) {
+        return res.status(400).json({
+          success: false,
+          error: 'INVALID_JURISDICTION',
+          message: `jurisdiction must be one of: ${PH_REGIONS.join(', ')}.`,
+        });
+      }
 
       if (!isDomainAllowed(normalizedEmail)) {
         return res.status(400).json({
@@ -92,7 +106,7 @@ router.post(
       // recognizes them once they authenticate.
       await admin.auth().setCustomUserClaims(firebaseUser.uid, {
         role: 'officer',
-        jurisdiction: jurisdiction,
+        jurisdiction: normalizedJurisdiction,
       });
 
       const actionCodeSettings = {
@@ -104,17 +118,16 @@ router.post(
         .auth()
         .generatePasswordResetLink(normalizedEmail, actionCodeSettings);
 
-      const newUser = await User.create({
+           const newUser = await User.create({
         firebaseUid: firebaseUser.uid,
         email: normalizedEmail,
         fullName,
         role: 'officer',
         badgeId,
         agency,
-        jurisdiction,
+        jurisdiction: normalizedJurisdiction,
         status: 'pending_activation',
       });
-
       try {
         await sendActivationEmail(normalizedEmail, fullName, agency, activationLink);
       } catch (mailErr) {
@@ -152,5 +165,46 @@ router.post(
     }
   }
 );
+/**
+ * GET /api/v1/admin/officers
+ * Lists all officer-role users (across every region), sorted newest first.
+ * Restricted to admin/superadmin. Returns only safe fields via toSafeJSON.
+ */
+router.get(
+  '/officers',
+  verifyFirebaseToken,
+  requireRole('admin', 'superadmin'),
+  async (req, res) => {
+    try {
+      const officers = await User.find({ role: 'officer' })
+        .sort({ createdAt: -1 })
+        .limit(500)
+        .lean();
 
+      return res.status(200).json({
+        success: true,
+        officers: officers.map((o) => ({
+          _id: o._id,
+          firebaseUid: o.firebaseUid,
+          email: o.email,
+          fullName: o.fullName,
+          role: o.role,
+          badgeId: o.badgeId,
+          agency: o.agency,
+          jurisdiction: o.jurisdiction,
+          status: o.status,
+          createdAt: o.createdAt,
+          updatedAt: o.updatedAt,
+        })),
+      });
+    } catch (err) {
+      console.error('[admin.officers] Unexpected error:', err);
+      return res.status(500).json({
+        success: false,
+        error: 'LIST_FAILED',
+        message: 'Failed to list officers.',
+      });
+    }
+  }
+);
 module.exports = router;

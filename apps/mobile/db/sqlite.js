@@ -11,6 +11,8 @@ import * as SQLite from 'expo-sqlite';
 
 const DB_NAME = 'sentinelph.db';
 
+const DEFAULT_SCAM_TYPE = 'UNKNOWN';
+
 let dbInstance = null;
 
 async function getDb() {
@@ -32,9 +34,10 @@ export async function initDB() {
 
     CREATE TABLE IF NOT EXISTS reports_outbox (
       local_id TEXT PRIMARY KEY NOT NULL,
-      scam_type TEXT NOT NULL,
+      scam_type TEXT NOT NULL DEFAULT '${DEFAULT_SCAM_TYPE}',
       content TEXT NOT NULL,
       evidence_files TEXT,               -- JSON-stringified array of local file URIs
+      evidence_image TEXT,               -- NEW: screenshot data-URI, for officer Review Queue
       voice_note_uri TEXT,
       latitude REAL,
       longitude REAL,
@@ -51,16 +54,48 @@ export async function initDB() {
       ON reports_outbox (synced);
   `);
 
+  // Migration for older installs whose schema lacked the DEFAULT clause:
+  // existing rows cannot violate NOT NULL, but new INSERTs without
+  // scam_type would still hit constraint 19. Guard each migration in its
+  // own try/catch — SQLite throws if the column already exists.
+  try {
+    await db.execAsync(
+      `ALTER TABLE reports_outbox ADD COLUMN scam_type_default TEXT`
+    );
+  } catch {
+    // Column already exists or ALTER unsupported — safe to ignore.
+  }
+
+  // NEW: migration for installs created before evidence_image existed.
+  try {
+    await db.execAsync(
+      `ALTER TABLE reports_outbox ADD COLUMN evidence_image TEXT`
+    );
+  } catch {
+    // Column already exists on this install — safe to ignore.
+  }
+
   return db;
+}
+
+/**
+ * Normalizes any incoming report object to a value SQLite can safely
+ * persist without violating `scam_type TEXT NOT NULL`.
+ */
+function normalizeScamType(value) {
+  if (typeof value !== 'string') return DEFAULT_SCAM_TYPE;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : DEFAULT_SCAM_TYPE;
 }
 
 /**
  * Adds a new report to the local outbox with synced = 0.
  * @param {object} report
  * @param {string} report.localId - client-generated UUID
- * @param {string} report.scamType
+ * @param {string} [report.scamType]
  * @param {string} report.content
  * @param {string[]} [report.evidenceFiles]
+ * @param {string} [report.evidenceImage] - screenshot as a data-URI
  * @param {string} [report.voiceNoteUri]
  * @param {number} [report.latitude]
  * @param {number} [report.longitude]
@@ -71,15 +106,18 @@ export async function enqueueReport(report) {
   const db = await getDb();
   const createdAt = new Date().toISOString();
 
+  const scamType = normalizeScamType(report.scamType);
+
   await db.runAsync(
     `INSERT INTO reports_outbox
-      (local_id, scam_type, content, evidence_files, voice_note_uri, latitude, longitude, nullifier, zkp_hash, created_at, synced, sync_attempts)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
+      (local_id, scam_type, content, evidence_files, evidence_image, voice_note_uri, latitude, longitude, nullifier, zkp_hash, created_at, synced, sync_attempts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
     [
       report.localId,
-      report.scamType,
+      scamType,
       report.content,
       JSON.stringify(report.evidenceFiles || []),
+      report.evidenceImage || null,
       report.voiceNoteUri || null,
       report.latitude ?? null,
       report.longitude ?? null,
@@ -89,7 +127,7 @@ export async function enqueueReport(report) {
     ]
   );
 
-  return { ...report, createdAt, synced: 0 };
+  return { ...report, scamType, createdAt, synced: 0 };
 }
 
 /**
@@ -142,8 +180,6 @@ export async function markReportSyncFailed(localId, errorMessage) {
 
 /**
  * Permanently deletes a synced report from the local outbox.
- * Call after confirming the server has the report, if you don't want to
- * keep local history (otherwise leave synced rows in place for MyReports).
  */
 export async function deleteSyncedReport(localId) {
   const db = await getDb();
@@ -161,9 +197,10 @@ export async function clearAllReports() {
 function deserializeRow(row) {
   return {
     localId: row.local_id,
-    scamType: row.scam_type,
+    scamType: row.scam_type || DEFAULT_SCAM_TYPE,
     content: row.content,
     evidenceFiles: row.evidence_files ? JSON.parse(row.evidence_files) : [],
+    evidenceImage: row.evidence_image || null,
     voiceNoteUri: row.voice_note_uri,
     latitude: row.latitude,
     longitude: row.longitude,

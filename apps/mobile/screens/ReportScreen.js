@@ -5,7 +5,7 @@
 //            · Optional sender identifier
 //            · Mutually exclusive: Screenshot upload (OCR) OR typed message
 //            · Debounced AI scam analysis + reasoning
-//            · Optional collapsible extra evidence (files / voice)
+//            · Optional collapsible extra evidence (files only)
 //   Step 2 — Review & ZKP Verification
 //            · ZKP commitment hash, full submission summary, final submit
 //
@@ -13,6 +13,24 @@
 // into the SQLite outbox (db/sqlite.js) for db/syncQueue.js to flush later.
 // Layer 1 preview calls POST /api/v1/reports/analyze (advisory-only,
 // mirrors the AI microservice's /predict — never blacklists anything).
+//
+// FIX (Voice-note removal): expo-av / expo-audio / useAudioRecorder and
+// all associated recording state, hooks, and mic UI have been removed —
+// they are not imported or referenced anywhere in this file. The 2-Step
+// Intake Flow below is screenshot-OR-text only, as required.
+//
+// FIX (OCR not populating): the mobile app never had anywhere to put the
+// extracted text — the AI service's /predict response didn't return it.
+// runAnalysis now reads `ocrText` back off the analyze response and
+// writes it into local state whenever the active input is a screenshot,
+// so the OCR terminal panel populates automatically instead of staying
+// blank until the user types into it manually.
+//
+// FIX (scamType NOT NULL crash): the scamType picker was removed from
+// this screen entirely, so every payload built here now explicitly sets
+// scamType: 'UNKNOWN' — both for the live POST and for the offline
+// SQLite payload — instead of omitting the field and letting it reach
+// SQLite as undefined.
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -27,6 +45,7 @@ import {
   LayoutAnimation,
   Platform,
   UIManager,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -34,11 +53,26 @@ import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
 import Svg, { Path, Circle } from 'react-native-svg';
+import * as FileSystem from 'expo-file-system/legacy';
+import { resolveRegionFromCoordinates, UNCLASSIFIED_REGION } from '../lib/regionResolver';
 
 import api, { OfflineError } from '../lib/api';
 import { enqueueReport } from '../db/sqlite';
 import { syncNow } from '../db/syncQueue';
 import { generateNullifier, generateZkpCommitment } from '../lib/zkp/nullifierGenerator';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// Reads the user's manually-saved region from ProfileScreen. Returns
+// null if the user has never picked one — the caller falls back to
+// UNCLASSIFIED_REGION in that case.
+async function getStoredRegion() {
+  try {
+    return await AsyncStorage.getItem('@sentinelph_user_region');
+  } catch (err) {
+    console.warn('[ReportScreen] failed to read stored region:', err?.message);
+    return null;
+  }
+}
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -46,9 +80,9 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 
 const ANALYZE_DEBOUNCE_MS = 700;
 const MIN_ANALYZE_CHARS = 8;
+const DEFAULT_SCAM_TYPE = 'UNKNOWN'; // scamType picker was removed from citizen UI
 
 const RISK_STYLES = {
-  // ... [keep unchanged]
   HIGH: { bg: 'rgba(244,63,94,0.08)', border: 'rgba(244,63,94,0.35)', text: '#fb7185', label: 'Likely Scam', glow: 'rgba(244,63,94,0.12)', accent: '#f43f5e' },
   MEDIUM: { bg: 'rgba(234,179,8,0.08)', border: 'rgba(234,179,8,0.35)', text: '#facc15', label: 'Use Caution', glow: 'rgba(234,179,8,0.12)', accent: '#eab308' },
   LOW: { bg: 'rgba(16,185,129,0.08)', border: 'rgba(16,185,129,0.35)', text: '#34d399', label: 'Likely Safe', glow: 'rgba(16,185,129,0.12)', accent: '#10b981' },
@@ -88,16 +122,6 @@ function ImageIcon({ size = 20, color = '#818cf8' }) {
       <Path d="M3 3h14v14H3V3z" stroke={color} strokeWidth={1.4} strokeLinejoin="round" />
       <Circle cx={7} cy={7} r={1.5} stroke={color} strokeWidth={1.4} />
       <Path d="M3 14l4-4 3 3 3-3 4 4" stroke={color} strokeWidth={1.4} strokeLinejoin="round" />
-    </Svg>
-  );
-}
-
-function MicIcon({ size = 18, color = '#818cf8' }) {
-  return (
-    <Svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-      <Path d="M5.5 1.5h5v8a2.5 2.5 0 01-5 0v-8z" stroke={color} strokeWidth={1.2} />
-      <Path d="M3 8.5c0 2.76 2.24 5 5 5s5-2.24 5-5" stroke={color} strokeWidth={1.2} strokeLinecap="round" />
-      <Path d="M8 13.5V15" stroke={color} strokeWidth={1.2} strokeLinecap="round" />
     </Svg>
   );
 }
@@ -149,15 +173,35 @@ function SenderIcon({ size = 14, color = '#818cf8' }) {
 
 function StepBar({ step }) {
   return (
-    <View className="flex-row items-center px-4 py-4 gap-2">
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 16,
+        paddingVertical: 16,
+        gap: 8,
+      }}
+    >
       {[1, 2].map((s) => {
         const isCompleted = s < step;
         const isActive = s === step;
         return (
-          <View key={s} className="flex-row items-center gap-2 flex-1">
+          <View
+            key={s}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 8,
+              flex: 1,
+            }}
+          >
             <View
-              className="w-7 h-7 rounded-full items-center justify-center"
               style={{
+                width: 28,
+                height: 28,
+                borderRadius: 14,
+                alignItems: 'center',
+                justifyContent: 'center',
                 backgroundColor: isCompleted
                   ? '#4f46e5'
                   : isActive
@@ -183,8 +227,9 @@ function StepBar({ step }) {
             </View>
             {s < 2 && (
               <View
-                className="flex-1 h-px"
                 style={{
+                  flex: 1,
+                  height: 1,
                   backgroundColor: s < step ? '#4f46e5' : 'rgba(148,163,184,0.08)',
                 }}
               />
@@ -201,8 +246,13 @@ function ScamRiskBanner({ analyzing, analysis, error }) {
   if (analyzing && !analysis) {
     return (
       <View
-        className="flex-row items-center gap-3 px-4 py-3 rounded-2xl"
         style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 12,
+          paddingHorizontal: 16,
+          paddingVertical: 12,
+          borderRadius: 16,
           backgroundColor: 'rgba(79,70,229,0.06)',
           borderWidth: 1,
           borderColor: 'rgba(79,70,229,0.15)',
@@ -220,8 +270,10 @@ function ScamRiskBanner({ analyzing, analysis, error }) {
     if (error) {
       return (
         <View
-          className="px-4 py-3 rounded-2xl"
           style={{
+            paddingHorizontal: 16,
+            paddingVertical: 12,
+            borderRadius: 16,
             backgroundColor: 'rgba(148,163,184,0.04)',
             borderWidth: 1,
             borderColor: 'rgba(148,163,184,0.08)',
@@ -241,49 +293,78 @@ function ScamRiskBanner({ analyzing, analysis, error }) {
 
   return (
     <View style={{ gap: 10 }}>
-      {/* Risk level banner */}
       <View
-        className="flex-row items-center gap-3 px-4 py-3.5 rounded-2xl"
         style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 12,
+          paddingHorizontal: 16,
+          paddingVertical: 14,
+          borderRadius: 16,
           backgroundColor: risk.bg,
           borderWidth: 1,
           borderColor: risk.border,
         }}
       >
         <View
-          className="w-9 h-9 rounded-xl items-center justify-center"
-          style={{ backgroundColor: risk.glow }}
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 12,
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: risk.glow,
+          }}
         >
           <Text style={{ fontSize: 16 }}>
             {analysis.isScam ? '⚠️' : analysis.riskLevel === 'LOW' ? '✓' : 'ℹ️'}
           </Text>
         </View>
-        <View style={{ flex: 1 }}>
-          <Text style={{ color: risk.text, fontSize: 13, fontWeight: '700', letterSpacing: 0.2 }}>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text
+            style={{
+              color: risk.text,
+              fontSize: 13,
+              fontWeight: '700',
+              letterSpacing: 0.2,
+            }}
+            numberOfLines={2}
+          >
             {analysis.isScam ? 'Likely Scam' : risk.label}
             {pct != null ? ` — ${pct}% AI Confidence` : ''}
           </Text>
           {analyzing && (
-            <Text style={{ color: '#64748b', fontSize: 10, marginTop: 2, fontWeight: '500' }}>
+            <Text
+              style={{
+                color: '#64748b',
+                fontSize: 10,
+                marginTop: 2,
+                fontWeight: '500',
+              }}
+            >
               Updating…
             </Text>
           )}
         </View>
       </View>
 
-      {/* Explanation reasons */}
       {analysis.explanationReasons?.length > 0 && (
         <View
-          className="rounded-2xl overflow-hidden"
           style={{
+            borderRadius: 16,
+            overflow: 'hidden',
             backgroundColor: 'rgba(30,41,59,0.6)',
             borderWidth: 1,
             borderColor: 'rgba(148,163,184,0.08)',
           }}
         >
           <View
-            className="px-4 py-3"
-            style={{ borderBottomWidth: 1, borderBottomColor: 'rgba(148,163,184,0.06)' }}
+            style={{
+              paddingHorizontal: 16,
+              paddingVertical: 12,
+              borderBottomWidth: 1,
+              borderBottomColor: 'rgba(148,163,184,0.06)',
+            }}
           >
             <Text
               style={{
@@ -296,18 +377,33 @@ function ScamRiskBanner({ analyzing, analysis, error }) {
               WHY THIS MESSAGE WAS FLAGGED
             </Text>
           </View>
-          <View className="px-4 py-3" style={{ gap: 10 }}>
+          <View style={{ paddingHorizontal: 16, paddingVertical: 12, gap: 10 }}>
             {analysis.explanationReasons.map((reason, i) => (
-              <View key={i} className="flex-row items-start gap-3">
+              <View
+                key={i}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'flex-start',
+                  gap: 12,
+                }}
+              >
                 <View
-                  className="w-5 h-5 rounded-md items-center justify-center mt-0.5"
-                  style={{ backgroundColor: 'rgba(79,70,229,0.12)' }}
+                  style={{
+                    width: 20,
+                    height: 20,
+                    borderRadius: 6,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginTop: 2,
+                    backgroundColor: 'rgba(79,70,229,0.12)',
+                    flexShrink: 0,
+                  }}
                 >
                   <Text style={{ color: '#818cf8', fontSize: 9, fontWeight: '700' }}>
                     {i + 1}
                   </Text>
                 </View>
-                <View style={{ flex: 1 }}>
+                <View style={{ flex: 1, minWidth: 0 }}>
                   <Text
                     style={{
                       color: '#e2e8f0',
@@ -335,6 +431,8 @@ function ScamRiskBanner({ analyzing, analysis, error }) {
 export default function ReportScreen() {
   const navigation = useNavigation();
   const route = useRoute();
+  const { width } = useWindowDimensions();
+  const isWide = width >= 480;
 
   const [step, setStep] = useState(route.params?.openStep === 3 ? 2 : 1);
 
@@ -343,8 +441,11 @@ export default function ReportScreen() {
   const [content, setContent] = useState('');
   const [screenshot, setScreenshot] = useState(null);
   const [ocrText, setOcrText] = useState('');
+  // Tracks whether the user has hand-edited the OCR box, so a later
+  // analyze response doesn't clobber their manual correction.
+  const ocrEditedByUserRef = useRef(false);
 
-  // Extra evidence (optional) — files only, no voice
+  // Extra evidence (optional) — files only, no voice/audio
   const [files, setFiles] = useState([]);
   const [evidenceOpen, setEvidenceOpen] = useState(false);
 
@@ -370,10 +471,14 @@ export default function ReportScreen() {
 
   const activeAnalysisText = hasScreenshot ? (ocrText || '').trim() : content.trim();
 
-  const canProceedStep1 =
+  // Sender is REQUIRED (Option A). A report with no sender is nearly
+  // useless to officers, so Step 1 cannot be completed without it.
+  const hasSender = senderNumber.trim().length > 0;
+  const hasReportBody =
     (hasScreenshot && (ocrText || screenshot?.uri)) || content.trim().length > 3;
+  const canProceedStep1 = hasSender && hasReportBody;
 
-  // Camera-only quick-launch shortcut (mic shortcut removed)
+  // Camera-only quick-launch shortcut
   useEffect(() => {
     if (route.params?.focus === 'camera') pickScreenshot();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -400,18 +505,52 @@ export default function ReportScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeAnalysisText, hasScreenshot]);
 
-  const runAnalysis = async (text, imageBase64) => {
-    // ... [keep unchanged]
+  /**
+   * Converts a local image URI into a base64 string for the JSON+base64
+   * pipeline shared by Express (aiServiceClient.js) and FastAPI
+   * (schemas.PredictRequest.image_base64). ReportScreen already stores
+   * the URI, not the bytes, so this reads the file lazily right before
+   * an analyze call needs it.
+   */
+  const readImageAsBase64 = async (uri) => {
+    if (!uri) return undefined;
+    try {
+      return await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+    } catch (err) {
+      console.warn('[ReportScreen] failed to read screenshot as base64:', err?.message);
+      return undefined;
+    }
+  };
+
+  const runAnalysis = async (text, imageUri) => {
     const reqId = ++analyzeReqIdRef.current;
     setAnalyzing(true);
     setAnalyzeError(null);
     try {
+      // ─── DEBUG LOG 1: input args ─────────────────────────────────────
+      console.log('[debug] runAnalysis called with:');
+      console.log('[debug]   text:', text);
+      console.log('[debug]   imageUri:', imageUri);
+
+      const imageBase64 = imageUri ? await readImageAsBase64(imageUri) : undefined;
+
+      // ─── DEBUG LOG 2: base64 read result ─────────────────────────────
+      console.log('[debug] imageBase64 length:', imageBase64 ? imageBase64.length : 0);
+      console.log('[debug] imageBase64 first 50 chars:', imageBase64 ? imageBase64.slice(0, 50) : 'N/A');
+
       const response = await api.post('/api/v1/reports/analyze', {
         text: text || undefined,
-        imageBase64: imageBase64 || undefined,
+        imageBase64,
       });
+
+      // ─── DEBUG LOG 3: HTTP response status ───────────────────────────
+      console.log('[debug] analyze HTTP status:', response.status);
+
       if (reqId !== analyzeReqIdRef.current) return;
       const data = response.data;
+
+      // ─── DEBUG LOG 4: full response body ─────────────────────────────
+      console.log('[debug] analyze response body:', JSON.stringify(data).slice(0, 1000));
 
       if (data?.available === false) {
         setAnalysis(null);
@@ -425,6 +564,22 @@ export default function ReportScreen() {
         riskLevel: data.riskLevel ?? data.risk_level,
         explanationReasons: data.explanationReasons ?? data.explanation_reasons ?? [],
       });
+
+      // FIX (OCR not populating — stale closure): the previous check used
+      // the outer `hasScreenshot` state, which is captured from the render
+      // that existed BEFORE setScreenshot(picked) took effect, so it was
+      // always stale-false the first time this ran from pickScreenshot().
+      // `imageUri` is a direct function argument, not a closure over
+      // component state, so it's always correct regardless of when this
+      // was called relative to a re-render.
+      const extractedOcrText = data.ocrText ?? data.ocr_text;
+      if (
+        imageUri &&
+        typeof extractedOcrText === 'string' &&
+        !ocrEditedByUserRef.current
+      ) {
+        setOcrText(extractedOcrText);
+      }
     } catch (err) {
       if (reqId !== analyzeReqIdRef.current) return;
       setAnalysis(null);
@@ -434,6 +589,10 @@ export default function ReportScreen() {
     }
   };
 
+  const handleOcrTextChange = (value) => {
+    ocrEditedByUserRef.current = true;
+    setOcrText(value);
+  };
 
   // ─── Screenshot (Option A) ────────────────────────────────────────────
   const pickScreenshot = async () => {
@@ -443,8 +602,10 @@ export default function ReportScreen() {
       Alert.alert('Permission needed', 'Photo library access is required to attach a screenshot.');
       return;
     }
+    // SDK 57: ImagePicker.MediaTypeOptions is deprecated. Use the string
+    // array form, e.g. ['images'] or ['images', 'videos'].
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsMultipleSelection: false,
       quality: 0.8,
     });
@@ -456,8 +617,10 @@ export default function ReportScreen() {
         type: a.mimeType || 'image/jpeg',
       };
       setScreenshot(picked);
-      // OCR text is populated by the backend response (or left blank until analyzed).
-      // We optimistically clear stale OCR when a new image is attached.
+      // OCR text is populated by the backend response once analysis
+      // returns — clear any stale text and reset the manual-edit flag
+      // for the new image.
+      ocrEditedByUserRef.current = false;
       setOcrText('');
       // Kick off analysis immediately for the new screenshot.
       runAnalysis('', picked.uri);
@@ -466,6 +629,7 @@ export default function ReportScreen() {
 
   const removeScreenshot = () => {
     setScreenshot(null);
+    ocrEditedByUserRef.current = false;
     setOcrText('');
     setAnalysis(null);
     setAnalyzeError(null);
@@ -478,8 +642,10 @@ export default function ReportScreen() {
       Alert.alert('Permission needed', 'Photo library access is required to attach evidence.');
       return;
     }
+    // SDK 57: ImagePicker.MediaTypeOptions is deprecated. Use the string
+    // array form. ['images', 'videos'] replaces MediaTypeOptions.All.
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.All,
+      mediaTypes: ['images', 'videos'],
       allowsMultipleSelection: true,
       quality: 0.7,
     });
@@ -495,19 +661,34 @@ export default function ReportScreen() {
 
   const removeFile = (index) => setFiles((prev) => prev.filter((_, i) => i !== index));
 
-
-   const toggleEvidence = () => {
+  const toggleEvidence = () => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setEvidenceOpen((v) => !v);
   };
 
   const goToStep2 = async () => {
-    // ... [keep unchanged]
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status === 'granted') {
-        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-        setLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
+        const pos = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+        const latitude = pos.coords.latitude;
+        const longitude = pos.coords.longitude;
+
+        // Resolve to a canonical PH region using the bundled offline
+        // bounding-box lookup — no network call, no API key.
+        const region = resolveRegionFromCoordinates(latitude, longitude);
+        console.log('[ReportScreen] GPS resolved:', {
+          latitude,
+          longitude,
+          region,
+        });
+        setLocation({ latitude, longitude, region });
+      } else {
+        console.warn(
+          '[ReportScreen] location permission denied — region will fall back to stored/manual value'
+        );
       }
     } catch (err) {
       console.warn('[ReportScreen] location unavailable:', err?.message);
@@ -538,19 +719,67 @@ export default function ReportScreen() {
         timestamp: new Date().toISOString(),
       }));
 
-    // Evidence payload: screenshot (if any) + extra files — voice note removed
+    // Convert the screenshot to a base64 data-URI so the gateway can
+    // (a) run OCR on final submit if needed, and (b) persist the image
+    // for the officer Review Queue.
+    let evidenceImage = null;
+    if (screenshot?.uri) {
+      try {
+        const base64 = await FileSystem.readAsStringAsync(screenshot.uri, {
+          encoding: 'base64',
+        });
+        const mime = screenshot.type || 'image/jpeg';
+        evidenceImage = `data:${mime};base64,${base64}`;
+      } catch (err) {
+        console.warn('[ReportScreen] could not read screenshot as base64:', err?.message);
+      }
+    }
+
     const evidenceUris = [
       ...(screenshot ? [screenshot.uri] : []),
       ...files.map((f) => f.uri),
     ];
 
+    // ─── Resolve the region ONCE so both online and offline payloads
+    //     carry the SAME value. Priority order:
+    //       1. GPS-resolved region from goToStep2 (fresh in this session)
+    //       2. User's manual region from ProfileScreen (AsyncStorage)
+    //       3. UNCLASSIFIED as the final fallback
+    const storedRegion = await getStoredRegion();
+    const resolvedRegion =
+      location?.region || storedRegion || UNCLASSIFIED_REGION;
+
+    // Build a single canonical location object. This is what the server
+    // reads to populate Report.location, and what the officer queue's
+    // region filter matches against.
+    const locationPayload = {
+      latitude: location?.latitude ?? null,
+      longitude: location?.longitude ?? null,
+      region: resolvedRegion,
+    };
+
+    console.log('[ReportScreen] submit location:', {
+      hasGps: !!location,
+      gpsRegion: location?.region,
+      storedRegion,
+      resolvedRegion,
+      locationPayload,
+    });
+
+    // Offline payload — enqueued to SQLite if the POST fails due to no
+    // network. It carries BOTH the canonical `location` object AND a
+    // top-level `region` field so syncQueue can forward either shape.
     const payload = {
       localId,
+      scamType: DEFAULT_SCAM_TYPE,
       senderNumber: senderNumber || undefined,
       content: primaryContent,
       evidenceFiles: evidenceUris,
-      latitude: location?.latitude,
-      longitude: location?.longitude,
+      evidenceImage,
+      location: locationPayload,
+      region: resolvedRegion,
+      latitude: location?.latitude ?? null,
+      longitude: location?.longitude ?? null,
       nullifier: finalNullifier,
       zkpHash: finalZkp,
       aiRiskLevel: analysis?.riskLevel,
@@ -559,10 +788,13 @@ export default function ReportScreen() {
 
     try {
       const response = await api.post('/api/v1/reports', {
+        scamType: DEFAULT_SCAM_TYPE,
         senderNumber: senderNumber || undefined,
         content: primaryContent,
         evidenceFiles: evidenceUris,
-        location: location ? { latitude: location.latitude, longitude: location.longitude } : undefined,
+        evidenceImage,
+        location: locationPayload,
+        region: resolvedRegion,
         nullifier: finalNullifier,
         zkpHash: finalZkp,
         aiRiskLevel: analysis?.riskLevel,
@@ -588,10 +820,22 @@ export default function ReportScreen() {
   if (submitted) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: '#0a1120' }}>
-        <View className="flex-1 items-center justify-center px-6">
+        <View
+          style={{
+            flex: 1,
+            alignItems: 'center',
+            justifyContent: 'center',
+            paddingHorizontal: 24,
+          }}
+        >
           <View
-            className="w-20 h-20 rounded-3xl items-center justify-center mb-6"
             style={{
+              width: 80,
+              height: 80,
+              borderRadius: 24,
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: 24,
               backgroundColor: 'rgba(16,185,129,0.08)',
               borderWidth: 1.5,
               borderColor: 'rgba(16,185,129,0.25)',
@@ -606,16 +850,29 @@ export default function ReportScreen() {
               fontWeight: '700',
               marginBottom: 6,
               letterSpacing: 0.3,
+              textAlign: 'center',
             }}
           >
             Report Submitted
           </Text>
-          <Text style={{ color: '#64748b', fontSize: 12, marginBottom: 20, fontWeight: '500' }}>
+          <Text
+            style={{
+              color: '#64748b',
+              fontSize: 12,
+              marginBottom: 20,
+              fontWeight: '500',
+              textAlign: 'center',
+            }}
+          >
             Your identity is protected
           </Text>
           <View
-            className="w-full p-4 rounded-2xl mb-5"
             style={{
+              width: '100%',
+              maxWidth: 420,
+              padding: 16,
+              borderRadius: 16,
+              marginBottom: 20,
               backgroundColor: 'rgba(16,185,129,0.04)',
               borderWidth: 1,
               borderColor: 'rgba(16,185,129,0.15)',
@@ -639,6 +896,7 @@ export default function ReportScreen() {
                 fontFamily: 'JetBrainsMono_400Regular',
                 fontWeight: '600',
               }}
+              numberOfLines={1}
             >
               {reportId}
             </Text>
@@ -650,14 +908,19 @@ export default function ReportScreen() {
               textAlign: 'center',
               marginBottom: 24,
               lineHeight: 17,
+              maxWidth: 320,
             }}
           >
             ZKP hash anchored to chain. You&apos;ll be notified when reviewers verify.
           </Text>
           <TouchableOpacity
             onPress={() => navigation.navigate('Home')}
-            className="w-full py-4 rounded-2xl items-center"
             style={{
+              width: '100%',
+              maxWidth: 420,
+              paddingVertical: 16,
+              borderRadius: 16,
+              alignItems: 'center',
               backgroundColor: '#4f46e5',
               shadowColor: '#4f46e5',
               shadowOffset: { width: 0, height: 4 },
@@ -666,7 +929,14 @@ export default function ReportScreen() {
               elevation: 6,
             }}
           >
-            <Text style={{ color: 'white', fontSize: 14, fontWeight: '600', letterSpacing: 0.3 }}>
+            <Text
+              style={{
+                color: 'white',
+                fontSize: 14,
+                fontWeight: '600',
+                letterSpacing: 0.3,
+              }}
+            >
               Done
             </Text>
           </TouchableOpacity>
@@ -679,31 +949,64 @@ export default function ReportScreen() {
     <SafeAreaView style={{ flex: 1, backgroundColor: '#0a1120' }}>
       {/* Header */}
       <View
-        className="flex-row items-center gap-3 px-4 pt-2 pb-3"
-        style={{ borderBottomWidth: 1, borderBottomColor: 'rgba(148,163,184,0.06)' }}
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 12,
+          paddingHorizontal: 16,
+          paddingTop: 8,
+          paddingBottom: 12,
+          borderBottomWidth: 1,
+          borderBottomColor: 'rgba(148,163,184,0.06)',
+        }}
       >
         <TouchableOpacity
           onPress={() => navigation.goBack()}
-          className="w-9 h-9 rounded-xl items-center justify-center"
           style={{
+            width: 36,
+            height: 36,
+            borderRadius: 12,
+            alignItems: 'center',
+            justifyContent: 'center',
             backgroundColor: 'rgba(148,163,184,0.06)',
             borderWidth: 1,
             borderColor: 'rgba(148,163,184,0.08)',
           }}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
         >
           <CloseIcon />
         </TouchableOpacity>
-        <View className="flex-1">
-          <Text style={{ color: '#f1f5f9', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 }}>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text
+            style={{
+              color: '#f1f5f9',
+              fontSize: 15,
+              fontWeight: '700',
+              letterSpacing: 0.2,
+            }}
+            numberOfLines={1}
+          >
             New Report
           </Text>
-          <Text style={{ color: '#475569', fontSize: 11, fontWeight: '500', marginTop: 1 }}>
+          <Text
+            style={{
+              color: '#475569',
+              fontSize: 11,
+              fontWeight: '500',
+              marginTop: 1,
+            }}
+            numberOfLines={1}
+          >
             {step === 1 ? 'Describe the incident' : 'Review & submit'}
           </Text>
         </View>
         <View
-          className="px-2.5 py-1 rounded-lg"
-          style={{ backgroundColor: 'rgba(79,70,229,0.1)' }}
+          style={{
+            paddingHorizontal: 10,
+            paddingVertical: 4,
+            borderRadius: 8,
+            backgroundColor: 'rgba(79,70,229,0.1)',
+          }}
         >
           <Text
             style={{
@@ -721,8 +1024,15 @@ export default function ReportScreen() {
       <StepBar step={step} />
 
       <ScrollView
-        className="flex-1 px-4"
-        contentContainerStyle={{ paddingBottom: 20, gap: 14 }}
+        style={{ flex: 1 }}
+        contentContainerStyle={{
+          paddingHorizontal: 16,
+          paddingBottom: 24,
+          gap: 14,
+          maxWidth: isWide ? 720 : undefined,
+          alignSelf: isWide ? 'center' : 'stretch',
+          width: '100%',
+        }}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
@@ -735,18 +1045,22 @@ export default function ReportScreen() {
                 fontSize: 10,
                 fontWeight: '700',
                 letterSpacing: 1.2,
-                marginBottom: -4,
               }}
             >
-              SENDER NUMBER OR HEADER <Text style={{ color: '#334155' }}>(OPTIONAL)</Text>
+              SENDER NUMBER OR HEADER{' '}
+              <Text style={{ color: '#ef4444' }}>(REQUIRED)</Text>
             </Text>
             <View
-              className="flex-row items-center gap-3 px-4 rounded-2xl"
               style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 12,
+                paddingHorizontal: 16,
+                borderRadius: 16,
                 backgroundColor: 'rgba(30,41,59,0.5)',
                 borderWidth: 1,
                 borderColor: 'rgba(148,163,184,0.1)',
-                height: 52,
+                minHeight: 52,
               }}
             >
               <SenderIcon />
@@ -761,14 +1075,20 @@ export default function ReportScreen() {
                   flex: 1,
                   color: '#e2e8f0',
                   fontSize: 13,
-                  paddingVertical: 0,
+                  paddingVertical: 14,
                 }}
               />
             </View>
 
             {/* Option A: Screenshot upload */}
             <View style={{ gap: 8 }}>
-              <View className="flex-row items-center justify-between">
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}
+              >
                 <Text
                   style={{
                     color: '#64748b',
@@ -781,8 +1101,12 @@ export default function ReportScreen() {
                 </Text>
                 {textDisabled && (
                   <View
-                    className="px-2 py-0.5 rounded-md"
-                    style={{ backgroundColor: 'rgba(148,163,184,0.08)' }}
+                    style={{
+                      paddingHorizontal: 8,
+                      paddingVertical: 2,
+                      borderRadius: 6,
+                      backgroundColor: 'rgba(148,163,184,0.08)',
+                    }}
                   >
                     <Text style={{ color: '#64748b', fontSize: 9, fontWeight: '600' }}>
                       DISABLED
@@ -796,7 +1120,7 @@ export default function ReportScreen() {
                   onPress={pickScreenshot}
                   disabled={screenshotDisabled}
                   style={{
-                    height: 120,
+                    minHeight: 120,
                     borderRadius: 20,
                     borderWidth: 1.5,
                     borderStyle: 'dashed',
@@ -808,13 +1132,19 @@ export default function ReportScreen() {
                       : 'rgba(30,41,59,0.4)',
                     alignItems: 'center',
                     justifyContent: 'center',
+                    paddingVertical: 24,
+                    paddingHorizontal: 20,
                     gap: 8,
                     opacity: screenshotDisabled ? 0.5 : 1,
                   }}
                 >
                   <View
-                    className="w-12 h-12 rounded-2xl items-center justify-center"
                     style={{
+                      width: 48,
+                      height: 48,
+                      borderRadius: 16,
+                      alignItems: 'center',
+                      justifyContent: 'center',
                       backgroundColor: screenshotDisabled
                         ? 'rgba(148,163,184,0.06)'
                         : 'rgba(79,70,229,0.1)',
@@ -827,18 +1157,26 @@ export default function ReportScreen() {
                       color: screenshotDisabled ? '#475569' : '#94a3b8',
                       fontSize: 12,
                       fontWeight: '600',
+                      textAlign: 'center',
                     }}
                   >
                     Tap to upload screenshot
                   </Text>
-                  <Text style={{ color: '#475569', fontSize: 11 }}>
+                  <Text
+                    style={{
+                      color: '#475569',
+                      fontSize: 11,
+                      textAlign: 'center',
+                    }}
+                  >
                     We&apos;ll extract the text automatically
                   </Text>
                 </TouchableOpacity>
               ) : (
                 <View
-                  className="rounded-2xl overflow-hidden"
                   style={{
+                    borderRadius: 16,
+                    overflow: 'hidden',
                     backgroundColor: 'rgba(30,41,59,0.5)',
                     borderWidth: 1,
                     borderColor: 'rgba(79,70,229,0.2)',
@@ -849,23 +1187,45 @@ export default function ReportScreen() {
                     style={{ width: '100%', height: 180, backgroundColor: '#0a1120' }}
                     resizeMode="cover"
                   />
-                  <View className="flex-row items-center gap-3 px-4 py-3">
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 12,
+                      paddingHorizontal: 16,
+                      paddingVertical: 12,
+                    }}
+                  >
                     <View
-                      className="w-8 h-8 rounded-lg items-center justify-center"
-                      style={{ backgroundColor: 'rgba(79,70,229,0.12)' }}
+                      style={{
+                        width: 32,
+                        height: 32,
+                        borderRadius: 8,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        backgroundColor: 'rgba(79,70,229,0.12)',
+                        flexShrink: 0,
+                      }}
                     >
                       <CheckIcon size={14} color="#818cf8" />
                     </View>
                     <Text
-                      style={{ color: '#cbd5e1', fontSize: 12, flex: 1, fontWeight: '500' }}
+                      style={{
+                        color: '#cbd5e1',
+                        fontSize: 12,
+                        flex: 1,
+                        fontWeight: '500',
+                      }}
                       numberOfLines={1}
                     >
                       {screenshot.name}
                     </Text>
                     <TouchableOpacity
                       onPress={removeScreenshot}
-                      className="px-3 py-1.5 rounded-lg"
                       style={{
+                        paddingHorizontal: 12,
+                        paddingVertical: 6,
+                        borderRadius: 8,
                         backgroundColor: 'rgba(244,63,94,0.1)',
                         borderWidth: 1,
                         borderColor: 'rgba(244,63,94,0.2)',
@@ -882,22 +1242,27 @@ export default function ReportScreen() {
               {/* OCR terminal-style snippet */}
               {hasScreenshot && (
                 <View
-                  className="rounded-2xl overflow-hidden"
                   style={{
+                    borderRadius: 16,
+                    overflow: 'hidden',
                     backgroundColor: 'rgba(0,0,0,0.35)',
                     borderWidth: 1,
                     borderColor: 'rgba(79,70,229,0.15)',
                   }}
                 >
                   <View
-                    className="flex-row items-center gap-2 px-3 py-2"
                     style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 8,
+                      paddingHorizontal: 12,
+                      paddingVertical: 8,
                       borderBottomWidth: 1,
                       borderBottomColor: 'rgba(79,70,229,0.12)',
                       backgroundColor: 'rgba(79,70,229,0.05)',
                     }}
                   >
-                    <View className="flex-row gap-1.5">
+                    <View style={{ flexDirection: 'row', gap: 6 }}>
                       <View
                         style={{
                           width: 8,
@@ -935,11 +1300,22 @@ export default function ReportScreen() {
                     >
                       ocr/extracted-text
                     </Text>
+                    {analyzing && (
+                      <ActivityIndicator
+                        size="small"
+                        color="#818cf8"
+                        style={{ marginLeft: 'auto' }}
+                      />
+                    )}
                   </View>
                   <TextInput
                     value={ocrText}
-                    onChangeText={setOcrText}
-                    placeholder="Extracted text will appear here…"
+                    onChangeText={handleOcrTextChange}
+                    placeholder={
+                      analyzing
+                        ? 'Extracting text from screenshot…'
+                        : 'Extracted text will appear here…'
+                    }
                     placeholderTextColor="#334155"
                     multiline
                     style={{
@@ -958,7 +1334,13 @@ export default function ReportScreen() {
 
             {/* Option B: Typed message */}
             <View style={{ gap: 8 }}>
-              <View className="flex-row items-center justify-between">
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}
+              >
                 <Text
                   style={{
                     color: '#64748b',
@@ -971,8 +1353,12 @@ export default function ReportScreen() {
                 </Text>
                 {textDisabled && (
                   <View
-                    className="px-2 py-0.5 rounded-md"
-                    style={{ backgroundColor: 'rgba(148,163,184,0.08)' }}
+                    style={{
+                      paddingHorizontal: 8,
+                      paddingVertical: 2,
+                      borderRadius: 6,
+                      backgroundColor: 'rgba(148,163,184,0.08)',
+                    }}
                   >
                     <Text style={{ color: '#64748b', fontSize: 9, fontWeight: '600' }}>
                       DISABLED
@@ -999,7 +1385,7 @@ export default function ReportScreen() {
                   value={content}
                   onChangeText={setContent}
                   editable={!textDisabled}
-                  placeholder='Paste the suspicious message, number, or URL here…'
+                  placeholder="Paste the suspicious message, number, or URL here…"
                   placeholderTextColor="#334155"
                   multiline
                   numberOfLines={4}
@@ -1013,13 +1399,26 @@ export default function ReportScreen() {
                   }}
                 />
                 <View
-                  className="flex-row items-center justify-between px-4 py-2.5"
-                  style={{ borderTopWidth: 1, borderTopColor: 'rgba(148,163,184,0.06)' }}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    paddingHorizontal: 16,
+                    paddingVertical: 10,
+                    borderTopWidth: 1,
+                    borderTopColor: 'rgba(148,163,184,0.06)',
+                  }}
                 >
                   <Text style={{ color: '#475569', fontSize: 10, fontWeight: '500' }}>
                     {content.length}/500 chars
                   </Text>
-                  <View className="flex-row items-center gap-1.5">
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
                     <View
                       style={{
                         width: 5,
@@ -1042,93 +1441,151 @@ export default function ReportScreen() {
             {/* Optional extra evidence (collapsible) */}
             <TouchableOpacity
               onPress={toggleEvidence}
-              className="flex-row items-center justify-between px-4 py-3.5 rounded-2xl"
               style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingHorizontal: 16,
+                paddingVertical: 14,
+                borderRadius: 16,
                 backgroundColor: 'rgba(30,41,59,0.4)',
                 borderWidth: 1,
                 borderColor: 'rgba(148,163,184,0.08)',
               }}
             >
-              <View className="flex-row items-center gap-2.5">
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 10,
+                  flexShrink: 1,
+                }}
+              >
                 <PaperclipIcon />
-                <Text style={{ color: '#94a3b8', fontSize: 12, fontWeight: '600' }}>
+                <Text
+                  style={{ color: '#94a3b8', fontSize: 12, fontWeight: '600' }}
+                  numberOfLines={1}
+                >
                   Add extra evidence
                 </Text>
-                <Text style={{ color: '#475569', fontSize: 10, fontWeight: '500' }}>
+                <Text
+                  style={{ color: '#475569', fontSize: 10, fontWeight: '500' }}
+                  numberOfLines={1}
+                >
                   (optional)
                 </Text>
-               {files.length > 0 && (
-  <View className="px-2 py-0.5 rounded-md" style={{ backgroundColor: 'rgba(16,185,129,0.15)' }}>
-    <Text style={{ color: '#34d399', fontSize: 9, fontWeight: '700' }}>
-      {files.length} ATTACHED
-    </Text>
-  </View>
-)}
+                {files.length > 0 && (
+                  <View
+                    style={{
+                      paddingHorizontal: 8,
+                      paddingVertical: 2,
+                      borderRadius: 6,
+                      backgroundColor: 'rgba(16,185,129,0.15)',
+                    }}
+                  >
+                    <Text style={{ color: '#34d399', fontSize: 9, fontWeight: '700' }}>
+                      {files.length} ATTACHED
+                    </Text>
+                  </View>
+                )}
               </View>
               <ChevronIcon up={evidenceOpen} />
             </TouchableOpacity>
 
             {evidenceOpen && (
-                <View style={{ gap: 10 }}>
-                  {/* File attachments */}
-                  <TouchableOpacity
-                    onPress={pickExtraFiles}
-                    className="flex-row items-center justify-center gap-2 py-3.5 rounded-2xl"
-                    style={{
-                      borderWidth: 1.5,
-                      borderStyle: 'dashed',
-                      borderColor: 'rgba(79,70,229,0.25)',
-                      backgroundColor: 'rgba(30,41,59,0.3)',
-                    }}
+              <View style={{ gap: 10 }}>
+                <TouchableOpacity
+                  onPress={pickExtraFiles}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 8,
+                    paddingVertical: 14,
+                    paddingHorizontal: 16,
+                    borderRadius: 16,
+                    borderWidth: 1.5,
+                    borderStyle: 'dashed',
+                    borderColor: 'rgba(79,70,229,0.25)',
+                    backgroundColor: 'rgba(30,41,59,0.3)',
+                  }}
+                >
+                  <PaperclipIcon color="#818cf8" />
+                  <Text
+                    style={{ color: '#a5b4fc', fontSize: 12, fontWeight: '600' }}
+                    numberOfLines={1}
                   >
-                    <PaperclipIcon color="#818cf8" />
-                    <Text style={{ color: '#a5b4fc', fontSize: 12, fontWeight: '600' }}>
-                      Attach additional files
-                    </Text>
-                  </TouchableOpacity>
+                    Attach additional files
+                  </Text>
+                </TouchableOpacity>
 
-                  {files.length > 0 && (
-                    <View style={{ gap: 6 }}>
-                      {files.map((file, i) => (
-                        <View
-                          key={i}
-                          className="flex-row items-center gap-3 px-4 py-2.5 rounded-xl"
+                {files.length > 0 && (
+                  <View style={{ gap: 6 }}>
+                    {files.map((file, i) => (
+                      <View
+                        key={i}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 12,
+                          paddingHorizontal: 16,
+                          paddingVertical: 10,
+                          borderRadius: 12,
+                          backgroundColor: 'rgba(16,185,129,0.04)',
+                          borderWidth: 1,
+                          borderColor: 'rgba(16,185,129,0.12)',
+                        }}
+                      >
+                        <CheckIcon size={12} />
+                        <Text
                           style={{
-                            backgroundColor: 'rgba(16,185,129,0.04)',
-                            borderWidth: 1,
-                            borderColor: 'rgba(16,185,129,0.12)',
+                            color: '#cbd5e1',
+                            fontSize: 11,
+                            flex: 1,
+                            fontWeight: '500',
                           }}
+                          numberOfLines={1}
                         >
-                          <CheckIcon size={12} />
-                          <Text
-                            style={{ color: '#cbd5e1', fontSize: 11, flex: 1, fontWeight: '500' }}
-                            numberOfLines={1}
-                          >
-                            {file.name}
-                          </Text>
-                          <TouchableOpacity onPress={() => removeFile(i)}>
-                            <Text style={{ color: '#64748b', fontSize: 11 }}>✕</Text>
-                          </TouchableOpacity>
-                        </View>
-                      ))}
-                    </View>
-                  )}
+                          {file.name}
+                        </Text>
+                        <TouchableOpacity
+                          onPress={() => removeFile(i)}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <Text style={{ color: '#64748b', fontSize: 12 }}>✕</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+                )}
 
-                  <View
-                    className="flex-row items-start gap-2.5 px-4 py-3 rounded-2xl"
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'flex-start',
+                    gap: 10,
+                    paddingHorizontal: 16,
+                    paddingVertical: 12,
+                    borderRadius: 16,
+                    backgroundColor: 'rgba(148,163,184,0.03)',
+                    borderWidth: 1,
+                    borderColor: 'rgba(148,163,184,0.06)',
+                  }}
+                >
+                  <ShieldIcon size={12} color="#475569" />
+                  <Text
                     style={{
-                      backgroundColor: 'rgba(148,163,184,0.03)',
-                      borderWidth: 1,
-                      borderColor: 'rgba(148,163,184,0.06)',
+                      color: '#475569',
+                      fontSize: 10,
+                      flex: 1,
+                      lineHeight: 15,
                     }}
                   >
-                    <ShieldIcon size={12} color="#475569" />
-                    <Text style={{ color: '#475569', fontSize: 10, flex: 1, lineHeight: 15 }}>
-                      Evidence is hashed client-side. Raw files never leave your device unencrypted.
-                    </Text>
-                  </View>
+                    Evidence is hashed client-side. Raw files never leave your device unencrypted.
+                  </Text>
                 </View>
-              )}
+              </View>
+            )}
           </>
         )}
 
@@ -1138,24 +1595,39 @@ export default function ReportScreen() {
 
             {/* ZKP Commitment Card */}
             <View
-              className="rounded-2xl overflow-hidden"
               style={{
+                borderRadius: 16,
+                overflow: 'hidden',
                 backgroundColor: 'rgba(79,70,229,0.04)',
                 borderWidth: 1,
                 borderColor: 'rgba(79,70,229,0.15)',
               }}
             >
               <View
-                className="flex-row items-center gap-2.5 px-4 py-3.5"
-                style={{ borderBottomWidth: 1, borderBottomColor: 'rgba(79,70,229,0.1)' }}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 10,
+                  paddingHorizontal: 16,
+                  paddingVertical: 14,
+                  borderBottomWidth: 1,
+                  borderBottomColor: 'rgba(79,70,229,0.1)',
+                }}
               >
                 <View
-                  className="w-8 h-8 rounded-xl items-center justify-center"
-                  style={{ backgroundColor: 'rgba(79,70,229,0.12)' }}
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 12,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: 'rgba(79,70,229,0.12)',
+                    flexShrink: 0,
+                  }}
                 >
                   <ShieldIcon size={14} />
                 </View>
-                <View style={{ flex: 1 }}>
+                <View style={{ flex: 1, minWidth: 0 }}>
                   <Text
                     style={{
                       color: '#a5b4fc',
@@ -1166,12 +1638,15 @@ export default function ReportScreen() {
                   >
                     Zero-Knowledge Proof
                   </Text>
-                  <Text style={{ color: '#64748b', fontSize: 10, marginTop: 1 }}>
+                  <Text
+                    style={{ color: '#64748b', fontSize: 10, marginTop: 1 }}
+                    numberOfLines={1}
+                  >
                     Identity protected · Commitment generated
                   </Text>
                 </View>
               </View>
-              <View className="px-4 py-3.5">
+              <View style={{ paddingHorizontal: 16, paddingVertical: 14 }}>
                 <Text
                   style={{
                     color: '#475569',
@@ -1180,12 +1655,13 @@ export default function ReportScreen() {
                     lineHeight: 16,
                   }}
                 >
-                  A cryptographic commitment was created from your report. This proves authenticity
-                  without revealing your identity.
+                  A cryptographic commitment was created from your report. This
+                  proves authenticity without revealing your identity.
                 </Text>
                 <View
-                  className="p-3 rounded-xl"
                   style={{
+                    padding: 12,
+                    borderRadius: 12,
                     backgroundColor: 'rgba(0,0,0,0.3)',
                     borderWidth: 1,
                     borderColor: 'rgba(79,70,229,0.12)',
@@ -1219,16 +1695,21 @@ export default function ReportScreen() {
 
             {/* Submission summary */}
             <View
-              className="rounded-2xl overflow-hidden"
               style={{
+                borderRadius: 16,
+                overflow: 'hidden',
                 backgroundColor: 'rgba(30,41,59,0.5)',
                 borderWidth: 1,
                 borderColor: 'rgba(148,163,184,0.08)',
               }}
             >
               <View
-                className="px-4 py-3"
-                style={{ borderBottomWidth: 1, borderBottomColor: 'rgba(148,163,184,0.06)' }}
+                style={{
+                  paddingHorizontal: 16,
+                  paddingVertical: 12,
+                  borderBottomWidth: 1,
+                  borderBottomColor: 'rgba(148,163,184,0.06)',
+                }}
               >
                 <Text
                   style={{
@@ -1241,7 +1722,7 @@ export default function ReportScreen() {
                   SUBMISSION SUMMARY
                 </Text>
               </View>
-              <View className="px-4 py-3" style={{ gap: 12 }}>
+              <View style={{ paddingHorizontal: 16, paddingVertical: 12, gap: 12 }}>
                 {[
                   {
                     label: 'Sender',
@@ -1274,13 +1755,21 @@ export default function ReportScreen() {
                   },
                   { label: 'Identity', value: 'Anonymous (ZKP verified)' },
                 ].map((row) => (
-                  <View key={row.label} className="flex-row gap-4">
+                  <View
+                    key={row.label}
+                    style={{
+                      flexDirection: 'row',
+                      gap: 16,
+                      alignItems: 'flex-start',
+                    }}
+                  >
                     <Text
                       style={{
                         color: '#64748b',
                         fontSize: 11,
                         width: 68,
                         fontWeight: '500',
+                        flexShrink: 0,
                       }}
                     >
                       {row.label}
@@ -1291,6 +1780,7 @@ export default function ReportScreen() {
                         fontSize: 12,
                         flex: 1,
                         lineHeight: 17,
+                        minWidth: 0,
                       }}
                       numberOfLines={3}
                     >
@@ -1302,17 +1792,30 @@ export default function ReportScreen() {
             </View>
 
             <View
-              className="flex-row items-start gap-2.5 px-4 py-3.5 rounded-2xl"
               style={{
+                flexDirection: 'row',
+                alignItems: 'flex-start',
+                gap: 10,
+                paddingHorizontal: 16,
+                paddingVertical: 14,
+                borderRadius: 16,
                 backgroundColor: 'rgba(16,185,129,0.03)',
                 borderWidth: 1,
                 borderColor: 'rgba(16,185,129,0.08)',
               }}
             >
               <CheckIcon size={12} />
-              <Text style={{ color: '#64748b', fontSize: 10, flex: 1, lineHeight: 16 }}>
-                By submitting, you agree your anonymized report may be shared with DICT, NTC, and
-                law enforcement partners under TLP:GREEN classification.
+              <Text
+                style={{
+                  color: '#64748b',
+                  fontSize: 10,
+                  flex: 1,
+                  lineHeight: 16,
+                }}
+              >
+                By submitting, you agree your anonymized report may be shared with
+                DICT, NTC, and law enforcement partners under TLP:GREEN
+                classification.
               </Text>
             </View>
           </>
@@ -1321,25 +1824,35 @@ export default function ReportScreen() {
 
       {/* Footer */}
       <View
-        className="px-4 pb-4 pt-3"
         style={{
+          paddingHorizontal: 16,
+          paddingBottom: 16,
+          paddingTop: 12,
           borderTopWidth: 1,
           borderTopColor: 'rgba(148,163,184,0.06)',
           backgroundColor: 'rgba(10,17,32,0.95)',
         }}
       >
-        <View className="flex-row gap-3">
+        <View style={{ flexDirection: 'row', gap: 12 }}>
           {step > 1 && (
             <TouchableOpacity
               onPress={() => setStep((s) => s - 1)}
-              className="px-5 py-4 rounded-2xl items-center justify-center"
               style={{
+                paddingHorizontal: 20,
+                paddingVertical: 16,
+                borderRadius: 16,
+                alignItems: 'center',
+                justifyContent: 'center',
                 backgroundColor: 'rgba(30,41,59,0.6)',
                 borderWidth: 1,
                 borderColor: 'rgba(148,163,184,0.1)',
               }}
             >
-              <Text style={{ color: '#94a3b8', fontSize: 13, fontWeight: '600' }}>Back</Text>
+              <Text
+                style={{ color: '#94a3b8', fontSize: 13, fontWeight: '600' }}
+              >
+                Back
+              </Text>
             </TouchableOpacity>
           )}
           <TouchableOpacity
@@ -1348,8 +1861,13 @@ export default function ReportScreen() {
               if (step === 1) goToStep2();
               else handleSubmit();
             }}
-            className="flex-1 py-4 rounded-2xl items-center justify-center"
             style={{
+              flex: 1,
+              paddingVertical: 16,
+              paddingHorizontal: 16,
+              borderRadius: 16,
+              alignItems: 'center',
+              justifyContent: 'center',
               backgroundColor:
                 step === 1 && !canProceedStep1 ? 'rgba(79,70,229,0.2)' : '#4f46e5',
               opacity: submitting ? 0.6 : 1,
@@ -1370,6 +1888,7 @@ export default function ReportScreen() {
                   fontWeight: '700',
                   letterSpacing: 0.3,
                 }}
+                numberOfLines={1}
               >
                 {step === 1 ? 'Next — Review' : 'Submit Report'}
               </Text>

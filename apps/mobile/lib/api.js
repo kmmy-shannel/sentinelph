@@ -70,6 +70,20 @@ api.interceptors.request.use(
   },
   (error) => Promise.reject(error)
 );
+// ---- Review Queue endpoint wrappers -------------------------------------
+
+export async function fetchReports(params = {}) {
+  const response = await apiClient.get('/api/v1/reports', { params });
+  return response.data;
+}
+
+export async function submitReportVote(reportId, { decision, comment }) {
+  const response = await apiClient.post(`/api/v1/reports/${reportId}/vote`, {
+    decision,
+    comment,
+  });
+  return response.data;
+}
 
 // ─── Response interceptor: normalize errors, retry once on 401 ────────────
 api.interceptors.response.use(
@@ -110,5 +124,8 @@ api.interceptors.response.use(
     );
   }
 );
-
+export async function bootstrapCitizenRole() {
+  const response = await api.post('/api/v1/auth/bootstrap-citizen', {});
+  return response.data;
+}
 export default api;

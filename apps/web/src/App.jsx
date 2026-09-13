@@ -4,7 +4,9 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import Login from './pages/Login';
+
 import Activate from './pages/Activate';
+import ResetPassword from './pages/ResetPassword';
 import Unauthorized from './pages/Unauthorized';
 
 // Officer Tabs
@@ -38,6 +40,7 @@ export default function App() {
           <Route path="/" element={<Navigate to="/login" replace />} />
 <Route path="/login" element={<Login />} />
 <Route path="/activate" element={<Activate />} /> {/* NEW — must stay public, not wrapped in ProtectedRoute */}
+<Route path="/reset-password" element={<ResetPassword />} />
 <Route path="/unauthorized" element={<Unauthorized />} />
 
           {/* Officer Routes */}

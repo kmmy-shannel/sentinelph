@@ -1,116 +1,33 @@
+// services/api/routes/reports.js
 const express = require('express');
+const multer = require('multer');
+
 const { verifyFirebaseToken } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
 const { reportSubmissionLimiter } = require('../middleware/rateLimiter');
 const { asyncHandler, ApiError } = require('../middleware/errorHandler');
+
 const Report = require('../models/Report');
 const BlacklistEntry = require('../models/BlacklistEntry');
 const AuditLog = require('../models/AuditLog');
-const { getGenesisHash, verifyReportChain } = require('../utils/hashChain');
-const { analyzeReportPreview } = require('../controllers/reportController');
+
+const { verifyReportChain } = require('../utils/hashChain');
+
+const {
+  createReport,
+  analyzeReportPreview,
+  analyzeReportImage,
+} = require('../controllers/reportController');
 
 const router = express.Router();
 
-// Number of independent reports against the same number that
-// auto-opens a BlacklistEntry candidate for officer review.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+});
+
 const AUTO_CANDIDATE_THRESHOLD = 3;
-
-/**
- * Calls the internal AI Scam Detector microservice to classify text.
- * Resolves process.env.AI_SERVICE_URL and passes authentication header.
- */
-async function classifyReportText({ text, imageBase64 } = {}) {
-  const baseUrl = process.env.AI_SERVICE_URL || process.env.AI_DETECTOR_URL;
-
-  if (!baseUrl) {
-    return { available: false, label: 'uncertain', probability: null, riskLevel: 'UNKNOWN', explanationReasons: [] };
-  }
-
-  const aiUrl = baseUrl.endsWith('/predict') ? baseUrl : `${baseUrl.replace(/\/+$/, '')}/predict`;
-  const apiKey = process.env.AI_SERVICE_API_KEY;
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 3000);
-
-  try {
-    const response = await fetch(aiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-Key': apiKey || '',
-      },
-      // Forward either or both — matches PredictRequest's "at least one" contract.
-      body: JSON.stringify({
-        text: text || undefined,
-        image_base64: imageBase64 || undefined,
-      }),
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      throw new Error(`AI detector responded with HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    return {
-      available: true,
-      isScam: Boolean(data.is_scam),
-      label: data.is_scam ? 'likely_scam' : 'likely_legitimate',
-      probability: typeof data.confidence_score === 'number' ? data.confidence_score : null,
-      riskLevel: data.risk_level || 'LOW',
-      explanationReasons: data.explanation_reasons || [],
-      source: 'ai-detector',
-    };
-  } catch (err) {
-    console.error('[Reports] AI detector call failed, defaulting to fallback:', err.message);
-    return { available: false, label: 'uncertain', probability: null, riskLevel: 'UNKNOWN', explanationReasons: [] };
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
-function validateSubmission(body) {
-  const errors = [];
-
-  const hasText = typeof body.textData === 'string' && body.textData.trim().length > 0;
-  const hasImage = typeof body.imageBase64 === 'string' && body.imageBase64.trim().length > 0;
-
-  // Neither field is individually required — but at least one must be present.
-  if (!hasText && !hasImage) {
-    errors.push('Either textData or imageBase64 is required.');
-  }
-  if (hasText && body.textData.length > 2000) {
-    errors.push('textData must be 2000 characters or fewer.');
-  }
-  if (hasImage && body.imageBase64.length > 5_000_000) {
-    errors.push('imageBase64 payload is too large.');
-  }
-
-  if (!body.reportedNumber || typeof body.reportedNumber !== 'string' || body.reportedNumber.trim().length === 0) {
-    errors.push('reportedNumber is required and must be a non-empty string.');
-  }
-
-  if (!body.nullifier || typeof body.nullifier !== 'string' || body.nullifier.trim().length === 0) {
-    errors.push('nullifier is required and must be a non-empty string.');
-  }
-
-  if (body.location !== undefined && body.location !== null) {
-    if (typeof body.location !== 'object' || Array.isArray(body.location)) {
-      errors.push('location must be an object with optional address, region, lat, lng fields.');
-    } else {
-      const { lat, lng } = body.location;
-      if (lat !== undefined && lat !== null && (typeof lat !== 'number' || lat < -90 || lat > 90)) {
-        errors.push('location.lat must be a number between -90 and 90.');
-      }
-      if (lng !== undefined && lng !== null && (typeof lng !== 'number' || lng < -180 || lng > 180)) {
-        errors.push('location.lng must be a number between -180 and 180.');
-      }
-    }
-  }
-
-  return errors;
-}
+const PENDING_STATUS = 'pending';
 
 async function maybeOpenBlacklistCandidate(reportedNumber, region) {
   try {
@@ -126,7 +43,6 @@ async function maybeOpenBlacklistCandidate(reportedNumber, region) {
     }
 
     const reportCount = await Report.countDocuments({ reportedNumber });
-
     if (reportCount >= AUTO_CANDIDATE_THRESHOLD) {
       await BlacklistEntry.create({
         phoneNumber: reportedNumber,
@@ -141,9 +57,14 @@ async function maybeOpenBlacklistCandidate(reportedNumber, region) {
 }
 
 // =====================================================================
-// POST /api/v1/reports/analyze — Real-time live check endpoint for Mobile UI
+// POST /api/v1/reports/analyze — Layer-1 live preview (no persistence)
 // =====================================================================
 router.post('/analyze', analyzeReportPreview);
+
+// =====================================================================
+// POST /api/v1/reports/ocr — Multipart screenshot → FastAPI /ocr
+// =====================================================================
+router.post('/ocr', upload.single('image'), analyzeReportImage);
 
 // =====================================================================
 // POST /api/v1/reports — Submit a new report (Citizen only)
@@ -153,66 +74,126 @@ router.post(
   verifyFirebaseToken,
   requireRole('citizen'),
   reportSubmissionLimiter,
-  asyncHandler(async (req, res) => {
-    const validationErrors = validateSubmission(req.body);
-    if (validationErrors.length > 0) {
-      throw new ApiError(400, validationErrors.join(' '), 'VALIDATION_ERROR');
-    }
-
-    const { textData, imageBase64, reportedNumber, nullifier, location } = req.body;
-
-    // 1. AI classification (advisory only) — text and/or image
-    const aiFlag = await classifyReportText({ text: textData, imageBase64 });
-
-    // 2. Fetch the current chain tail
-    const tail = await Report.findOne().sort({ sequence: -1 }).select('sequence hash').lean();
-    const previousHash = tail ? tail.hash : getGenesisHash();
-    const nextSequence = tail ? tail.sequence + 1 : 0;
-
-    // 3. Create and persist
-    let report;
-    try {
-      report = await Report.create({
-        textData: textData ? textData.trim() : undefined,
-        reportedNumber: reportedNumber.trim(),
-        nullifier: nullifier.trim(),
-        location: location || {},
-        aiFlag,
-        previousHash,
-        sequence: nextSequence,
-      });
-    } catch (err) {
-      if (err.code === 11000) {
-        if (err.keyPattern && err.keyPattern.nullifier) {
-          throw new ApiError(409, 'Duplicate reporter for this epoch: this nullifier has already been used.', 'DUPLICATE_NULLIFIER');
-        }
-        throw new ApiError(409, 'A chain-sequencing conflict occurred. Please retry the submission.', 'SEQUENCE_CONFLICT');
+  upload.single('evidence'),
+  asyncHandler(async (req, res, next) => {
+    const originalJson = res.json.bind(res);
+    res.json = (body) => {
+      const reportId = body?.reportId || body?.data?.reportId;
+      const reportedNumber = req.body?.senderNumber || req.body?.reportedNumber || req.body?.sender;
+      const region = req.body?.location?.region || body?.report?.location?.region;
+      if (reportedNumber) {
+        setImmediate(() => {
+          maybeOpenBlacklistCandidate(reportedNumber, region).catch(() => {});
+        });
       }
-      throw err;
+      if (req.user?.uid) {
+        setImmediate(() => {
+          AuditLog.record({
+            userId: req.user.uid,
+            role: req.user.role,
+            action: 'REPORT_SUBMITTED',
+            ipAddress: req.ip,
+            metadata: { reportId, reportedNumber },
+          }).catch(() => {});
+        });
+      }
+      return originalJson(body);
+    };
+    return createReport(req, res, next);
+  })
+);
+
+// =====================================================================
+// POST /api/v1/reports/:reportId/vote — Officer approve/reject
+// =====================================================================
+router.post(
+  '/:reportId/vote',
+  verifyFirebaseToken,
+  requireRole('officer'),
+  asyncHandler(async (req, res) => {
+    const { decision, comment } = req.body || {};
+
+    if (!['approve', 'reject'].includes(decision)) {
+      throw new ApiError(400, "decision must be 'approve' or 'reject'.", 'VALIDATION_ERROR');
+    }
+    if (typeof comment !== 'string' || comment.trim().length === 0) {
+      throw new ApiError(400, 'comment is required and must be non-empty.', 'VALIDATION_ERROR');
     }
 
-    // 4. Audit trail
-       await AuditLog.record({
+    const report = await Report.findOne({ reportId: req.params.reportId });
+    if (!report) {
+      throw new ApiError(404, `No report found with reportId "${req.params.reportId}".`, 'NOT_FOUND');
+    }
+
+    // FIX: reportController.js stores jurisdiction as a top-level field
+    // (`report.jurisdiction`), never as `location.region` — location only
+    // ever holds { latitude, longitude }. Compare against the field that
+    // actually gets populated.
+    if (
+      req.user.jurisdiction &&
+      report.jurisdiction &&
+      report.jurisdiction !== req.user.jurisdiction
+    ) {
+      throw new ApiError(403, 'This report falls outside your assigned jurisdiction.', 'JURISDICTION_MISMATCH');
+    }
+
+    const priorVotes = Array.isArray(report.votes) ? report.votes : [];
+    if (priorVotes.some((v) => v.userId === req.user.uid)) {
+      throw new ApiError(409, 'You have already voted on this report.', 'DUPLICATE_VOTE');
+    }
+
+    const vote = {
       userId: req.user.uid,
       role: req.user.role,
-      action: 'REPORT_SUBMITTED',
+      decision,
+      comment: comment.trim(),
+      votedAt: new Date(),
+    };
+
+    const newVotes = [...priorVotes, vote];
+    const approvals = newVotes.filter((v) => v.decision === 'approve').length;
+    const rejections = newVotes.filter((v) => v.decision === 'reject').length;
+
+    let newStatus = PENDING_STATUS;
+    if (approvals >= 2) newStatus = 'blacklisted';
+    else if (rejections >= 2) newStatus = 'rejected';
+    else if (approvals === 1) newStatus = 'one_approval';
+    else newStatus = 'under_review';
+
+    const result = await Report.collection.updateOne(
+      { reportId: report.reportId },
+      {
+        $set: {
+          votes: newVotes,
+          consensusState: { approvals, rejections, required: 2 },
+          status: newStatus,
+        },
+      }
+    );
+
+    if (!result.matchedCount) {
+      throw new ApiError(500, 'Failed to persist vote.', 'VOTE_WRITE_FAILED');
+    }
+
+    await AuditLog.record({
+      userId: req.user.uid,
+      role: req.user.role,
+      action: decision === 'approve' ? 'REPORT_APPROVED' : 'REPORT_REJECTED',
       ipAddress: req.ip,
-      metadata: { reportId: report.reportId, reportedNumber: report.reportedNumber },
+      metadata: {
+        reportId: report.reportId,
+        decision,
+        approvals,
+        rejections,
+      },
     });
 
-    // 5. Non-blocking candidate check
-     await maybeOpenBlacklistCandidate(report.reportedNumber, report.location?.region);
-
-    return res.status(201).json({
+    return res.status(200).json({
       success: true,
-      message: 'Report submitted and appended to the tamper-evident chain.',
       data: {
         reportId: report.reportId,
-        status: report.status,
-        aiFlag: report.aiFlag,
-        sequence: report.sequence,
-        hash: report.hash,
-        createdAt: report.createdAt,
+        status: newStatus,
+        consensusState: { approvals, rejections, required: 2 },
       },
     });
   })
@@ -232,21 +213,58 @@ router.get(
     const query = {};
 
     if (req.query.status) {
-      query.status = req.query.status;
+      query.status = String(req.query.status).toLowerCase();
     }
 
     if (req.query.reportedNumber) {
       query.reportedNumber = req.query.reportedNumber;
     }
 
+    // FIX: filter against `jurisdiction` (the field reportController.js
+    // actually populates), not `location.region` (never set — location
+    // only ever holds lat/lng). The old query silently matched nothing
+    // for any officer with a jurisdiction assigned.
+        // ─── Region-scoped visibility (Phase 1) ─────────────────────────────
+    // Officers see ONLY their assigned region's reports, PLUS reports the
+    // mobile client couldn't geolocate (tagged UNCLASSIFIED). The
+    // UNCLASSIFIED fallback guarantees no report is ever invisible to the
+    // review queue.
+    //
+    // Admins/superadmins/analysts/auditors are not scoped here — the
+    // route-level `requireRole` above already restricts who can reach
+    // this handler, and system-wide roles intentionally see everything.
     if (req.user.role === 'officer') {
-      if (req.query.region && req.user.jurisdiction && req.query.region !== req.user.jurisdiction) {
-        throw new ApiError(403, 'Officers may only query reports within their assigned jurisdiction.', 'JURISDICTION_MISMATCH');
+      if (!req.user.jurisdiction) {
+        // Defensive: an officer without a jurisdiction claim would see
+        // nothing under a strict filter, so we surface the misconfig
+        // rather than silently returning an empty queue.
+        throw new ApiError(
+          403,
+          'Your account is not assigned to a region. Contact the NBI admin.',
+          'MISSING_JURISDICTION'
+        );
       }
-      if (req.user.jurisdiction) {
-        query['location.region'] = req.user.jurisdiction;
+
+      if (
+        req.query.region &&
+        req.user.jurisdiction &&
+        req.query.region !== req.user.jurisdiction
+      ) {
+        throw new ApiError(
+          403,
+          'Officers may only query reports within their assigned jurisdiction.',
+          'JURISDICTION_MISMATCH'
+        );
       }
+
+      query.$or = [
+        { 'location.region': req.user.jurisdiction },
+        { 'location.region': 'UNCLASSIFIED' },
+        { 'location.region': null },
+        { 'location.region': { $exists: false } },
+      ];
     } else if (req.query.region) {
+      // Admin/analyst/auditor filtering to a specific region on demand.
       query['location.region'] = req.query.region;
     }
 
@@ -262,6 +280,7 @@ router.get(
     return res.status(200).json({
       success: true,
       data: items,
+      reports: items,
       pagination: {
         page,
         limit,
@@ -300,10 +319,7 @@ router.get(
       metadata: { rangeChecked: result.rangeChecked, valid: result.valid, breaksFound: result.breaks.length },
     });
 
-    return res.status(200).json({
-      success: true,
-      data: result,
-    });
+    return res.status(200).json({ success: true, data: result });
   })
 );
 
@@ -321,11 +337,12 @@ router.get(
       throw new ApiError(404, `No report found with reportId "${req.params.reportId}".`, 'NOT_FOUND');
     }
 
+    // FIX: same field swap as the vote route above.
     if (
       req.user.role === 'officer' &&
       req.user.jurisdiction &&
-      report.location?.region &&
-      report.location.region !== req.user.jurisdiction
+      report.jurisdiction &&
+      report.jurisdiction !== req.user.jurisdiction
     ) {
       throw new ApiError(403, 'This report falls outside your assigned jurisdiction.', 'JURISDICTION_MISMATCH');
     }

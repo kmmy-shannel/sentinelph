@@ -30,6 +30,7 @@ import React, {
   useState,
 } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import api from '../lib/api';
 import NetInfo from '@react-native-community/netinfo';
 import {
   createUserWithEmailAndPassword,
@@ -42,6 +43,7 @@ import {
 } from 'firebase/auth';
 
 import { auth } from '../config/firebase';
+import { bootstrapCitizenRole } from '../lib/api';
 
 const AuthContext = createContext(null);
 
@@ -197,11 +199,33 @@ export function AuthProvider({ children }) {
           throw new Error(message);
         }
 
-        const credential = await createUserWithEmailAndPassword(auth, email, password);
+               const credential = await createUserWithEmailAndPassword(auth, email, password);
 
         if (fullName) {
           await updateProfile(credential.user, { displayName: fullName });
         }
+
+        // ─── FIX: Assign the `role: 'citizen'` custom claim ─────────────
+        // Firebase client SDK cannot set custom claims (Admin SDK only).
+        // We call our Express gateway, which assigns the claim and returns
+        // success. Then we force-refresh the ID token so the claim is
+        // present in the token the app will send on every subsequent
+        // request (e.g. POST /api/v1/reports). Without this, those
+        // requests hit 403 at verifyFirebaseToken.
+        //
+        // Non-fatal: if this fails, the user is still created and can
+        // retry later (e.g. on next sign-in, or via a manual backfill
+        // script). We log the error but do not block signup.
+        try {
+          await bootstrapCitizenRole();
+          await credential.user.getIdToken(true);
+        } catch (bootstrapErr) {
+          console.warn(
+            '[AuthContext.signUp] bootstrap-citizen failed (non-fatal):',
+            bootstrapErr?.message
+          );
+        }
+        // ────────────────────────────────────────────────────────────────
 
         // IMPORTANT: this call is now guaranteed to actually be reachable
         // and its errors visible — previously, onAuthStateChanged firing
@@ -226,6 +250,104 @@ export function AuthProvider({ children }) {
         const message = signUpError.code
           ? mapFirebaseAuthError(signUpError.code)
           : signUpError.message;
+        setError(message);
+        throw new Error(message);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [assertOnline]
+  );
+   // ─── OTP-based Password Reset (3 stages) ─────────────────────────
+  // Stage 1: request a 6-digit code via email
+  const requestPasswordOtp = useCallback(
+    async (email) => {
+      setError(null);
+      setIsLoading(true);
+      try {
+        assertOnline();
+        if (!email || !email.trim().includes('@')) {
+          const message = 'Please enter a valid email address.';
+          setError(message);
+          throw new Error(message);
+        }
+        const response = await api.post('/api/v1/auth/request-password-otp', {
+          email: email.trim().toLowerCase(),
+        });
+        return response.data;
+      } catch (resetError) {
+        const message =
+          resetError?.response?.data?.message ||
+          resetError.message ||
+          'Could not send the reset code. Please try again.';
+        setError(message);
+        throw new Error(message);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [assertOnline]
+  );
+
+  // Stage 2: verify the 6-digit code, returns { resetSessionToken }
+  const verifyPasswordOtp = useCallback(
+    async (email, otp) => {
+      setError(null);
+      setIsLoading(true);
+      try {
+        assertOnline();
+        if (!otp || String(otp).trim().length < 4) {
+          const message = 'Please enter the code from your email.';
+          setError(message);
+          throw new Error(message);
+        }
+        const response = await api.post('/api/v1/auth/verify-password-otp', {
+          email: email.trim().toLowerCase(),
+          otp: String(otp).trim(),
+        });
+        return response.data;
+      } catch (verifyError) {
+        const message =
+          verifyError?.response?.data?.message ||
+          verifyError.message ||
+          'Could not verify the code. Please try again.';
+        setError(message);
+        throw new Error(message);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [assertOnline]
+  );
+
+  // Stage 3: set the new password using the reset session token
+  const resetPasswordWithOtp = useCallback(
+    async (resetSessionToken, newPassword) => {
+      setError(null);
+      setIsLoading(true);
+      try {
+        assertOnline();
+        if (!resetSessionToken) {
+          const message = 'Your reset session has expired. Please start again.';
+          setError(message);
+          throw new Error(message);
+        }
+        if (!newPassword || newPassword.length < 8) {
+          const message =
+            'Password must be at least 8 characters and include a letter and a number.';
+          setError(message);
+          throw new Error(message);
+        }
+        const response = await api.post('/api/v1/auth/reset-password-with-otp', {
+          resetSessionToken,
+          newPassword,
+        });
+        return response.data;
+      } catch (resetError) {
+        const message =
+          resetError?.response?.data?.message ||
+          resetError.message ||
+          'Could not reset the password. Please start again.';
         setError(message);
         throw new Error(message);
       } finally {
@@ -325,7 +447,10 @@ export function AuthProvider({ children }) {
     checkVerificationStatus,
     resendVerification,
     logout,
-    getIdToken,
+     getIdToken,
+    requestPasswordOtp,
+    verifyPasswordOtp,
+    resetPasswordWithOtp,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

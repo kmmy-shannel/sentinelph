@@ -11,6 +11,7 @@ import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
@@ -270,6 +271,582 @@ function PhoneShell({ children, title }) {
 }
 
 // ---------------------------------------------------------------------------
+// Forgot Password Sheet
+//
+// Defined HERE — before SignInScreen — because:
+//   • ForgotPasswordSheet reads `sheetStyles` at render time
+//   • `sheetStyles` is a `const` (StyleSheet.create call) — not hoisted
+//   • If sheetStyles were declared after SignInScreen, tapping
+//     "Forgot password?" would crash with:
+//       "ReferenceError: Cannot access 'sheetStyles' before initialization"
+// ---------------------------------------------------------------------------
+
+function OtpDigitsMeter({ value }) {
+  const length = 6;
+  const digits = String(value || '').split('');
+  return (
+    <View style={sheetStyles.otpRow}>
+      {Array.from({ length }).map((_, i) => {
+        const char = digits[i];
+        const filled = Boolean(char);
+        const isActive = i === digits.length;
+        return (
+          <View
+            key={i}
+            style={[
+              sheetStyles.otpCell,
+              filled && sheetStyles.otpCellFilled,
+              isActive && sheetStyles.otpCellActive,
+            ]}
+          >
+            <Text style={sheetStyles.otpCellText}>{char || ''}</Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+function ForgotPasswordSheet({ visible, onClose }) {
+  const {
+    requestPasswordOtp,
+    verifyPasswordOtp,
+    resetPasswordWithOtp,
+    isLoading,
+    isOffline,
+  } = useAuth();
+
+  const [stage, setStage] = useState(1); // 1=email, 2=otp, 3=password
+  const [email, setEmail] = useState('');
+  const [otp, setOtp] = useState('');
+  const [resetSessionToken, setResetSessionToken] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showNewPw, setShowNewPw] = useState(false);
+  const [showConfirmPw, setShowConfirmPw] = useState(false);
+  const [error, setError] = useState(null);
+  const [success, setSuccess] = useState(false);
+  const [focusedField, setFocusedField] = useState(null);
+
+  const otpLength = 6;
+
+  const resetState = () => {
+    setStage(1);
+    setEmail('');
+    setOtp('');
+    setResetSessionToken('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setShowNewPw(false);
+    setShowConfirmPw(false);
+    setError(null);
+    setSuccess(false);
+    setFocusedField(null);
+  };
+
+  const handleClose = () => {
+    resetState();
+    onClose();
+  };
+
+  const handleSendOtp = async () => {
+    setError(null);
+    if (!email || !EMAIL_REGEX.test(email.trim())) {
+      setError('Please enter a valid email address.');
+      return;
+    }
+    try {
+      await requestPasswordOtp(email.trim());
+      setStage(2);
+    } catch (err) {
+      setError(err?.message || 'Could not send the code. Please try again.');
+    }
+  };
+
+  const handleVerifyOtp = async () => {
+    setError(null);
+    if (otp.length !== otpLength) {
+      setError(`Please enter the full ${otpLength}-digit code.`);
+      return;
+    }
+    try {
+      const data = await verifyPasswordOtp(email.trim(), otp);
+      if (!data?.resetSessionToken) {
+        setError('Verification succeeded but the reset session is missing. Please try again.');
+        return;
+      }
+      setResetSessionToken(data.resetSessionToken);
+      setStage(3);
+    } catch (err) {
+      setError(err?.message || 'Incorrect code. Please try again.');
+    }
+  };
+
+  const passwordsMatch = newPassword === confirmPassword;
+  const passwordStrengthOk = isPasswordValid(newPassword);
+
+  const handleResetPassword = async () => {
+    setError(null);
+    if (!passwordStrengthOk) {
+      setError(
+        'Password must be at least 8 characters and include a letter and a number.'
+      );
+      return;
+    }
+    if (!passwordsMatch) {
+      setError('Passwords do not match.');
+      return;
+    }
+    try {
+      await resetPasswordWithOtp(resetSessionToken, newPassword);
+      setSuccess(true);
+    } catch (err) {
+      setError(err?.message || 'Could not reset the password. Please try again.');
+    }
+  };
+
+  const closeEnabled = !isLoading;
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="fade"
+      transparent
+      onRequestClose={() => {
+        if (closeEnabled) handleClose();
+      }}
+    >
+      <View style={sheetStyles.backdrop}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={sheetStyles.keyboardWrap}
+        >
+          <View style={sheetStyles.sheet}>
+            <View style={sheetStyles.headerRow}>
+              <Text style={sheetStyles.title}>Reset Password</Text>
+              <TouchableOpacity
+                onPress={handleClose}
+                style={sheetStyles.closeBtn}
+                disabled={!closeEnabled}
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close-outline" size={22} color={T.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Stage indicator */}
+            {!success && (
+              <View style={sheetStyles.stageRow}>
+                {[1, 2, 3].map((s) => (
+                  <View
+                    key={s}
+                    style={[
+                      sheetStyles.stageDot,
+                      stage >= s && sheetStyles.stageDotActive,
+                    ]}
+                  />
+                ))}
+              </View>
+            )}
+
+            {success ? (
+              <>
+                <View style={sheetStyles.successIconWrap}>
+                  <Ionicons name="checkmark-circle-outline" size={34} color={T.green} />
+                </View>
+                <Text style={sheetStyles.successTitle}>Password updated</Text>
+                <Text style={sheetStyles.body}>
+                  You can now sign in to SentinelPH with your new password.
+                </Text>
+                <PrimaryBtn label="Done" onPress={handleClose} />
+              </>
+            ) : stage === 1 ? (
+              <>
+                <Text style={sheetStyles.body}>
+                  Enter your registered email. We&apos;ll send a 6-digit code to reset
+                  your password.
+                </Text>
+
+                <View style={sheetStyles.fieldGroup}>
+                  <Text style={sheetStyles.label}>EMAIL ADDRESS</Text>
+                  <View
+                    style={[
+                      sheetStyles.inputWrapper,
+                      focusedField === 'email' && sheetStyles.inputWrapperActive,
+                    ]}
+                  >
+                    <TextInput
+                      value={email}
+                      onChangeText={setEmail}
+                      placeholder="you@example.com"
+                      placeholderTextColor={T.textDim}
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      editable={!isLoading}
+                      onFocus={() => setFocusedField('email')}
+                      onBlur={() => setFocusedField(null)}
+                      style={sheetStyles.input}
+                    />
+                  </View>
+                </View>
+
+                {error && (
+                  <View style={sheetStyles.errorBox}>
+                    <Text style={sheetStyles.errorText}>{error}</Text>
+                  </View>
+                )}
+
+                <PrimaryBtn
+                  label={isLoading ? 'Sending…' : 'Send Reset Code'}
+                  onPress={handleSendOtp}
+                  loading={isLoading}
+                  disabled={isOffline || !email.trim()}
+                />
+
+                <TouchableOpacity style={sheetStyles.cancelBtn} onPress={handleClose}>
+                  <Text style={sheetStyles.cancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </>
+            ) : stage === 2 ? (
+              <>
+                <Text style={sheetStyles.body}>
+                  We sent a 6-digit code to{' '}
+                  <Text style={{ color: T.textPrimary, fontWeight: '700' }}>
+                    {email}
+                  </Text>
+                  . Enter it below to continue.
+                </Text>
+
+                <View style={sheetStyles.fieldGroup}>
+                  <Text style={sheetStyles.label}>VERIFICATION CODE</Text>
+                  <TextInput
+                    value={otp}
+                    onChangeText={(v) => setOtp(v.replace(/\D/g, '').slice(0, otpLength))}
+                    placeholder="000000"
+                    placeholderTextColor={T.textDim}
+                    keyboardType="number-pad"
+                    maxLength={otpLength}
+                    editable={!isLoading}
+                    autoFocus
+                    style={sheetStyles.hiddenInput}
+                  />
+                  <OtpDigitsMeter value={otp} />
+                </View>
+
+                {error && (
+                  <View style={sheetStyles.errorBox}>
+                    <Text style={sheetStyles.errorText}>{error}</Text>
+                  </View>
+                )}
+
+                <PrimaryBtn
+                  label={isLoading ? 'Verifying…' : 'Verify Code'}
+                  onPress={handleVerifyOtp}
+                  loading={isLoading}
+                  disabled={isOffline || otp.length !== otpLength}
+                />
+
+                <TouchableOpacity
+                  style={sheetStyles.cancelBtn}
+                  onPress={() => {
+                    setStage(1);
+                    setOtp('');
+                    setError(null);
+                  }}
+                >
+                  <Text style={sheetStyles.cancelText}>Use a different email</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <Text style={sheetStyles.body}>
+                  Choose a new password. It must be at least 8 characters and
+                  include a letter and a number.
+                </Text>
+
+                <View style={sheetStyles.fieldGroup}>
+                  <Text style={sheetStyles.label}>NEW PASSWORD</Text>
+                  <View
+                    style={[
+                      sheetStyles.inputWrapper,
+                      focusedField === 'new' && sheetStyles.inputWrapperActive,
+                    ]}
+                  >
+                    <TextInput
+                      value={newPassword}
+                      onChangeText={setNewPassword}
+                      placeholder="At least 8 characters"
+                      placeholderTextColor={T.textDim}
+                      secureTextEntry={!showNewPw}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      editable={!isLoading}
+                      onFocus={() => setFocusedField('new')}
+                      onBlur={() => setFocusedField(null)}
+                      style={sheetStyles.input}
+                    />
+                    <TouchableOpacity
+                      onPress={() => setShowNewPw((v) => !v)}
+                      style={sheetStyles.eyeBtn}
+                    >
+                      <Ionicons
+                        name={showNewPw ? 'eye-off-outline' : 'eye-outline'}
+                        size={18}
+                        color={T.textMuted}
+                      />
+                    </TouchableOpacity>
+                  </View>
+                  <StrengthMeter password={newPassword} />
+                </View>
+
+                <View style={sheetStyles.fieldGroup}>
+                  <Text style={sheetStyles.label}>CONFIRM PASSWORD</Text>
+                  <View
+                    style={[
+                      sheetStyles.inputWrapper,
+                      focusedField === 'confirm' && sheetStyles.inputWrapperActive,
+                      confirmPassword.length > 0 &&
+                        !passwordsMatch &&
+                        sheetStyles.inputWrapperError,
+                    ]}
+                  >
+                    <TextInput
+                      value={confirmPassword}
+                      onChangeText={setConfirmPassword}
+                      placeholder="Re-enter your password"
+                      placeholderTextColor={T.textDim}
+                      secureTextEntry={!showConfirmPw}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      editable={!isLoading}
+                      onFocus={() => setFocusedField('confirm')}
+                      onBlur={() => setFocusedField(null)}
+                      style={sheetStyles.input}
+                    />
+                    <TouchableOpacity
+                      onPress={() => setShowConfirmPw((v) => !v)}
+                      style={sheetStyles.eyeBtn}
+                    >
+                      <Ionicons
+                        name={showConfirmPw ? 'eye-off-outline' : 'eye-outline'}
+                        size={18}
+                        color={T.textMuted}
+                      />
+                    </TouchableOpacity>
+                  </View>
+                  {confirmPassword.length > 0 && !passwordsMatch && (
+                    <Text style={sheetStyles.inlineError}>
+                      Passwords do not match
+                    </Text>
+                  )}
+                </View>
+
+                {error && (
+                  <View style={sheetStyles.errorBox}>
+                    <Text style={sheetStyles.errorText}>{error}</Text>
+                  </View>
+                )}
+
+                <PrimaryBtn
+                  label={isLoading ? 'Updating…' : 'Update Password'}
+                  onPress={handleResetPassword}
+                  loading={isLoading}
+                  disabled={
+                    isOffline ||
+                    !passwordStrengthOk ||
+                    !passwordsMatch ||
+                    confirmPassword.length === 0
+                  }
+                />
+
+                <TouchableOpacity
+                  style={sheetStyles.cancelBtn}
+                  onPress={handleClose}
+                >
+                  <Text style={sheetStyles.cancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </KeyboardAvoidingView>
+      </View>
+    </Modal>
+  );
+}
+
+const sheetStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.78)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  keyboardWrap: {
+    width: '100%',
+    maxWidth: 460,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sheet: {
+    width: '100%',
+    backgroundColor: T.card,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: T.borderSubtle,
+    padding: 24,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: T.textPrimary,
+  },
+  closeBtn: {
+    padding: 4,
+  },
+  stageRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: 14,
+  },
+  stageDot: {
+    flex: 1,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: T.borderMedium,
+  },
+  stageDotActive: {
+    backgroundColor: T.indigo,
+  },
+  body: {
+    fontSize: 13,
+    lineHeight: 20,
+    color: T.textMuted,
+    marginBottom: 14,
+  },
+  successTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: T.textPrimary,
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  fieldGroup: {
+    marginBottom: 12,
+  },
+  label: {
+    fontFamily: T.mono,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.5,
+    color: T.textMuted,
+    marginBottom: 8,
+    textTransform: 'uppercase',
+  },
+  inputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: T.borderMedium,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    backgroundColor: T.inputBg,
+  },
+  inputWrapperActive: {
+    borderColor: T.indigo,
+  },
+  inputWrapperError: {
+    borderColor: T.red,
+  },
+  input: {
+    flex: 1,
+    paddingVertical: 13,
+    fontSize: 14,
+    color: T.textBody,
+  },
+  eyeBtn: {
+    padding: 6,
+  },
+  hiddenInput: {
+    position: 'absolute',
+    opacity: 0,
+    height: 1,
+    width: 1,
+  },
+  otpRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 6,
+  },
+  otpCell: {
+    flex: 1,
+    height: 52,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: T.borderMedium,
+    backgroundColor: T.inputBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  otpCellFilled: {
+    borderColor: 'rgba(99,102,241,0.55)',
+  },
+  otpCellActive: {
+    borderColor: T.indigo,
+  },
+  otpCellText: {
+    color: T.textPrimary,
+    fontSize: 20,
+    fontFamily: T.mono,
+    fontWeight: '700',
+  },
+  errorBox: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(239,68,68,0.25)',
+    backgroundColor: 'rgba(239,68,68,0.08)',
+    padding: 10,
+    marginBottom: 12,
+  },
+  errorText: {
+    color: T.red,
+    fontSize: 12,
+  },
+  inlineError: {
+    color: T.red,
+    fontSize: 11,
+    marginTop: 6,
+    fontFamily: T.mono,
+  },
+  successIconWrap: {
+    alignSelf: 'center',
+    backgroundColor: T.inputBg,
+    borderWidth: 1,
+    borderColor: T.borderMedium,
+    borderRadius: 999,
+    padding: 16,
+    marginBottom: 14,
+  },
+  cancelBtn: {
+    marginTop: 12,
+    alignItems: 'center',
+    padding: 10,
+  },
+  cancelText: {
+    color: T.textMuted,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Sub-screens
 // ---------------------------------------------------------------------------
 
@@ -282,6 +859,7 @@ function SignInScreen() {
   const [focusedField, setFocusedField] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
   const [banner, setBanner] = useState(null);
+  const [showForgotSheet, setShowForgotSheet] = useState(false);
 
   const validate = () => {
     const errors = {};
@@ -307,6 +885,13 @@ function SignInScreen() {
 
   return (
     <>
+      {showForgotSheet && (
+        <ForgotPasswordSheet
+          visible={showForgotSheet}
+          onClose={() => setShowForgotSheet(false)}
+        />
+      )}
+
       {isOffline && (
         <View style={styles.offlineBanner}>
           <Ionicons name="cloud-offline-outline" size={16} color={T.red} />
@@ -377,7 +962,7 @@ function SignInScreen() {
           <Text style={styles.rememberMeText}>Remember me</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity>
+        <TouchableOpacity onPress={() => setShowForgotSheet(true)}>
           <Text style={styles.forgotPasswordText}>Forgot password?</Text>
         </TouchableOpacity>
       </View>

@@ -5,7 +5,13 @@
 // shows pending/failed/synced status per report without an extra API call.
 
 import React, { useCallback, useState } from 'react';
-import { View, Text, FlatList, RefreshControl, TouchableOpacity } from 'react-native';
+import {
+  View,
+  Text,
+  FlatList,
+  RefreshControl,
+  TouchableOpacity,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 
@@ -14,29 +20,60 @@ import { syncNow } from '../db/syncQueue';
 
 function StatusBadge({ report }) {
   let label = 'Confirmed';
-  let color = { text: '#10b981', bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.25)' };
+  let color = {
+    text: '#10b981',
+    bg: 'rgba(16,185,129,0.12)',
+    border: 'rgba(16,185,129,0.25)',
+  };
 
   if (!report.synced) {
     if (report.syncAttempts >= 5) {
       label = 'Failed';
-      color = { text: '#f43f5e', bg: 'rgba(244,63,94,0.12)', border: 'rgba(244,63,94,0.25)' };
+      color = {
+        text: '#f43f5e',
+        bg: 'rgba(244,63,94,0.12)',
+        border: 'rgba(244,63,94,0.25)',
+      };
     } else {
       label = 'Queued';
-      color = { text: '#f59e0b', bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.25)' };
+      color = {
+        text: '#f59e0b',
+        bg: 'rgba(245,158,11,0.12)',
+        border: 'rgba(245,158,11,0.25)',
+      };
     }
   }
 
   return (
-    <View className="px-2 py-0.5 rounded-full self-start" style={{ backgroundColor: color.bg, borderWidth: 1, borderColor: color.border }}>
-      <Text style={{ color: color.text, fontSize: 10, fontWeight: '600' }}>{label}</Text>
+    <View
+      style={{
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        borderRadius: 999,
+        backgroundColor: color.bg,
+        borderWidth: 1,
+        borderColor: color.border,
+        alignSelf: 'flex-start',
+      }}
+    >
+      <Text style={{ color: color.text, fontSize: 10, fontWeight: '600' }}>
+        {label}
+      </Text>
     </View>
   );
 }
 
 function formatDate(iso) {
   const d = new Date(iso);
-  return d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' }) +
-    ' · ' + d.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return (
+    d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric' }) +
+    ' · ' +
+    d.toLocaleTimeString('en-PH', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+  );
 }
 
 export default function MyReportsScreen() {
@@ -64,46 +101,137 @@ export default function MyReportsScreen() {
 
   return (
     <SafeAreaView edges={['top']} style={{ flex: 1, backgroundColor: '#0a1120' }}>
-      <View className="flex-row items-center justify-between px-4 pt-3 pb-2">
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={{ color: '#818cf8', fontSize: 13 }}>← Back</Text>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          paddingHorizontal: 16,
+          paddingTop: 12,
+          paddingBottom: 8,
+        }}
+      >
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={{
+            minWidth: 60,
+            paddingVertical: 4,
+          }}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Text style={{ color: '#818cf8', fontSize: 13, fontWeight: '500' }}>
+            ← Back
+          </Text>
         </TouchableOpacity>
-        <Text style={{ color: '#e2e8f0', fontSize: 14, fontWeight: '600' }}>My Reports</Text>
-        <View style={{ width: 40 }} />
+        <Text style={{ color: '#e2e8f0', fontSize: 15, fontWeight: '600' }}>
+          My Reports
+        </Text>
+        <View style={{ width: 60 }} />
       </View>
 
       <FlatList
         data={reports}
         keyExtractor={(item) => item.localId}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#818cf8" />}
-        contentContainerStyle={{ padding: 16, gap: 8 }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#818cf8"
+          />
+        }
+        contentContainerStyle={{
+          paddingHorizontal: 16,
+          paddingTop: 8,
+          paddingBottom: 24,
+          gap: 10,
+        }}
         ListEmptyComponent={
-          <View className="items-center justify-center" style={{ paddingTop: 80 }}>
-            <Text style={{ color: '#475569', fontSize: 13 }}>No reports yet</Text>
+          <View
+            style={{
+              alignItems: 'center',
+              justifyContent: 'center',
+              paddingTop: 80,
+              paddingHorizontal: 32,
+            }}
+          >
+            <Text
+              style={{
+                color: '#475569',
+                fontSize: 13,
+                textAlign: 'center',
+              }}
+            >
+              No reports yet
+            </Text>
           </View>
         }
         renderItem={({ item }) => (
           <View
-            className="p-3 rounded-xl"
-            style={{ backgroundColor: '#1e293b', borderWidth: 1, borderColor: 'rgba(148,163,184,0.1)', gap: 6 }}
+            style={{
+              padding: 14,
+              borderRadius: 12,
+              backgroundColor: '#1e293b',
+              borderWidth: 1,
+              borderColor: 'rgba(148,163,184,0.1)',
+              gap: 8,
+            }}
           >
-            <View className="flex-row items-start justify-between gap-2">
-              <Text style={{ color: '#e2e8f0', fontSize: 12, fontWeight: '600', flex: 1 }} numberOfLines={1}>
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'flex-start',
+                justifyContent: 'space-between',
+                gap: 10,
+              }}
+            >
+              <Text
+                style={{
+                  color: '#e2e8f0',
+                  fontSize: 13,
+                  fontWeight: '600',
+                  flex: 1,
+                }}
+                numberOfLines={1}
+              >
                 {item.scamType}
               </Text>
               <StatusBadge report={item} />
             </View>
-            <Text style={{ color: '#94a3b8', fontSize: 11 }} numberOfLines={2}>
+            <Text
+              style={{ color: '#94a3b8', fontSize: 11, lineHeight: 16 }}
+              numberOfLines={2}
+            >
               {item.content}
             </Text>
-            <View className="flex-row items-center justify-between">
-              <Text style={{ color: '#334155', fontSize: 10, fontFamily: 'JetBrainsMono_400Regular' }}>
-                {item.serverReportId || `LOCAL-${item.localId.slice(0, 8).toUpperCase()}`}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 8,
+              }}
+            >
+              <Text
+                style={{
+                  color: '#334155',
+                  fontSize: 10,
+                  fontFamily: 'JetBrainsMono_400Regular',
+                  flexShrink: 1,
+                }}
+                numberOfLines={1}
+              >
+                {item.serverReportId ||
+                  `LOCAL-${item.localId.slice(0, 8).toUpperCase()}`}
               </Text>
-              <Text style={{ color: '#475569', fontSize: 10 }}>{formatDate(item.createdAt)}</Text>
+              <Text style={{ color: '#475569', fontSize: 10 }}>
+                {formatDate(item.createdAt)}
+              </Text>
             </View>
             {item.lastError && !item.synced && (
-              <Text style={{ color: '#f43f5e', fontSize: 10 }} numberOfLines={1}>
+              <Text
+                style={{ color: '#f43f5e', fontSize: 10 }}
+                numberOfLines={1}
+              >
                 Sync error: {item.lastError}
               </Text>
             )}

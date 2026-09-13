@@ -1,7 +1,8 @@
 // apps/web/src/context/AuthContext.jsx
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from '../config/firebase';
+import apiClient from '../lib/api';
 
 export const ROLES = {
   OFFICER: 'officer',
@@ -46,7 +47,26 @@ export function AuthProvider({ children }) {
     await signOut(auth); // onAuthStateChanged fires and clears state automatically
   };
 
-  const value = {
+  // ─── Password Reset ────────────────────────────────────────────────
+  // Both helpers call our Express gateway, which handles the branded
+  // email + one-time-use token flow. Errors are surfaced to the caller
+  // so the ForgotPassword / ResetPassword pages can render them.
+  const requestPasswordReset = useCallback(async (email) => {
+    const response = await apiClient.post('/api/v1/auth/request-password-reset', {
+      email,
+    });
+    return response.data;
+  }, []);
+
+  const confirmPasswordReset = useCallback(async (token, newPassword) => {
+    const response = await apiClient.post('/api/v1/auth/confirm-password-reset', {
+      token,
+      newPassword,
+    });
+    return response.data;
+  }, []);
+
+    const value = {
     isAuthenticated: !!firebaseUser,
     user: firebaseUser
       ? { uid: firebaseUser.uid, email: firebaseUser.email, name: firebaseUser.displayName }
@@ -55,6 +75,8 @@ export function AuthProvider({ children }) {
     jurisdiction,
     loading,
     logout,
+    requestPasswordReset,
+    confirmPasswordReset,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
