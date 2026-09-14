@@ -39,17 +39,32 @@ SplashScreen.preventAutoHideAsync().catch(() => {
 
 /**
  * Reads auth state and renders the correct navigation tree.
+ *
+ * FIX: previously gated purely on `isAuthenticated`, which Firebase flips
+ * to true the instant createUserWithEmailAndPassword() resolves — well
+ * before the user has verified their email, and even before
+ * sendEmailVerification() finishes sending. That caused brand-new,
+ * unverified accounts to land straight on the Dashboard.
+ *
+ * The Dashboard now requires BOTH isAuthenticated AND isEmailVerified.
+ * An authenticated-but-unverified user renders <AuthScreen/>, which
+ * itself is already routed to the 'verify' view by AuthContext's
+ * onAuthStateChanged handler — so this component doesn't need to know
+ * anything about *which* view AuthScreen shows, only whether the
+ * Dashboard is allowed.
  */
 function RootNavigator() {
-  const { isAuthenticated, initializing } = useAuth();
+  const { isAuthenticated, isEmailVerified, initializing } = useAuth();
 
   if (initializing) {
     return null;
   }
 
+  const canAccessDashboard = isAuthenticated && isEmailVerified;
+
   return (
     <NavigationContainer>
-      {isAuthenticated ? <TabNavigator /> : <AuthScreen />}
+      {canAccessDashboard ? <TabNavigator /> : <AuthScreen />}
     </NavigationContainer>
   );
 }

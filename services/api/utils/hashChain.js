@@ -10,6 +10,25 @@ const crypto = require('crypto');
  *   same logical data always canonicalizes identically regardless of
  *   whether it came from a fresh in-memory document or a `.lean()` read.
  */
+/**
+ * Returns true for any object that looks like a Mongoose Document or
+ * Subdocument. We detect this by the presence of the internal `$__`
+ * pointer that Mongoose injects on every document and subdocument.
+ *
+ * Those internal pointers create circular references back to the parent
+ * document, which is exactly what was causing the infinite recursion
+ * (and the resulting `RangeError: Maximum call stack size exceeded`)
+ * in the previous version of this function.
+ */
+function isMongooseDocument(value) {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    typeof value.toObject === 'function' &&
+    Object.prototype.hasOwnProperty.call(value, '$__')
+  );
+}
+
 function canonicalize(value) {
   if (value === null || value === undefined) {
     return null;
@@ -22,6 +41,24 @@ function canonicalize(value) {
   if (typeof value.toHexString === 'function') {
     // Mongoose ObjectId
     return value.toHexString();
+  }
+
+  // ─── FIX: unwrap Mongoose Documents/Subdocuments before recursing ──
+  // Without this, we walk the document's internal `$__` graph (which is
+  // circular) and blow the call stack. `.toObject()` produces a plain
+  // object with no internal pointers, so the recursion terminates.
+  if (isMongooseDocument(value)) {
+    return canonicalize(value.toObject({ depopulate: true, virtuals: false }));
+  }
+
+  // Also handle plain objects that contain a `_doc` wrapper (some
+  // Mongoose versions expose it directly without `toObject`).
+  if (
+    typeof value === 'object' &&
+    value._doc !== undefined &&
+    Object.prototype.hasOwnProperty.call(value, '$__')
+  ) {
+    return canonicalize(value._doc);
   }
 
   if (Array.isArray(value)) {

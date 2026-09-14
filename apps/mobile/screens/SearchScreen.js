@@ -5,7 +5,15 @@
 // to GET /api/v1/blacklist/:number for a live authoritative check.
 
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  ScrollView,
+  ActivityIndicator,
+  useWindowDimensions,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Circle, Line } from 'react-native-svg';
 import * as SQLite from 'expo-sqlite';
@@ -18,7 +26,15 @@ function SearchIcon({ size = 16, color = '#475569' }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 16 16" fill="none">
       <Circle cx={6.5} cy={6.5} r={4.25} stroke={color} strokeWidth={1.3} />
-      <Line x1={9.75} y1={9.75} x2={13.5} y2={13.5} stroke={color} strokeWidth={1.4} strokeLinecap="round" />
+      <Line
+        x1={9.75}
+        y1={9.75}
+        x2={13.5}
+        y2={13.5}
+        stroke={color}
+        strokeWidth={1.4}
+        strokeLinecap="round"
+      />
     </Svg>
   );
 }
@@ -31,17 +47,24 @@ function Badge({ label, color }) {
   };
   const s = palette[color] || palette.amber;
   return (
-    <View className="px-2 py-0.5 rounded-full" style={{ backgroundColor: s.bg, borderWidth: 1, borderColor: s.border }}>
-      <Text style={{ color: s.text, fontSize: 10, fontWeight: '600' }}>{label}</Text>
+    <View
+      style={{
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        borderRadius: 999,
+        backgroundColor: s.bg,
+        borderWidth: 1,
+        borderColor: s.border,
+        alignSelf: 'flex-start',
+      }}
+    >
+      <Text style={{ color: s.text, fontSize: 10, fontWeight: '600' }}>
+        {label}
+      </Text>
     </View>
   );
 }
 
-/**
- * Looks up cached blacklist entries matching `query` from the local
- * `blacklist_cache` table (mirrored via background sync — see Phase 2's
- * BlacklistEntry model). Returns [] if the table doesn't exist yet.
- */
 async function searchLocalCache(query) {
   try {
     const db = await SQLite.openDatabaseAsync('sentinelph.db');
@@ -64,6 +87,9 @@ async function searchLocalCache(query) {
 }
 
 export default function SearchScreen() {
+  const { width } = useWindowDimensions();
+  const isWide = width >= 480;
+
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -75,7 +101,10 @@ export default function SearchScreen() {
       setResults([]);
       return;
     }
-    debounceRef.current = setTimeout(() => runSearch(query.trim()), DEBOUNCE_MS);
+    debounceRef.current = setTimeout(
+      () => runSearch(query.trim()),
+      DEBOUNCE_MS
+    );
     return () => clearTimeout(debounceRef.current);
   }, [query]);
 
@@ -87,8 +116,9 @@ export default function SearchScreen() {
         setResults(cached);
       }
 
-      // Always attempt a live check too — cache may be stale.
-      const response = await api.get(`/api/v1/blacklist/${encodeURIComponent(q)}`);
+      const response = await api.get(
+        `/api/v1/blacklist/${encodeURIComponent(q)}`
+      );
       const liveResults = response.data?.matches || [];
       setResults(liveResults.length > 0 ? liveResults : cached);
     } catch (err) {
@@ -104,14 +134,41 @@ export default function SearchScreen() {
 
   return (
     <SafeAreaView edges={['top']} style={{ flex: 1, backgroundColor: '#0a1120' }}>
-      <View className="flex-1 px-4 pt-3">
-        <Text style={{ color: '#475569', fontSize: 11, fontWeight: '600', letterSpacing: 1, marginBottom: 12 }}>
+      <View
+        style={{
+          flex: 1,
+          paddingHorizontal: 16,
+          paddingTop: 12,
+          maxWidth: isWide ? 720 : undefined,
+          alignSelf: isWide ? 'center' : 'stretch',
+          width: '100%',
+        }}
+      >
+        <Text
+          style={{
+            color: '#475569',
+            fontSize: 11,
+            fontWeight: '600',
+            letterSpacing: 1,
+            marginBottom: 12,
+          }}
+        >
           SCAM NUMBER LOOKUP
         </Text>
 
         <View
-          className="flex-row items-center gap-2 px-3 py-2.5 rounded-xl mb-4"
-          style={{ backgroundColor: '#1e293b', borderWidth: 1, borderColor: 'rgba(148,163,184,0.15)' }}
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            paddingHorizontal: 12,
+            paddingVertical: 10,
+            borderRadius: 12,
+            marginBottom: 16,
+            backgroundColor: '#1e293b',
+            borderWidth: 1,
+            borderColor: 'rgba(148,163,184,0.15)',
+          }}
         >
           <SearchIcon />
           <TextInput
@@ -119,51 +176,132 @@ export default function SearchScreen() {
             onChangeText={setQuery}
             placeholder="Number, URL, or keyword…"
             placeholderTextColor="#475569"
-            style={{ flex: 1, color: '#e2e8f0', fontSize: 14 }}
+            style={{
+              flex: 1,
+              color: '#e2e8f0',
+              fontSize: 14,
+              paddingVertical: 2,
+            }}
+            autoCorrect={false}
+            autoCapitalize="none"
           />
           {loading && <ActivityIndicator size="small" color="#4f46e5" />}
           {!loading && query.length > 0 && (
-            <TouchableOpacity onPress={() => setQuery('')}>
-              <Text style={{ color: '#475569', fontSize: 13 }}>✕</Text>
+            <TouchableOpacity
+              onPress={() => setQuery('')}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={{ color: '#475569', fontSize: 14 }}>✕</Text>
             </TouchableOpacity>
           )}
         </View>
 
         {results.length > 0 ? (
-          <ScrollView contentContainerStyle={{ gap: 8 }}>
+          <ScrollView
+            contentContainerStyle={{ gap: 8, paddingBottom: 24 }}
+            keyboardShouldPersistTaps="handled"
+          >
             {results.map((r, i) => (
               <View
                 key={`${r.value}-${i}`}
-                className="flex-row items-center gap-3 p-3 rounded-xl"
-                style={{ backgroundColor: '#1e293b', borderWidth: 1, borderColor: 'rgba(148,163,184,0.1)' }}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: 14,
+                  borderRadius: 12,
+                  backgroundColor: '#1e293b',
+                  borderWidth: 1,
+                  borderColor: 'rgba(148,163,184,0.1)',
+                }}
               >
                 <View
-                  className="w-8 h-8 rounded-lg items-center justify-center"
-                  style={{ backgroundColor: r.risk === 'high' ? 'rgba(244,63,94,0.12)' : 'rgba(245,158,11,0.12)' }}
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 10,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor:
+                      r.risk === 'high'
+                        ? 'rgba(244,63,94,0.12)'
+                        : 'rgba(245,158,11,0.12)',
+                    flexShrink: 0,
+                  }}
                 >
-                  <Text style={{ color: r.risk === 'high' ? '#f43f5e' : '#f59e0b', fontSize: 12 }}>!</Text>
+                  <Text
+                    style={{
+                      color: r.risk === 'high' ? '#f43f5e' : '#f59e0b',
+                      fontSize: 14,
+                      fontWeight: '700',
+                    }}
+                  >
+                    !
+                  </Text>
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'JetBrainsMono_400Regular' }} numberOfLines={1}>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text
+                    style={{
+                      color: '#e2e8f0',
+                      fontSize: 12,
+                      fontFamily: 'JetBrainsMono_400Regular',
+                    }}
+                    numberOfLines={1}
+                  >
                     {r.value}
                   </Text>
-                  <Text style={{ color: '#475569', fontSize: 11 }}>{r.type}</Text>
+                  <Text style={{ color: '#475569', fontSize: 11, marginTop: 2 }}>
+                    {r.type}
+                  </Text>
                 </View>
-                <Badge label={r.risk === 'high' ? 'Blacklisted' : 'Under Review'} color={r.risk === 'high' ? 'rose' : 'amber'} />
+                <Badge
+                  label={r.risk === 'high' ? 'Blacklisted' : 'Under Review'}
+                  color={r.risk === 'high' ? 'rose' : 'amber'}
+                />
               </View>
             ))}
           </ScrollView>
         ) : (
-          <View className="flex-1 items-center justify-center gap-3" style={{ paddingBottom: 64 }}>
+          <View
+            style={{
+              flex: 1,
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 12,
+              paddingBottom: 64,
+              paddingHorizontal: 32,
+            }}
+          >
             <View
-              className="w-14 h-14 rounded-2xl items-center justify-center"
-              style={{ backgroundColor: 'rgba(79,70,229,0.08)', borderWidth: 1, borderColor: 'rgba(79,70,229,0.15)' }}
+              style={{
+                width: 56,
+                height: 56,
+                borderRadius: 16,
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: 'rgba(79,70,229,0.08)',
+                borderWidth: 1,
+                borderColor: 'rgba(79,70,229,0.15)',
+              }}
             >
               <SearchIcon size={22} color="#4f46e5" />
             </View>
-            <Text style={{ color: '#64748b', fontSize: 14, fontWeight: '500' }}>Verify before you trust</Text>
-            <Text style={{ color: '#334155', fontSize: 11, textAlign: 'center', maxWidth: 200 }}>
-              Look up any number, domain, or keyword against the SentinelPH blacklist
+            <Text
+              style={{ color: '#64748b', fontSize: 14, fontWeight: '500' }}
+            >
+              Verify before you trust
+            </Text>
+            <Text
+              style={{
+                color: '#334155',
+                fontSize: 11,
+                textAlign: 'center',
+                maxWidth: 240,
+                lineHeight: 16,
+              }}
+            >
+              Look up any number, domain, or keyword against the SentinelPH
+              blacklist
             </Text>
           </View>
         )}

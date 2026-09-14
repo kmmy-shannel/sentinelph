@@ -1,12 +1,36 @@
 // apps/mobile/screens/ReportScreen.js
 //
-// Guided 3-step report wizard:
-//   Step 1 — Scam type + number/URL/message content
-//   Step 2 — Evidence attachment (photo/file picker, voice recording) + location
-//   Step 3 — ZKP nullifier/commitment review & submit
+// Guided 2-step report wizard with Layer 1 instant AI warning:
+//   Step 1 — Report Intake & Analysis
+//            · Optional sender identifier
+//            · Mutually exclusive: Screenshot upload (OCR) OR typed message
+//            · Debounced AI scam analysis + reasoning
+//            · Optional collapsible extra evidence (files only)
+//   Step 2 — Review & ZKP Verification
+//            · ZKP commitment hash, full submission summary, final submit
 //
 // Submits live via POST /api/v1/reports when online; otherwise enqueues
 // into the SQLite outbox (db/sqlite.js) for db/syncQueue.js to flush later.
+// Layer 1 preview calls POST /api/v1/reports/analyze (advisory-only,
+// mirrors the AI microservice's /predict — never blacklists anything).
+//
+// FIX (Voice-note removal): expo-av / expo-audio / useAudioRecorder and
+// all associated recording state, hooks, and mic UI have been removed —
+// they are not imported or referenced anywhere in this file. The 2-Step
+// Intake Flow below is screenshot-OR-text only, as required.
+//
+// FIX (OCR not populating): the mobile app never had anywhere to put the
+// extracted text — the AI service's /predict response didn't return it.
+// runAnalysis now reads `ocrText` back off the analyze response and
+// writes it into local state whenever the active input is a screenshot,
+// so the OCR terminal panel populates automatically instead of staying
+// blank until the user types into it manually.
+//
+// FIX (scamType NOT NULL crash): the scamType picker was removed from
+// this screen entirely, so every payload built here now explicitly sets
+// scamType: 'UNKNOWN' — both for the live POST and for the offline
+// SQLite payload — instead of omitting the field and letting it reach
+// SQLite as undefined.
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -17,28 +41,53 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  Image,
+  LayoutAnimation,
+  Platform,
+  UIManager,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
-import { Audio } from 'expo-av';
 import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
 import Svg, { Path, Circle } from 'react-native-svg';
+import * as FileSystem from 'expo-file-system/legacy';
+import { resolveRegionFromCoordinates, UNCLASSIFIED_REGION } from '../lib/regionResolver';
 
 import api, { OfflineError } from '../lib/api';
 import { enqueueReport } from '../db/sqlite';
 import { syncNow } from '../db/syncQueue';
 import { generateNullifier, generateZkpCommitment } from '../lib/zkp/nullifierGenerator';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const SCAM_TYPES = [
-  'Voice Phishing',
-  'SMS Smishing',
-  'E-wallet Scam',
-  'Fake Job Offer',
-  'Bank Impersonation',
-  'Other',
-];
+// Reads the user's manually-saved region from ProfileScreen. Returns
+// null if the user has never picked one — the caller falls back to
+// UNCLASSIFIED_REGION in that case.
+async function getStoredRegion() {
+  try {
+    return await AsyncStorage.getItem('@sentinelph_user_region');
+  } catch (err) {
+    console.warn('[ReportScreen] failed to read stored region:', err?.message);
+    return null;
+  }
+}
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+const ANALYZE_DEBOUNCE_MS = 700;
+const MIN_ANALYZE_CHARS = 8;
+const DEFAULT_SCAM_TYPE = 'UNKNOWN'; // scamType picker was removed from citizen UI
+
+const RISK_STYLES = {
+  HIGH: { bg: 'rgba(244,63,94,0.08)', border: 'rgba(244,63,94,0.35)', text: '#fb7185', label: 'Likely Scam', glow: 'rgba(244,63,94,0.12)', accent: '#f43f5e' },
+  MEDIUM: { bg: 'rgba(234,179,8,0.08)', border: 'rgba(234,179,8,0.35)', text: '#facc15', label: 'Use Caution', glow: 'rgba(234,179,8,0.12)', accent: '#eab308' },
+  LOW: { bg: 'rgba(16,185,129,0.08)', border: 'rgba(16,185,129,0.35)', text: '#34d399', label: 'Likely Safe', glow: 'rgba(16,185,129,0.12)', accent: '#10b981' },
+  UNKNOWN: { bg: 'rgba(148,163,184,0.06)', border: 'rgba(148,163,184,0.2)', text: '#94a3b8', label: 'Unable to Verify', glow: 'rgba(148,163,184,0.08)', accent: '#64748b' },
+};
 
 function CloseIcon() {
   return (
@@ -57,7 +106,7 @@ function ShieldIcon({ size = 14, color = '#818cf8' }) {
   );
 }
 
-function UploadIcon({ size = 22, color = '#334155' }) {
+function UploadIcon({ size = 22, color = '#818cf8' }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
       <Path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" stroke={color} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" />
@@ -67,36 +116,314 @@ function UploadIcon({ size = 22, color = '#334155' }) {
   );
 }
 
-function MicIcon({ size = 18, color = '#818cf8' }) {
+function ImageIcon({ size = 20, color = '#818cf8' }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 20 20" fill="none">
+      <Path d="M3 3h14v14H3V3z" stroke={color} strokeWidth={1.4} strokeLinejoin="round" />
+      <Circle cx={7} cy={7} r={1.5} stroke={color} strokeWidth={1.4} />
+      <Path d="M3 14l4-4 3 3 3-3 4 4" stroke={color} strokeWidth={1.4} strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+function PaperclipIcon({ size = 16, color = '#94a3b8' }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-      <Path d="M5.5 1.5h5v8a2.5 2.5 0 01-5 0v-8z" stroke={color} strokeWidth={1.2} />
-      <Path d="M3 8.5c0 2.76 2.24 5 5 5s5-2.24 5-5" stroke={color} strokeWidth={1.2} strokeLinecap="round" />
-      <Path d="M8 13.5V15" stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+      <Path
+        d="M10.5 4.5l-5 5a2.5 2.5 0 003.54 3.54l5-5a4 4 0 10-5.66-5.66l-5 5"
+        stroke={color}
+        strokeWidth={1.3}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
+function CheckIcon({ size = 12, color = '#10b981' }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 12 12" fill="none">
+      <Path d="M2 6l3 3 5-6" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+function ChevronIcon({ size = 14, color = '#64748b', up = false }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 14 14" fill="none">
+      <Path
+        d={up ? 'M3 9l4-4 4 4' : 'M3 5l4 4 4-4'}
+        stroke={color}
+        strokeWidth={1.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
+function SenderIcon({ size = 14, color = '#818cf8' }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      <Path d="M14.5 2.5L7 10" stroke={color} strokeWidth={1.3} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M14.5 2.5l-4.5 12-3-5-5-3 12.5-4z" stroke={color} strokeWidth={1.3} strokeLinejoin="round" />
     </Svg>
   );
 }
 
 function StepBar({ step }) {
   return (
-    <View className="flex-row items-center px-4 py-3 gap-2">
-      {[1, 2, 3].map((s) => (
-        <View key={s} className="flex-row items-center gap-2 flex-1">
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 16,
+        paddingVertical: 16,
+        gap: 8,
+      }}
+    >
+      {[1, 2].map((s) => {
+        const isCompleted = s < step;
+        const isActive = s === step;
+        return (
           <View
-            className="w-6 h-6 rounded-full items-center justify-center"
+            key={s}
             style={{
-              backgroundColor: s <= step ? '#4f46e5' : 'rgba(148,163,184,0.1)',
-              borderWidth: s === step ? 2 : 0,
-              borderColor: 'rgba(129,140,248,0.5)',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 8,
+              flex: 1,
             }}
           >
-            <Text style={{ color: s <= step ? 'white' : '#334155', fontSize: 11, fontWeight: '700' }}>
-              {s < step ? '✓' : s}
+            <View
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 14,
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: isCompleted
+                  ? '#4f46e5'
+                  : isActive
+                  ? 'rgba(79,70,229,0.15)'
+                  : 'rgba(148,163,184,0.06)',
+                borderWidth: isActive ? 1.5 : 0,
+                borderColor: isActive ? 'rgba(129,140,248,0.6)' : 'transparent',
+              }}
+            >
+              {isCompleted ? (
+                <CheckIcon size={13} color="#c7d2fe" />
+              ) : (
+                <Text
+                  style={{
+                    color: isActive ? '#a5b4fc' : '#475569',
+                    fontSize: 11,
+                    fontWeight: '700',
+                  }}
+                >
+                  {s}
+                </Text>
+              )}
+            </View>
+            {s < 2 && (
+              <View
+                style={{
+                  flex: 1,
+                  height: 1,
+                  backgroundColor: s < step ? '#4f46e5' : 'rgba(148,163,184,0.08)',
+                }}
+              />
+            )}
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+/** Layer 1 instant risk banner + explanation bullet list. */
+function ScamRiskBanner({ analyzing, analysis, error }) {
+  if (analyzing && !analysis) {
+    return (
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 12,
+          paddingHorizontal: 16,
+          paddingVertical: 12,
+          borderRadius: 16,
+          backgroundColor: 'rgba(79,70,229,0.06)',
+          borderWidth: 1,
+          borderColor: 'rgba(79,70,229,0.15)',
+        }}
+      >
+        <ActivityIndicator size="small" color="#818cf8" />
+        <Text style={{ color: '#64748b', fontSize: 12, fontWeight: '500' }}>
+          Scanning for scam indicators…
+        </Text>
+      </View>
+    );
+  }
+
+  if (!analysis) {
+    if (error) {
+      return (
+        <View
+          style={{
+            paddingHorizontal: 16,
+            paddingVertical: 12,
+            borderRadius: 16,
+            backgroundColor: 'rgba(148,163,184,0.04)',
+            borderWidth: 1,
+            borderColor: 'rgba(148,163,184,0.08)',
+          }}
+        >
+          <Text style={{ color: '#475569', fontSize: 11, lineHeight: 16 }}>
+            AI pre-check unavailable right now — you can still submit for officer review.
+          </Text>
+        </View>
+      );
+    }
+    return null;
+  }
+
+  const risk = RISK_STYLES[analysis.riskLevel] || RISK_STYLES.UNKNOWN;
+  const pct = analysis.confidenceScore != null ? Math.round(analysis.confidenceScore * 100) : null;
+
+  return (
+    <View style={{ gap: 10 }}>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 12,
+          paddingHorizontal: 16,
+          paddingVertical: 14,
+          borderRadius: 16,
+          backgroundColor: risk.bg,
+          borderWidth: 1,
+          borderColor: risk.border,
+        }}
+      >
+        <View
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 12,
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: risk.glow,
+          }}
+        >
+          <Text style={{ fontSize: 16 }}>
+            {analysis.isScam ? '⚠️' : analysis.riskLevel === 'LOW' ? '✓' : 'ℹ️'}
+          </Text>
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text
+            style={{
+              color: risk.text,
+              fontSize: 13,
+              fontWeight: '700',
+              letterSpacing: 0.2,
+            }}
+            numberOfLines={2}
+          >
+            {analysis.isScam ? 'Likely Scam' : risk.label}
+            {pct != null ? ` — ${pct}% AI Confidence` : ''}
+          </Text>
+          {analyzing && (
+            <Text
+              style={{
+                color: '#64748b',
+                fontSize: 10,
+                marginTop: 2,
+                fontWeight: '500',
+              }}
+            >
+              Updating…
+            </Text>
+          )}
+        </View>
+      </View>
+
+      {analysis.explanationReasons?.length > 0 && (
+        <View
+          style={{
+            borderRadius: 16,
+            overflow: 'hidden',
+            backgroundColor: 'rgba(30,41,59,0.6)',
+            borderWidth: 1,
+            borderColor: 'rgba(148,163,184,0.08)',
+          }}
+        >
+          <View
+            style={{
+              paddingHorizontal: 16,
+              paddingVertical: 12,
+              borderBottomWidth: 1,
+              borderBottomColor: 'rgba(148,163,184,0.06)',
+            }}
+          >
+            <Text
+              style={{
+                color: '#94a3b8',
+                fontSize: 10,
+                fontWeight: '700',
+                letterSpacing: 1.2,
+              }}
+            >
+              WHY THIS MESSAGE WAS FLAGGED
             </Text>
           </View>
-          {s < 3 && <View className="flex-1 h-px" style={{ backgroundColor: s < step ? '#4f46e5' : 'rgba(148,163,184,0.1)' }} />}
+          <View style={{ paddingHorizontal: 16, paddingVertical: 12, gap: 10 }}>
+            {analysis.explanationReasons.map((reason, i) => (
+              <View
+                key={i}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'flex-start',
+                  gap: 12,
+                }}
+              >
+                <View
+                  style={{
+                    width: 20,
+                    height: 20,
+                    borderRadius: 6,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginTop: 2,
+                    backgroundColor: 'rgba(79,70,229,0.12)',
+                    flexShrink: 0,
+                  }}
+                >
+                  <Text style={{ color: '#818cf8', fontSize: 9, fontWeight: '700' }}>
+                    {i + 1}
+                  </Text>
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text
+                    style={{
+                      color: '#e2e8f0',
+                      fontSize: 12,
+                      fontWeight: '600',
+                      marginBottom: 2,
+                      letterSpacing: 0.2,
+                    }}
+                  >
+                    {reason.category}
+                  </Text>
+                  <Text style={{ color: '#94a3b8', fontSize: 11, lineHeight: 16 }}>
+                    {reason.description}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </View>
         </View>
-      ))}
+      )}
     </View>
   );
 }
@@ -104,163 +431,382 @@ function StepBar({ step }) {
 export default function ReportScreen() {
   const navigation = useNavigation();
   const route = useRoute();
+  const { width } = useWindowDimensions();
+  const isWide = width >= 480;
 
-  const [step, setStep] = useState(route.params?.openStep || 1);
-  const [scamType, setScamType] = useState('');
+  const [step, setStep] = useState(route.params?.openStep === 3 ? 2 : 1);
+
+  // Inputs
+  const [senderNumber, setSenderNumber] = useState('');
   const [content, setContent] = useState('');
-  const [files, setFiles] = useState([]); // [{ uri, name, type }]
-  const [recording, setRecording] = useState(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordSec, setRecordSec] = useState(0);
-  const [voiceUri, setVoiceUri] = useState(null);
+  const [screenshot, setScreenshot] = useState(null);
+  const [ocrText, setOcrText] = useState('');
+  // Tracks whether the user has hand-edited the OCR box, so a later
+  // analyze response doesn't clobber their manual correction.
+  const ocrEditedByUserRef = useRef(false);
+
+  // Extra evidence (optional) — files only, no voice/audio
+  const [files, setFiles] = useState([]);
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+
+  // Location / ZKP / submission
   const [location, setLocation] = useState(null);
   const [nullifier, setNullifier] = useState(null);
   const [zkpHash, setZkpHash] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [reportId, setReportId] = useState(null);
-  const timerRef = useRef(null);
 
-  // Auto-open camera/mic shortcut if launched from QuickReportCard.
+  // Layer 1 AI analysis
+  const [analysis, setAnalysis] = useState(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState(null);
+  const analyzeTimerRef = useRef(null);
+  const analyzeReqIdRef = useRef(0);
+
+  const hasScreenshot = !!screenshot;
+  const hasTypedText = content.trim().length > 0;
+  const screenshotDisabled = hasTypedText;
+  const textDisabled = hasScreenshot;
+
+  const activeAnalysisText = hasScreenshot ? (ocrText || '').trim() : content.trim();
+
+  // Sender is REQUIRED (Option A). A report with no sender is nearly
+  // useless to officers, so Step 1 cannot be completed without it.
+  const hasSender = senderNumber.trim().length > 0;
+  const hasReportBody =
+    (hasScreenshot && (ocrText || screenshot?.uri)) || content.trim().length > 3;
+  const canProceedStep1 = hasSender && hasReportBody;
+
+  // Camera-only quick-launch shortcut
   useEffect(() => {
-    if (route.params?.focus === 'camera') pickImage();
-    if (route.params?.focus === 'mic') startRecording();
+    if (route.params?.focus === 'camera') pickScreenshot();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const canProceedStep1 = scamType !== '' && content.trim().length > 3;
+  useEffect(() => {
+    if (analyzeTimerRef.current) clearTimeout(analyzeTimerRef.current);
 
-  // ─── Evidence handlers ────────────────────────────────────────────────
-  const pickImage = async () => {
+    const trimmed = activeAnalysisText;
+    if (!trimmed || trimmed.length < MIN_ANALYZE_CHARS) {
+      setAnalysis(null);
+      setAnalyzeError(null);
+      setAnalyzing(false);
+      return;
+    }
+
+    setAnalyzing(true);
+    analyzeTimerRef.current = setTimeout(
+      () => runAnalysis(trimmed, hasScreenshot ? screenshot?.uri : undefined),
+      ANALYZE_DEBOUNCE_MS
+    );
+
+    return () => clearTimeout(analyzeTimerRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAnalysisText, hasScreenshot]);
+
+  /**
+   * Converts a local image URI into a base64 string for the JSON+base64
+   * pipeline shared by Express (aiServiceClient.js) and FastAPI
+   * (schemas.PredictRequest.image_base64). ReportScreen already stores
+   * the URI, not the bytes, so this reads the file lazily right before
+   * an analyze call needs it.
+   */
+  const readImageAsBase64 = async (uri) => {
+    if (!uri) return undefined;
+    try {
+      return await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+    } catch (err) {
+      console.warn('[ReportScreen] failed to read screenshot as base64:', err?.message);
+      return undefined;
+    }
+  };
+
+  const runAnalysis = async (text, imageUri) => {
+    const reqId = ++analyzeReqIdRef.current;
+    setAnalyzing(true);
+    setAnalyzeError(null);
+    try {
+      // ─── DEBUG LOG 1: input args ─────────────────────────────────────
+      console.log('[debug] runAnalysis called with:');
+      console.log('[debug]   text:', text);
+      console.log('[debug]   imageUri:', imageUri);
+
+      const imageBase64 = imageUri ? await readImageAsBase64(imageUri) : undefined;
+
+      // ─── DEBUG LOG 2: base64 read result ─────────────────────────────
+      console.log('[debug] imageBase64 length:', imageBase64 ? imageBase64.length : 0);
+      console.log('[debug] imageBase64 first 50 chars:', imageBase64 ? imageBase64.slice(0, 50) : 'N/A');
+
+      const response = await api.post('/api/v1/reports/analyze', {
+        text: text || undefined,
+        imageBase64,
+      });
+
+      // ─── DEBUG LOG 3: HTTP response status ───────────────────────────
+      console.log('[debug] analyze HTTP status:', response.status);
+
+      if (reqId !== analyzeReqIdRef.current) return;
+      const data = response.data;
+
+      // ─── DEBUG LOG 4: full response body ─────────────────────────────
+      console.log('[debug] analyze response body:', JSON.stringify(data).slice(0, 1000));
+
+      if (data?.available === false) {
+        setAnalysis(null);
+        setAnalyzeError(data.error || 'ai_unavailable');
+        return;
+      }
+
+      setAnalysis({
+        isScam: data.isScam ?? data.is_scam,
+        confidenceScore: data.confidenceScore ?? data.confidence_score,
+        riskLevel: data.riskLevel ?? data.risk_level,
+        explanationReasons: data.explanationReasons ?? data.explanation_reasons ?? [],
+      });
+
+      // FIX (OCR not populating — stale closure): the previous check used
+      // the outer `hasScreenshot` state, which is captured from the render
+      // that existed BEFORE setScreenshot(picked) took effect, so it was
+      // always stale-false the first time this ran from pickScreenshot().
+      // `imageUri` is a direct function argument, not a closure over
+      // component state, so it's always correct regardless of when this
+      // was called relative to a re-render.
+      const extractedOcrText = data.ocrText ?? data.ocr_text;
+      if (
+        imageUri &&
+        typeof extractedOcrText === 'string' &&
+        !ocrEditedByUserRef.current
+      ) {
+        setOcrText(extractedOcrText);
+      }
+    } catch (err) {
+      if (reqId !== analyzeReqIdRef.current) return;
+      setAnalysis(null);
+      setAnalyzeError(err?.message || 'analysis_failed');
+    } finally {
+      if (reqId === analyzeReqIdRef.current) setAnalyzing(false);
+    }
+  };
+
+  const handleOcrTextChange = (value) => {
+    ocrEditedByUserRef.current = true;
+    setOcrText(value);
+  };
+
+  // ─── Screenshot (Option A) ────────────────────────────────────────────
+  const pickScreenshot = async () => {
+    if (textDisabled) return;
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Photo library access is required to attach a screenshot.');
+      return;
+    }
+    // SDK 57: ImagePicker.MediaTypeOptions is deprecated. Use the string
+    // array form, e.g. ['images'] or ['images', 'videos'].
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsMultipleSelection: false,
+      quality: 0.8,
+    });
+    if (!result.canceled) {
+      const a = result.assets[0];
+      const picked = {
+        uri: a.uri,
+        name: a.fileName || a.uri.split('/').pop() || 'screenshot.jpg',
+        type: a.mimeType || 'image/jpeg',
+      };
+      setScreenshot(picked);
+      // OCR text is populated by the backend response once analysis
+      // returns — clear any stale text and reset the manual-edit flag
+      // for the new image.
+      ocrEditedByUserRef.current = false;
+      setOcrText('');
+      // Kick off analysis immediately for the new screenshot.
+      runAnalysis('', picked.uri);
+    }
+  };
+
+  const removeScreenshot = () => {
+    setScreenshot(null);
+    ocrEditedByUserRef.current = false;
+    setOcrText('');
+    setAnalysis(null);
+    setAnalyzeError(null);
+  };
+
+  // ─── Extra evidence (optional files) ──────────────────────────────────
+  const pickExtraFiles = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('Permission needed', 'Photo library access is required to attach evidence.');
       return;
     }
+    // SDK 57: ImagePicker.MediaTypeOptions is deprecated. Use the string
+    // array form. ['images', 'videos'] replaces MediaTypeOptions.All.
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images', 'videos'],
       allowsMultipleSelection: true,
       quality: 0.7,
     });
     if (!result.canceled) {
       const picked = result.assets.map((a) => ({
         uri: a.uri,
-        name: a.fileName || a.uri.split('/').pop(),
-        type: a.mimeType || 'image/jpeg',
+        name: a.fileName || a.uri.split('/').pop() || 'evidence',
+        type: a.mimeType || 'application/octet-stream',
       }));
       setFiles((prev) => [...prev, ...picked]);
     }
   };
 
-  const takePhoto = async () => {
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission needed', 'Camera access is required to capture evidence.');
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.7 });
-    if (!result.canceled) {
-      const asset = result.assets[0];
-      setFiles((prev) => [...prev, { uri: asset.uri, name: 'photo.jpg', type: 'image/jpeg' }]);
-    }
-  };
-
-  const startRecording = async () => {
-    try {
-      const { status } = await Audio.requestPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission needed', 'Microphone access is required to record.');
-        return;
-      }
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      const { recording: rec } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-      setRecording(rec);
-      setIsRecording(true);
-      setRecordSec(0);
-      timerRef.current = setInterval(() => setRecordSec((s) => s + 1), 1000);
-    } catch (err) {
-      console.warn('[ReportScreen] failed to start recording:', err?.message);
-    }
-  };
-
-  const stopRecording = async () => {
-    if (!recording) return;
-    clearInterval(timerRef.current);
-    setIsRecording(false);
-    try {
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
-      setVoiceUri(uri);
-    } catch (err) {
-      console.warn('[ReportScreen] failed to stop recording:', err?.message);
-    } finally {
-      setRecording(null);
-    }
-  };
-
   const removeFile = (index) => setFiles((prev) => prev.filter((_, i) => i !== index));
 
-  // ─── Step transitions ─────────────────────────────────────────────────
-  const goToStep3 = async () => {
-    // Grab location (best-effort — report still works if denied).
+  const toggleEvidence = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setEvidenceOpen((v) => !v);
+  };
+
+  const goToStep2 = async () => {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status === 'granted') {
-        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-        setLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
+        const pos = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+        const latitude = pos.coords.latitude;
+        const longitude = pos.coords.longitude;
+
+        // Resolve to a canonical PH region using the bundled offline
+        // bounding-box lookup — no network call, no API key.
+        const region = resolveRegionFromCoordinates(latitude, longitude);
+        console.log('[ReportScreen] GPS resolved:', {
+          latitude,
+          longitude,
+          region,
+        });
+        setLocation({ latitude, longitude, region });
+      } else {
+        console.warn(
+          '[ReportScreen] location permission denied — region will fall back to stored/manual value'
+        );
       }
     } catch (err) {
       console.warn('[ReportScreen] location unavailable:', err?.message);
     }
 
     const timestamp = new Date().toISOString();
+    const primaryContent = hasScreenshot ? ocrText || '[screenshot attached]' : content;
     const [nf, zh] = await Promise.all([
-      generateNullifier(content),
-      generateZkpCommitment({ scamType, content, timestamp }),
+      generateNullifier(primaryContent),
+      generateZkpCommitment({ content: primaryContent, senderNumber, timestamp }),
     ]);
     setNullifier(nf);
     setZkpHash(zh);
-    setStep(3);
+    setStep(2);
   };
 
   const handleSubmit = async () => {
     setSubmitting(true);
     const localId = Crypto.randomUUID();
-    const finalNullifier = nullifier || (await generateNullifier(content));
-    const finalZkp = zkpHash || (await generateZkpCommitment({ scamType, content, timestamp: new Date().toISOString() }));
+    const primaryContent = hasScreenshot ? ocrText || '[screenshot attached]' : content;
 
+    const finalNullifier = nullifier || (await generateNullifier(primaryContent));
+    const finalZkp =
+      zkpHash ||
+      (await generateZkpCommitment({
+        content: primaryContent,
+        senderNumber,
+        timestamp: new Date().toISOString(),
+      }));
+
+    // Convert the screenshot to a base64 data-URI so the gateway can
+    // (a) run OCR on final submit if needed, and (b) persist the image
+    // for the officer Review Queue.
+    let evidenceImage = null;
+    if (screenshot?.uri) {
+      try {
+        const base64 = await FileSystem.readAsStringAsync(screenshot.uri, {
+          encoding: 'base64',
+        });
+        const mime = screenshot.type || 'image/jpeg';
+        evidenceImage = `data:${mime};base64,${base64}`;
+      } catch (err) {
+        console.warn('[ReportScreen] could not read screenshot as base64:', err?.message);
+      }
+    }
+
+    const evidenceUris = [
+      ...(screenshot ? [screenshot.uri] : []),
+      ...files.map((f) => f.uri),
+    ];
+
+    // ─── Resolve the region ONCE so both online and offline payloads
+    //     carry the SAME value. Priority order:
+    //       1. GPS-resolved region from goToStep2 (fresh in this session)
+    //       2. User's manual region from ProfileScreen (AsyncStorage)
+    //       3. UNCLASSIFIED as the final fallback
+    const storedRegion = await getStoredRegion();
+    const resolvedRegion =
+      location?.region || storedRegion || UNCLASSIFIED_REGION;
+
+    // Build a single canonical location object. This is what the server
+    // reads to populate Report.location, and what the officer queue's
+    // region filter matches against.
+    const locationPayload = {
+      latitude: location?.latitude ?? null,
+      longitude: location?.longitude ?? null,
+      region: resolvedRegion,
+    };
+
+    console.log('[ReportScreen] submit location:', {
+      hasGps: !!location,
+      gpsRegion: location?.region,
+      storedRegion,
+      resolvedRegion,
+      locationPayload,
+    });
+
+    // Offline payload — enqueued to SQLite if the POST fails due to no
+    // network. It carries BOTH the canonical `location` object AND a
+    // top-level `region` field so syncQueue can forward either shape.
     const payload = {
       localId,
-      scamType,
-      content,
-      evidenceFiles: files.map((f) => f.uri),
-      voiceNoteUri: voiceUri,
-      latitude: location?.latitude,
-      longitude: location?.longitude,
+      scamType: DEFAULT_SCAM_TYPE,
+      senderNumber: senderNumber || undefined,
+      content: primaryContent,
+      evidenceFiles: evidenceUris,
+      evidenceImage,
+      location: locationPayload,
+      region: resolvedRegion,
+      latitude: location?.latitude ?? null,
+      longitude: location?.longitude ?? null,
       nullifier: finalNullifier,
       zkpHash: finalZkp,
+      aiRiskLevel: analysis?.riskLevel,
+      aiConfidenceScore: analysis?.confidenceScore,
     };
 
     try {
-      // Try live submission first.
       const response = await api.post('/api/v1/reports', {
-        scamType,
-        content,
-        evidenceFiles: files.map((f) => f.uri),
-        voiceNoteUri: voiceUri,
-        location: location ? { latitude: location.latitude, longitude: location.longitude } : undefined,
+        scamType: DEFAULT_SCAM_TYPE,
+        senderNumber: senderNumber || undefined,
+        content: primaryContent,
+        evidenceFiles: evidenceUris,
+        evidenceImage,
+        location: locationPayload,
+        region: resolvedRegion,
         nullifier: finalNullifier,
         zkpHash: finalZkp,
+        aiRiskLevel: analysis?.riskLevel,
+        aiConfidenceScore: analysis?.confidenceScore,
       });
       setReportId(response.data?.reportId || response.data?.id);
       setSubmitted(true);
     } catch (err) {
       if (err instanceof OfflineError) {
-        // Fall back to local queue — still show success, just queued.
         await enqueueReport(payload);
         setReportId(`LOCAL-${localId.slice(0, 8).toUpperCase()}`);
         setSubmitted(true);
-        // Opportunistic sync attempt in case connectivity flickers back.
         syncNow().catch(() => {});
       } else {
         Alert.alert('Submission failed', err?.message || 'Please try again.');
@@ -274,33 +820,125 @@ export default function ReportScreen() {
   if (submitted) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: '#0a1120' }}>
-        <View className="flex-1 items-center justify-center px-6">
+        <View
+          style={{
+            flex: 1,
+            alignItems: 'center',
+            justifyContent: 'center',
+            paddingHorizontal: 24,
+          }}
+        >
           <View
-            className="w-16 h-16 rounded-2xl items-center justify-center mb-4"
-            style={{ backgroundColor: 'rgba(16,185,129,0.15)', borderWidth: 2, borderColor: 'rgba(16,185,129,0.4)' }}
+            style={{
+              width: 80,
+              height: 80,
+              borderRadius: 24,
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: 24,
+              backgroundColor: 'rgba(16,185,129,0.08)',
+              borderWidth: 1.5,
+              borderColor: 'rgba(16,185,129,0.25)',
+            }}
           >
-            <Text style={{ fontSize: 28, color: '#10b981' }}>✓</Text>
+            <Text style={{ fontSize: 32, color: '#10b981' }}>✓</Text>
           </View>
-          <Text style={{ color: '#e2e8f0', fontSize: 16, fontWeight: '600', marginBottom: 4 }}>Report Submitted</Text>
-          <Text style={{ color: '#64748b', fontSize: 12, marginBottom: 12 }}>Your identity is protected</Text>
-          <View
-            className="w-full p-3 rounded-xl mb-4"
-            style={{ backgroundColor: 'rgba(16,185,129,0.06)', borderWidth: 1, borderColor: 'rgba(16,185,129,0.2)' }}
+          <Text
+            style={{
+              color: '#f1f5f9',
+              fontSize: 18,
+              fontWeight: '700',
+              marginBottom: 6,
+              letterSpacing: 0.3,
+              textAlign: 'center',
+            }}
           >
-            <Text style={{ color: '#64748b', fontSize: 11 }}>Report ID</Text>
-            <Text style={{ color: '#10b981', fontSize: 14, fontFamily: 'JetBrainsMono_400Regular', fontWeight: '600' }}>
+            Report Submitted
+          </Text>
+          <Text
+            style={{
+              color: '#64748b',
+              fontSize: 12,
+              marginBottom: 20,
+              fontWeight: '500',
+              textAlign: 'center',
+            }}
+          >
+            Your identity is protected
+          </Text>
+          <View
+            style={{
+              width: '100%',
+              maxWidth: 420,
+              padding: 16,
+              borderRadius: 16,
+              marginBottom: 20,
+              backgroundColor: 'rgba(16,185,129,0.04)',
+              borderWidth: 1,
+              borderColor: 'rgba(16,185,129,0.15)',
+            }}
+          >
+            <Text
+              style={{
+                color: '#64748b',
+                fontSize: 10,
+                fontWeight: '600',
+                letterSpacing: 1,
+                marginBottom: 6,
+              }}
+            >
+              REPORT ID
+            </Text>
+            <Text
+              style={{
+                color: '#10b981',
+                fontSize: 14,
+                fontFamily: 'JetBrainsMono_400Regular',
+                fontWeight: '600',
+              }}
+              numberOfLines={1}
+            >
               {reportId}
             </Text>
           </View>
-          <Text style={{ color: '#334155', fontSize: 11, textAlign: 'center', marginBottom: 20 }}>
+          <Text
+            style={{
+              color: '#475569',
+              fontSize: 11,
+              textAlign: 'center',
+              marginBottom: 24,
+              lineHeight: 17,
+              maxWidth: 320,
+            }}
+          >
             ZKP hash anchored to chain. You&apos;ll be notified when reviewers verify.
           </Text>
           <TouchableOpacity
             onPress={() => navigation.navigate('Home')}
-            className="w-full py-3 rounded-xl items-center"
-            style={{ backgroundColor: '#4f46e5' }}
+            style={{
+              width: '100%',
+              maxWidth: 420,
+              paddingVertical: 16,
+              borderRadius: 16,
+              alignItems: 'center',
+              backgroundColor: '#4f46e5',
+              shadowColor: '#4f46e5',
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: 0.3,
+              shadowRadius: 12,
+              elevation: 6,
+            }}
           >
-            <Text style={{ color: 'white', fontSize: 14, fontWeight: '600' }}>Done</Text>
+            <Text
+              style={{
+                color: 'white',
+                fontSize: 14,
+                fontWeight: '600',
+                letterSpacing: 0.3,
+              }}
+            >
+              Done
+            </Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -311,218 +949,873 @@ export default function ReportScreen() {
     <SafeAreaView style={{ flex: 1, backgroundColor: '#0a1120' }}>
       {/* Header */}
       <View
-        className="flex-row items-center gap-3 px-4 pt-2 pb-3"
-        style={{ borderBottomWidth: 1, borderBottomColor: 'rgba(148,163,184,0.1)' }}
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 12,
+          paddingHorizontal: 16,
+          paddingTop: 8,
+          paddingBottom: 12,
+          borderBottomWidth: 1,
+          borderBottomColor: 'rgba(148,163,184,0.06)',
+        }}
       >
         <TouchableOpacity
           onPress={() => navigation.goBack()}
-          className="w-8 h-8 rounded-xl items-center justify-center"
-          style={{ backgroundColor: 'rgba(148,163,184,0.08)' }}
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 12,
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: 'rgba(148,163,184,0.06)',
+            borderWidth: 1,
+            borderColor: 'rgba(148,163,184,0.08)',
+          }}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
         >
           <CloseIcon />
         </TouchableOpacity>
-        <View className="flex-1">
-          <Text style={{ color: '#e2e8f0', fontSize: 14, fontWeight: '600' }}>New Report</Text>
-          <Text style={{ color: '#475569', fontSize: 11 }}>
-            {step === 1 ? 'Describe the incident' : step === 2 ? 'Attach evidence' : 'Review & submit'}
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text
+            style={{
+              color: '#f1f5f9',
+              fontSize: 15,
+              fontWeight: '700',
+              letterSpacing: 0.2,
+            }}
+            numberOfLines={1}
+          >
+            New Report
+          </Text>
+          <Text
+            style={{
+              color: '#475569',
+              fontSize: 11,
+              fontWeight: '500',
+              marginTop: 1,
+            }}
+            numberOfLines={1}
+          >
+            {step === 1 ? 'Describe the incident' : 'Review & submit'}
           </Text>
         </View>
-        <Text style={{ color: '#334155', fontSize: 11, fontFamily: 'JetBrainsMono_400Regular' }}>{step}/3</Text>
+        <View
+          style={{
+            paddingHorizontal: 10,
+            paddingVertical: 4,
+            borderRadius: 8,
+            backgroundColor: 'rgba(79,70,229,0.1)',
+          }}
+        >
+          <Text
+            style={{
+              color: '#818cf8',
+              fontSize: 11,
+              fontFamily: 'JetBrainsMono_400Regular',
+              fontWeight: '600',
+            }}
+          >
+            {step}/2
+          </Text>
+        </View>
       </View>
 
       <StepBar step={step} />
 
-      <ScrollView className="flex-1 px-4" contentContainerStyle={{ paddingBottom: 16, gap: 12 }}>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{
+          paddingHorizontal: 16,
+          paddingBottom: 24,
+          gap: 14,
+          maxWidth: isWide ? 720 : undefined,
+          alignSelf: isWide ? 'center' : 'stretch',
+          width: '100%',
+        }}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
         {step === 1 && (
           <>
-            <Text style={{ color: '#475569', fontSize: 11, fontWeight: '600', letterSpacing: 1 }}>SCAM TYPE</Text>
-            <View className="flex-row flex-wrap gap-2">
-              {SCAM_TYPES.map((type) => {
-                const active = scamType === type;
-                return (
-                  <TouchableOpacity
-                    key={type}
-                    onPress={() => setScamType(type)}
-                    style={{
-                      width: '48%',
-                      paddingVertical: 10,
-                      paddingHorizontal: 12,
-                      borderRadius: 12,
-                      backgroundColor: active ? 'rgba(79,70,229,0.2)' : '#1e293b',
-                      borderWidth: 1,
-                      borderColor: active ? 'rgba(79,70,229,0.5)' : 'rgba(148,163,184,0.1)',
-                    }}
-                  >
-                    <Text style={{ color: active ? '#818cf8' : '#94a3b8', fontSize: 12, fontWeight: '500' }}>{type}</Text>
-                  </TouchableOpacity>
-                );
-              })}
+            {/* Sender identifier */}
+            <Text
+              style={{
+                color: '#64748b',
+                fontSize: 10,
+                fontWeight: '700',
+                letterSpacing: 1.2,
+              }}
+            >
+              SENDER NUMBER OR HEADER{' '}
+              <Text style={{ color: '#ef4444' }}>(REQUIRED)</Text>
+            </Text>
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 12,
+                paddingHorizontal: 16,
+                borderRadius: 16,
+                backgroundColor: 'rgba(30,41,59,0.5)',
+                borderWidth: 1,
+                borderColor: 'rgba(148,163,184,0.1)',
+                minHeight: 52,
+              }}
+            >
+              <SenderIcon />
+              <TextInput
+                value={senderNumber}
+                onChangeText={setSenderNumber}
+                placeholder='e.g. "+63-917-555-0192" or "GCashAlert"'
+                placeholderTextColor="#334155"
+                autoCapitalize="none"
+                autoCorrect={false}
+                style={{
+                  flex: 1,
+                  color: '#e2e8f0',
+                  fontSize: 13,
+                  paddingVertical: 14,
+                }}
+              />
             </View>
 
-            <Text style={{ color: '#475569', fontSize: 11, fontWeight: '600', letterSpacing: 1, marginTop: 8 }}>
-              NUMBER, URL, OR MESSAGE
-            </Text>
-            <TextInput
-              value={content}
-              onChangeText={setContent}
-              placeholder='e.g. "+63-917-555-0192" or "gcash-verify.ph/claim?id=…"'
-              placeholderTextColor="#334155"
-              multiline
-              numberOfLines={4}
+            {/* Option A: Screenshot upload */}
+            <View style={{ gap: 8 }}>
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <Text
+                  style={{
+                    color: '#64748b',
+                    fontSize: 10,
+                    fontWeight: '700',
+                    letterSpacing: 1.2,
+                  }}
+                >
+                  OPTION A — SCREENSHOT
+                </Text>
+                {textDisabled && (
+                  <View
+                    style={{
+                      paddingHorizontal: 8,
+                      paddingVertical: 2,
+                      borderRadius: 6,
+                      backgroundColor: 'rgba(148,163,184,0.08)',
+                    }}
+                  >
+                    <Text style={{ color: '#64748b', fontSize: 9, fontWeight: '600' }}>
+                      DISABLED
+                    </Text>
+                  </View>
+                )}
+              </View>
+
+              {!hasScreenshot ? (
+                <TouchableOpacity
+                  onPress={pickScreenshot}
+                  disabled={screenshotDisabled}
+                  style={{
+                    minHeight: 120,
+                    borderRadius: 20,
+                    borderWidth: 1.5,
+                    borderStyle: 'dashed',
+                    borderColor: screenshotDisabled
+                      ? 'rgba(148,163,184,0.08)'
+                      : 'rgba(79,70,229,0.3)',
+                    backgroundColor: screenshotDisabled
+                      ? 'rgba(30,41,59,0.25)'
+                      : 'rgba(30,41,59,0.4)',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    paddingVertical: 24,
+                    paddingHorizontal: 20,
+                    gap: 8,
+                    opacity: screenshotDisabled ? 0.5 : 1,
+                  }}
+                >
+                  <View
+                    style={{
+                      width: 48,
+                      height: 48,
+                      borderRadius: 16,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      backgroundColor: screenshotDisabled
+                        ? 'rgba(148,163,184,0.06)'
+                        : 'rgba(79,70,229,0.1)',
+                    }}
+                  >
+                    <ImageIcon color={screenshotDisabled ? '#475569' : '#818cf8'} />
+                  </View>
+                  <Text
+                    style={{
+                      color: screenshotDisabled ? '#475569' : '#94a3b8',
+                      fontSize: 12,
+                      fontWeight: '600',
+                      textAlign: 'center',
+                    }}
+                  >
+                    Tap to upload screenshot
+                  </Text>
+                  <Text
+                    style={{
+                      color: '#475569',
+                      fontSize: 11,
+                      textAlign: 'center',
+                    }}
+                  >
+                    We&apos;ll extract the text automatically
+                  </Text>
+                </TouchableOpacity>
+              ) : (
+                <View
+                  style={{
+                    borderRadius: 16,
+                    overflow: 'hidden',
+                    backgroundColor: 'rgba(30,41,59,0.5)',
+                    borderWidth: 1,
+                    borderColor: 'rgba(79,70,229,0.2)',
+                  }}
+                >
+                  <Image
+                    source={{ uri: screenshot.uri }}
+                    style={{ width: '100%', height: 180, backgroundColor: '#0a1120' }}
+                    resizeMode="cover"
+                  />
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 12,
+                      paddingHorizontal: 16,
+                      paddingVertical: 12,
+                    }}
+                  >
+                    <View
+                      style={{
+                        width: 32,
+                        height: 32,
+                        borderRadius: 8,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        backgroundColor: 'rgba(79,70,229,0.12)',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <CheckIcon size={14} color="#818cf8" />
+                    </View>
+                    <Text
+                      style={{
+                        color: '#cbd5e1',
+                        fontSize: 12,
+                        flex: 1,
+                        fontWeight: '500',
+                      }}
+                      numberOfLines={1}
+                    >
+                      {screenshot.name}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={removeScreenshot}
+                      style={{
+                        paddingHorizontal: 12,
+                        paddingVertical: 6,
+                        borderRadius: 8,
+                        backgroundColor: 'rgba(244,63,94,0.1)',
+                        borderWidth: 1,
+                        borderColor: 'rgba(244,63,94,0.2)',
+                      }}
+                    >
+                      <Text style={{ color: '#fb7185', fontSize: 11, fontWeight: '600' }}>
+                        Remove
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+
+              {/* OCR terminal-style snippet */}
+              {hasScreenshot && (
+                <View
+                  style={{
+                    borderRadius: 16,
+                    overflow: 'hidden',
+                    backgroundColor: 'rgba(0,0,0,0.35)',
+                    borderWidth: 1,
+                    borderColor: 'rgba(79,70,229,0.15)',
+                  }}
+                >
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 8,
+                      paddingHorizontal: 12,
+                      paddingVertical: 8,
+                      borderBottomWidth: 1,
+                      borderBottomColor: 'rgba(79,70,229,0.12)',
+                      backgroundColor: 'rgba(79,70,229,0.05)',
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', gap: 6 }}>
+                      <View
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: 4,
+                          backgroundColor: 'rgba(244,63,94,0.5)',
+                        }}
+                      />
+                      <View
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: 4,
+                          backgroundColor: 'rgba(234,179,8,0.5)',
+                        }}
+                      />
+                      <View
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: 4,
+                          backgroundColor: 'rgba(16,185,129,0.5)',
+                        }}
+                      />
+                    </View>
+                    <Text
+                      style={{
+                        color: '#64748b',
+                        fontSize: 9,
+                        fontFamily: 'JetBrainsMono_400Regular',
+                        fontWeight: '600',
+                        letterSpacing: 0.5,
+                        marginLeft: 4,
+                      }}
+                    >
+                      ocr/extracted-text
+                    </Text>
+                    {analyzing && (
+                      <ActivityIndicator
+                        size="small"
+                        color="#818cf8"
+                        style={{ marginLeft: 'auto' }}
+                      />
+                    )}
+                  </View>
+                  <TextInput
+                    value={ocrText}
+                    onChangeText={handleOcrTextChange}
+                    placeholder={
+                      analyzing
+                        ? 'Extracting text from screenshot…'
+                        : 'Extracted text will appear here…'
+                    }
+                    placeholderTextColor="#334155"
+                    multiline
+                    style={{
+                      padding: 12,
+                      color: '#a5b4fc',
+                      fontSize: 11,
+                      fontFamily: 'JetBrainsMono_400Regular',
+                      lineHeight: 17,
+                      minHeight: 90,
+                      textAlignVertical: 'top',
+                    }}
+                  />
+                </View>
+              )}
+            </View>
+
+            {/* Option B: Typed message */}
+            <View style={{ gap: 8 }}>
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <Text
+                  style={{
+                    color: '#64748b',
+                    fontSize: 10,
+                    fontWeight: '700',
+                    letterSpacing: 1.2,
+                  }}
+                >
+                  OPTION B — MESSAGE OR URL
+                </Text>
+                {textDisabled && (
+                  <View
+                    style={{
+                      paddingHorizontal: 8,
+                      paddingVertical: 2,
+                      borderRadius: 6,
+                      backgroundColor: 'rgba(148,163,184,0.08)',
+                    }}
+                  >
+                    <Text style={{ color: '#64748b', fontSize: 9, fontWeight: '600' }}>
+                      DISABLED
+                    </Text>
+                  </View>
+                )}
+              </View>
+
+              <View
+                style={{
+                  borderRadius: 16,
+                  backgroundColor: textDisabled
+                    ? 'rgba(30,41,59,0.25)'
+                    : 'rgba(30,41,59,0.5)',
+                  borderWidth: 1,
+                  borderColor: textDisabled
+                    ? 'rgba(148,163,184,0.06)'
+                    : 'rgba(148,163,184,0.1)',
+                  overflow: 'hidden',
+                  opacity: textDisabled ? 0.5 : 1,
+                }}
+              >
+                <TextInput
+                  value={content}
+                  onChangeText={setContent}
+                  editable={!textDisabled}
+                  placeholder="Paste the suspicious message, number, or URL here…"
+                  placeholderTextColor="#334155"
+                  multiline
+                  numberOfLines={4}
+                  style={{
+                    padding: 14,
+                    color: '#e2e8f0',
+                    fontSize: 13,
+                    minHeight: 110,
+                    textAlignVertical: 'top',
+                    lineHeight: 19,
+                  }}
+                />
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    paddingHorizontal: 16,
+                    paddingVertical: 10,
+                    borderTopWidth: 1,
+                    borderTopColor: 'rgba(148,163,184,0.06)',
+                  }}
+                >
+                  <Text style={{ color: '#475569', fontSize: 10, fontWeight: '500' }}>
+                    {content.length}/500 chars
+                  </Text>
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    <View
+                      style={{
+                        width: 5,
+                        height: 5,
+                        borderRadius: 2.5,
+                        backgroundColor: '#10b981',
+                      }}
+                    />
+                    <Text style={{ color: '#475569', fontSize: 10, fontWeight: '500' }}>
+                      End-to-end encrypted
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            </View>
+
+            {/* AI decision & reasoning */}
+            <ScamRiskBanner analyzing={analyzing} analysis={analysis} error={analyzeError} />
+
+            {/* Optional extra evidence (collapsible) */}
+            <TouchableOpacity
+              onPress={toggleEvidence}
               style={{
-                backgroundColor: '#1e293b',
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingHorizontal: 16,
+                paddingVertical: 14,
+                borderRadius: 16,
+                backgroundColor: 'rgba(30,41,59,0.4)',
                 borderWidth: 1,
-                borderColor: 'rgba(148,163,184,0.15)',
-                borderRadius: 12,
-                padding: 12,
-                color: '#e2e8f0',
-                fontSize: 13,
-                minHeight: 100,
-                textAlignVertical: 'top',
+                borderColor: 'rgba(148,163,184,0.08)',
               }}
-            />
-            <Text style={{ color: '#334155', fontSize: 11 }}>
-              {content.length}/500 chars · End-to-end encrypted before submission
-            </Text>
+            >
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 10,
+                  flexShrink: 1,
+                }}
+              >
+                <PaperclipIcon />
+                <Text
+                  style={{ color: '#94a3b8', fontSize: 12, fontWeight: '600' }}
+                  numberOfLines={1}
+                >
+                  Add extra evidence
+                </Text>
+                <Text
+                  style={{ color: '#475569', fontSize: 10, fontWeight: '500' }}
+                  numberOfLines={1}
+                >
+                  (optional)
+                </Text>
+                {files.length > 0 && (
+                  <View
+                    style={{
+                      paddingHorizontal: 8,
+                      paddingVertical: 2,
+                      borderRadius: 6,
+                      backgroundColor: 'rgba(16,185,129,0.15)',
+                    }}
+                  >
+                    <Text style={{ color: '#34d399', fontSize: 9, fontWeight: '700' }}>
+                      {files.length} ATTACHED
+                    </Text>
+                  </View>
+                )}
+              </View>
+              <ChevronIcon up={evidenceOpen} />
+            </TouchableOpacity>
+
+            {evidenceOpen && (
+              <View style={{ gap: 10 }}>
+                <TouchableOpacity
+                  onPress={pickExtraFiles}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 8,
+                    paddingVertical: 14,
+                    paddingHorizontal: 16,
+                    borderRadius: 16,
+                    borderWidth: 1.5,
+                    borderStyle: 'dashed',
+                    borderColor: 'rgba(79,70,229,0.25)',
+                    backgroundColor: 'rgba(30,41,59,0.3)',
+                  }}
+                >
+                  <PaperclipIcon color="#818cf8" />
+                  <Text
+                    style={{ color: '#a5b4fc', fontSize: 12, fontWeight: '600' }}
+                    numberOfLines={1}
+                  >
+                    Attach additional files
+                  </Text>
+                </TouchableOpacity>
+
+                {files.length > 0 && (
+                  <View style={{ gap: 6 }}>
+                    {files.map((file, i) => (
+                      <View
+                        key={i}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 12,
+                          paddingHorizontal: 16,
+                          paddingVertical: 10,
+                          borderRadius: 12,
+                          backgroundColor: 'rgba(16,185,129,0.04)',
+                          borderWidth: 1,
+                          borderColor: 'rgba(16,185,129,0.12)',
+                        }}
+                      >
+                        <CheckIcon size={12} />
+                        <Text
+                          style={{
+                            color: '#cbd5e1',
+                            fontSize: 11,
+                            flex: 1,
+                            fontWeight: '500',
+                          }}
+                          numberOfLines={1}
+                        >
+                          {file.name}
+                        </Text>
+                        <TouchableOpacity
+                          onPress={() => removeFile(i)}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <Text style={{ color: '#64748b', fontSize: 12 }}>✕</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'flex-start',
+                    gap: 10,
+                    paddingHorizontal: 16,
+                    paddingVertical: 12,
+                    borderRadius: 16,
+                    backgroundColor: 'rgba(148,163,184,0.03)',
+                    borderWidth: 1,
+                    borderColor: 'rgba(148,163,184,0.06)',
+                  }}
+                >
+                  <ShieldIcon size={12} color="#475569" />
+                  <Text
+                    style={{
+                      color: '#475569',
+                      fontSize: 10,
+                      flex: 1,
+                      lineHeight: 15,
+                    }}
+                  >
+                    Evidence is hashed client-side. Raw files never leave your device unencrypted.
+                  </Text>
+                </View>
+              </View>
+            )}
           </>
         )}
 
         {step === 2 && (
           <>
-            <TouchableOpacity
-              onPress={pickImage}
-              onLongPress={takePhoto}
+            <ScamRiskBanner analyzing={analyzing} analysis={analysis} error={analyzeError} />
+
+            {/* ZKP Commitment Card */}
+            <View
               style={{
-                height: 120,
                 borderRadius: 16,
-                borderWidth: 2,
-                borderStyle: 'dashed',
-                borderColor: 'rgba(148,163,184,0.2)',
-                backgroundColor: '#1e293b',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 8,
+                overflow: 'hidden',
+                backgroundColor: 'rgba(79,70,229,0.04)',
+                borderWidth: 1,
+                borderColor: 'rgba(79,70,229,0.15)',
               }}
             >
-              <UploadIcon />
-              <Text style={{ color: '#475569', fontSize: 12, fontWeight: '500' }}>Tap to upload · Hold for camera</Text>
-              <Text style={{ color: '#334155', fontSize: 11 }}>Screenshots, photos, documents</Text>
-            </TouchableOpacity>
-
-            <View
-              className="p-4 rounded-2xl"
-              style={{ backgroundColor: '#1e293b', borderWidth: 1, borderColor: 'rgba(148,163,184,0.1)' }}
-            >
-              <View className="flex-row items-center justify-between">
-                <View style={{ flex: 1 }}>
-                  <Text style={{ color: '#e2e8f0', fontSize: 12, fontWeight: '600' }}>Voice Recording</Text>
-                  <Text style={{ color: '#475569', fontSize: 11, marginTop: 2 }}>
-                    Describe the incident in your own words
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  onPress={isRecording ? stopRecording : startRecording}
-                  className="w-12 h-12 rounded-full items-center justify-center"
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 10,
+                  paddingHorizontal: 16,
+                  paddingVertical: 14,
+                  borderBottomWidth: 1,
+                  borderBottomColor: 'rgba(79,70,229,0.1)',
+                }}
+              >
+                <View
                   style={{
-                    backgroundColor: isRecording ? 'rgba(244,63,94,0.2)' : 'rgba(79,70,229,0.15)',
-                    borderWidth: 2,
-                    borderColor: isRecording ? '#f43f5e' : 'rgba(79,70,229,0.3)',
+                    width: 32,
+                    height: 32,
+                    borderRadius: 12,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: 'rgba(79,70,229,0.12)',
+                    flexShrink: 0,
                   }}
                 >
-                  {isRecording ? (
-                    <View style={{ width: 16, height: 16, borderRadius: 4, backgroundColor: '#f43f5e' }} />
-                  ) : (
-                    <MicIcon />
-                  )}
-                </TouchableOpacity>
-              </View>
-              {isRecording && (
-                <View className="flex-row items-center gap-2 mt-3">
-                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#f43f5e' }} />
-                  <Text style={{ color: '#f43f5e', fontSize: 12, fontFamily: 'JetBrainsMono_400Regular' }}>
-                    REC {String(Math.floor(recordSec / 60)).padStart(2, '0')}:{String(recordSec % 60).padStart(2, '0')}
+                  <ShieldIcon size={14} />
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text
+                    style={{
+                      color: '#a5b4fc',
+                      fontSize: 12,
+                      fontWeight: '700',
+                      letterSpacing: 0.2,
+                    }}
+                  >
+                    Zero-Knowledge Proof
                   </Text>
-                  <Text style={{ color: '#334155', fontSize: 11 }}>Tap to stop</Text>
+                  <Text
+                    style={{ color: '#64748b', fontSize: 10, marginTop: 1 }}
+                    numberOfLines={1}
+                  >
+                    Identity protected · Commitment generated
+                  </Text>
                 </View>
-              )}
-              {voiceUri && !isRecording && (
-                <View className="flex-row items-center gap-2 mt-3">
-                  <Text style={{ color: '#10b981', fontSize: 12 }}>✓</Text>
-                  <Text style={{ color: '#94a3b8', fontSize: 12 }}>Voice note recorded ({recordSec}s)</Text>
+              </View>
+              <View style={{ paddingHorizontal: 16, paddingVertical: 14 }}>
+                <Text
+                  style={{
+                    color: '#475569',
+                    fontSize: 11,
+                    marginBottom: 10,
+                    lineHeight: 16,
+                  }}
+                >
+                  A cryptographic commitment was created from your report. This
+                  proves authenticity without revealing your identity.
+                </Text>
+                <View
+                  style={{
+                    padding: 12,
+                    borderRadius: 12,
+                    backgroundColor: 'rgba(0,0,0,0.3)',
+                    borderWidth: 1,
+                    borderColor: 'rgba(79,70,229,0.12)',
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: '#475569',
+                      fontSize: 9,
+                      fontWeight: '700',
+                      letterSpacing: 1,
+                      marginBottom: 4,
+                    }}
+                  >
+                    ZKP COMMITMENT HASH
+                  </Text>
+                  <Text
+                    style={{
+                      color: '#818cf8',
+                      fontSize: 10,
+                      fontFamily: 'JetBrainsMono_400Regular',
+                      lineHeight: 15,
+                    }}
+                    numberOfLines={3}
+                  >
+                    {zkpHash}
+                  </Text>
                 </View>
-              )}
+              </View>
             </View>
 
-            {files.length > 0 && (
-              <View style={{ gap: 6 }}>
-                {files.map((file, i) => (
+            {/* Submission summary */}
+            <View
+              style={{
+                borderRadius: 16,
+                overflow: 'hidden',
+                backgroundColor: 'rgba(30,41,59,0.5)',
+                borderWidth: 1,
+                borderColor: 'rgba(148,163,184,0.08)',
+              }}
+            >
+              <View
+                style={{
+                  paddingHorizontal: 16,
+                  paddingVertical: 12,
+                  borderBottomWidth: 1,
+                  borderBottomColor: 'rgba(148,163,184,0.06)',
+                }}
+              >
+                <Text
+                  style={{
+                    color: '#94a3b8',
+                    fontSize: 10,
+                    fontWeight: '700',
+                    letterSpacing: 1.2,
+                  }}
+                >
+                  SUBMISSION SUMMARY
+                </Text>
+              </View>
+              <View style={{ paddingHorizontal: 16, paddingVertical: 12, gap: 12 }}>
+                {[
+                  {
+                    label: 'Sender',
+                    value: senderNumber ? senderNumber : 'Not provided',
+                  },
+                  {
+                    label: 'Input',
+                    value: hasScreenshot
+                      ? 'Screenshot (OCR extracted)'
+                      : 'Typed message',
+                  },
+                  {
+                    label: 'Content',
+                    value: hasScreenshot
+                      ? ocrText || '[screenshot attached]'
+                      : content,
+                  },
+                  {
+                    label: 'Evidence',
+                    value:
+                      files.length + (screenshot ? 1 : 0) > 0
+                        ? `${files.length + (screenshot ? 1 : 0)} file(s) attached`
+                        : 'No evidence',
+                  },
+                  {
+                    label: 'Location',
+                    value: location
+                      ? `${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}`
+                      : 'Not shared',
+                  },
+                  { label: 'Identity', value: 'Anonymous (ZKP verified)' },
+                ].map((row) => (
                   <View
-                    key={i}
-                    className="flex-row items-center gap-3 px-3 py-2 rounded-xl"
-                    style={{ backgroundColor: 'rgba(16,185,129,0.06)', borderWidth: 1, borderColor: 'rgba(16,185,129,0.2)' }}
+                    key={row.label}
+                    style={{
+                      flexDirection: 'row',
+                      gap: 16,
+                      alignItems: 'flex-start',
+                    }}
                   >
-                    <Text style={{ color: '#10b981', fontSize: 12 }}>✓</Text>
-                    <Text style={{ color: '#94a3b8', fontSize: 12, flex: 1 }} numberOfLines={1}>
-                      {file.name}
+                    <Text
+                      style={{
+                        color: '#64748b',
+                        fontSize: 11,
+                        width: 68,
+                        fontWeight: '500',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {row.label}
                     </Text>
-                    <TouchableOpacity onPress={() => removeFile(i)}>
-                      <Text style={{ color: '#334155', fontSize: 12 }}>✕</Text>
-                    </TouchableOpacity>
+                    <Text
+                      style={{
+                        color: '#e2e8f0',
+                        fontSize: 12,
+                        flex: 1,
+                        lineHeight: 17,
+                        minWidth: 0,
+                      }}
+                      numberOfLines={3}
+                    >
+                      {row.value}
+                    </Text>
                   </View>
                 ))}
               </View>
-            )}
-
-            <Text style={{ color: '#334155', fontSize: 11 }}>
-              Evidence is hashed client-side. Raw files never leave your device unencrypted.
-            </Text>
-          </>
-        )}
-
-        {step === 3 && (
-          <>
-            <View
-              className="p-4 rounded-2xl"
-              style={{ backgroundColor: 'rgba(79,70,229,0.06)', borderWidth: 1, borderColor: 'rgba(79,70,229,0.2)' }}
-            >
-              <View className="flex-row items-center gap-2 mb-2">
-                <ShieldIcon />
-                <Text style={{ color: '#818cf8', fontSize: 12, fontWeight: '600' }}>Zero-Knowledge Proof Generated</Text>
-              </View>
-              <Text style={{ color: '#475569', fontSize: 11, marginBottom: 8, lineHeight: 16 }}>
-                A cryptographic commitment was created from your report. This proves authenticity without revealing your identity.
-              </Text>
-              <View className="p-2.5 rounded-lg" style={{ backgroundColor: 'rgba(0,0,0,0.3)' }}>
-                <Text style={{ color: '#334155', fontSize: 11, marginBottom: 2 }}>ZKP Commitment Hash</Text>
-                <Text style={{ color: '#818cf8', fontSize: 10, fontFamily: 'JetBrainsMono_400Regular' }}>{zkpHash}</Text>
-              </View>
             </View>
 
             <View
-              className="p-4 rounded-2xl"
-              style={{ backgroundColor: '#1e293b', borderWidth: 1, borderColor: 'rgba(148,163,184,0.1)', gap: 10 }}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'flex-start',
+                gap: 10,
+                paddingHorizontal: 16,
+                paddingVertical: 14,
+                borderRadius: 16,
+                backgroundColor: 'rgba(16,185,129,0.03)',
+                borderWidth: 1,
+                borderColor: 'rgba(16,185,129,0.08)',
+              }}
             >
-              <Text style={{ color: '#475569', fontSize: 11, fontWeight: '600', letterSpacing: 1 }}>SUBMISSION SUMMARY</Text>
-              {[
-                { label: 'Type', value: scamType },
-                { label: 'Content', value: content },
-                { label: 'Evidence', value: files.length > 0 ? `${files.length} file(s) attached` : 'No evidence' },
-                { label: 'Location', value: location ? `${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}` : 'Not shared' },
-                { label: 'Identity', value: 'Anonymous (ZKP verified)' },
-              ].map((row) => (
-                <View key={row.label} className="flex-row gap-3">
-                  <Text style={{ color: '#475569', fontSize: 11, width: 64 }}>{row.label}</Text>
-                  <Text style={{ color: '#e2e8f0', fontSize: 12, flex: 1 }} numberOfLines={3}>
-                    {row.value}
-                  </Text>
-                </View>
-              ))}
-            </View>
-
-            <View className="flex-row items-start gap-2 px-1">
-              <Text style={{ color: '#10b981', fontSize: 12 }}>✓</Text>
-              <Text style={{ color: '#475569', fontSize: 11, flex: 1, lineHeight: 16 }}>
-                By submitting, you agree your anonymized report may be shared with DICT, NTC, and law enforcement partners under TLP:GREEN classification.
+              <CheckIcon size={12} />
+              <Text
+                style={{
+                  color: '#64748b',
+                  fontSize: 10,
+                  flex: 1,
+                  lineHeight: 16,
+                }}
+              >
+                By submitting, you agree your anonymized report may be shared with
+                DICT, NTC, and law enforcement partners under TLP:GREEN
+                classification.
               </Text>
             </View>
           </>
@@ -530,36 +1823,74 @@ export default function ReportScreen() {
       </ScrollView>
 
       {/* Footer */}
-      <View className="px-4 pb-4 pt-2" style={{ borderTopWidth: 1, borderTopColor: 'rgba(148,163,184,0.08)' }}>
-        <View className="flex-row gap-2">
+      <View
+        style={{
+          paddingHorizontal: 16,
+          paddingBottom: 16,
+          paddingTop: 12,
+          borderTopWidth: 1,
+          borderTopColor: 'rgba(148,163,184,0.06)',
+          backgroundColor: 'rgba(10,17,32,0.95)',
+        }}
+      >
+        <View style={{ flexDirection: 'row', gap: 12 }}>
           {step > 1 && (
             <TouchableOpacity
               onPress={() => setStep((s) => s - 1)}
-              className="px-4 py-3 rounded-xl items-center justify-center"
-              style={{ backgroundColor: '#1e293b', borderWidth: 1, borderColor: 'rgba(148,163,184,0.15)' }}
+              style={{
+                paddingHorizontal: 20,
+                paddingVertical: 16,
+                borderRadius: 16,
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: 'rgba(30,41,59,0.6)',
+                borderWidth: 1,
+                borderColor: 'rgba(148,163,184,0.1)',
+              }}
             >
-              <Text style={{ color: '#94a3b8', fontSize: 13, fontWeight: '500' }}>Back</Text>
+              <Text
+                style={{ color: '#94a3b8', fontSize: 13, fontWeight: '600' }}
+              >
+                Back
+              </Text>
             </TouchableOpacity>
           )}
           <TouchableOpacity
             disabled={(step === 1 && !canProceedStep1) || submitting}
             onPress={() => {
-              if (step === 1) setStep(2);
-              else if (step === 2) goToStep3();
+              if (step === 1) goToStep2();
               else handleSubmit();
             }}
-            className="flex-1 py-3 rounded-xl items-center justify-center"
             style={{
+              flex: 1,
+              paddingVertical: 16,
+              paddingHorizontal: 16,
+              borderRadius: 16,
+              alignItems: 'center',
+              justifyContent: 'center',
               backgroundColor:
-                step === 1 && !canProceedStep1 ? 'rgba(79,70,229,0.3)' : '#4f46e5',
-              opacity: submitting ? 0.7 : 1,
+                step === 1 && !canProceedStep1 ? 'rgba(79,70,229,0.2)' : '#4f46e5',
+              opacity: submitting ? 0.6 : 1,
+              shadowColor: '#4f46e5',
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: step === 1 && !canProceedStep1 ? 0 : 0.25,
+              shadowRadius: 12,
+              elevation: step === 1 && !canProceedStep1 ? 0 : 4,
             }}
           >
             {submitting ? (
-              <ActivityIndicator color="white" />
+              <ActivityIndicator color="white" size="small" />
             ) : (
-              <Text style={{ color: 'white', fontSize: 14, fontWeight: '600' }}>
-                {step === 1 ? 'Next — Add Evidence' : step === 2 ? 'Next — Review' : 'Submit Report'}
+              <Text
+                style={{
+                  color: step === 1 && !canProceedStep1 ? '#64748b' : 'white',
+                  fontSize: 14,
+                  fontWeight: '700',
+                  letterSpacing: 0.3,
+                }}
+                numberOfLines={1}
+              >
+                {step === 1 ? 'Next — Review' : 'Submit Report'}
               </Text>
             )}
           </TouchableOpacity>

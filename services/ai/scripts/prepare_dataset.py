@@ -4,7 +4,7 @@ services/ai/scripts/prepare_dataset.py
 Builds services/ai/data/processed/combined_dataset.csv from:
   - services/ai/data/sms_spam_collection.tsv   (existing baseline)
   - services/ai/data/raw/public/*.csv|*.tsv|*.json  (public datasets you downloaded)
-  - services/ai/data/custom/custom_scam_dataset.json (SentinelPH-labeled examples)
+  - services/ai/data/custom/*.json (All custom datasets including ph_bank_phishing.json)
 
 Raw files are NEVER modified. This script only reads from data/raw and data/custom
 and writes to data/processed.
@@ -26,7 +26,6 @@ RAW_PUBLIC_DIR = DATA_DIR / "raw" / "public"
 CUSTOM_DIR = DATA_DIR / "custom"
 PROCESSED_DIR = DATA_DIR / "processed"
 BASELINE_TSV = DATA_DIR / "sms_spam_collection.tsv"
-CUSTOM_JSON = CUSTOM_DIR / "custom_scam_dataset.json"
 OUTPUT_CSV = PROCESSED_DIR / "combined_dataset.csv"
 
 sys.path.insert(0, str(AI_ROOT))
@@ -163,19 +162,29 @@ def load_custom_dataset(path: Path):
     return records
 
 
+def load_all_custom_datasets(dir_path: Path):
+    """Scans services/ai/data/custom/ for ALL .json files."""
+    records = []
+    if not dir_path.exists():
+        print(f"[INFO] Custom directory {dir_path} does not exist yet.")
+        return records
+    for json_file in sorted(dir_path.glob("*.json")):
+        recs = load_custom_dataset(json_file)
+        print(f"[INFO] Loaded {len(recs)} records from custom dataset: {json_file.name}")
+        records.extend(recs)
+    return records
+
+
 def main():
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
     all_records = []
     all_records.extend(load_baseline_tsv(BASELINE_TSV))
     all_records.extend(load_public_datasets(RAW_PUBLIC_DIR))
-    all_records.extend(load_custom_dataset(CUSTOM_JSON))
+    all_records.extend(load_all_custom_datasets(CUSTOM_DIR))  # Loads ph_bank_phishing.json & any other custom JSONs
 
     total_raw = len(all_records)
 
-    # Normalize text WITHOUT stripping URLs/phone numbers/currency/punctuation —
-    # normalize_text should only do things like whitespace collapsing, unicode
-    # normalization, and lowercasing decisions your team already decided on.
     cleaned = []
     seen_hashes = set()
     empty_count = 0
@@ -217,7 +226,7 @@ def main():
     print("======================================\n")
 
     if total_cleaned == 0:
-        print("[ERROR] No records produced. Check that your baseline TSV and/or "
+        print("[ERROR] No records produced. Check that your baseline TSV, custom JSONs, or "
               "raw/public datasets exist and are readable.")
         sys.exit(1)
 

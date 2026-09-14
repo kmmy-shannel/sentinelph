@@ -1,3 +1,5 @@
+# services/ai/app/main.py
+
 """
 app/main.py
 ------------
@@ -5,19 +7,17 @@ SentinelPH — AI Scam Detection Pipeline — FastAPI Microservice.
 
 Endpoints:
     GET  /health   -> liveness + model-load status
-    POST /predict  -> scam probability + categorical label for a report
+    POST /predict  -> scam probability, risk level + explainable reasons
+    POST /ocr      -> multipart screenshot OCR (used by Express gateway)
 
 STRICT GUARDRAIL (SRS Requirement 5):
     This service is READ-ONLY / ADVISORY with respect to SentinelPH's
     core data. It has no database credentials, no write access to
     MongoDB, and no knowledge of the blacklist. It can NEVER blacklist a
     number or bypass the Express gateway's Two-Officer approval state
-    machine — it only returns a probability + label that the Express
-    Gateway attaches to a report as metadata for human officers to
-    consider. Enforcement of this boundary lives on the Express side
-    (see services/api/controllers/reportController.js), not here — but
-    this service is intentionally built with zero capability to do
-    anything else, as defense in depth.
+    machine — it only returns a probability + label + explanation that
+    the Express Gateway attaches to a report as metadata for human
+    officers to consider.
 """
 
 import os
@@ -25,8 +25,9 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
@@ -35,18 +36,25 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from app.config import classify_score, settings  # noqa: E402
 from app.inference import ModelNotLoadedError, get_classifier  # noqa: E402
-from app.schemas import HealthResponse, PredictRequest, PredictResponse  # noqa: E402
-from app.utils.ocr import OCRError, extract_text_from_base64
+from app.schemas import (  # noqa: E402
+    HealthResponse,
+    OCRResponse,
+    PredictRequest,
+    PredictResponse,
+)
+from app.utils.ocr import (  # noqa: E402
+    OCRError,
+    extract_text_and_confidence_from_bytes,
+    extract_text_from_base64,
+)
 from app.utils.text_normalize import normalize_text
 
-# Security configuration
 API_KEY = os.environ.get("AI_SERVICE_API_KEY", "").strip()
-PROTECTED_PATHS = {"/predict"}
+PROTECTED_PATHS = {"/predict", "/ocr"}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: attempt to load model artifacts once, log clear status.
     clf = get_classifier()
     if not clf.loaded:
         logger.warning(
@@ -64,15 +72,14 @@ async def lifespan(app: FastAPI):
             test_acc,
         )
     yield
-    # Shutdown: nothing to clean up (no DB connections held by this service).
 
 
 app = FastAPI(
     title="SentinelPH AI Scam Detection Service",
     description=(
-        "Advisory-only scam probability scoring for SMS/text and "
-        "screenshot evidence. Never writes to the SentinelPH database "
-        "and never bypasses the Two-Officer approval workflow."
+        "Advisory-only scam probability + explainable-reason scoring for "
+        "SMS/text and screenshot evidence. Never writes to the SentinelPH "
+        "database and never bypasses the Two-Officer approval workflow."
     ),
     version=settings.SERVICE_VERSION,
     lifespan=lifespan,
@@ -119,6 +126,7 @@ def health() -> HealthResponse:
         message="No model artifacts loaded.",
     )
 
+
 @app.post(
     "/predict",
     response_model=PredictResponse,
@@ -142,6 +150,7 @@ def predict(payload: PredictRequest) -> PredictResponse:
     combined_text_parts = []
     ocr_used = False
     ocr_char_count = 0
+    ocr_text = ""
 
     if payload.text and payload.text.strip():
         combined_text_parts.append(payload.text.strip())
@@ -165,31 +174,106 @@ def predict(payload: PredictRequest) -> PredictResponse:
     clean_text = normalize_text(raw_combined)
 
     try:
-        probability = clf.predict(clean_text)
+        result = clf.analyze(raw_text=raw_combined, normalized_text=clean_text)
     except ModelNotLoadedError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
 
+    probability = result["probability_score"]
     label = classify_score(probability)
 
     logger.info(
         "predict report_id={} ocr_used={} chars={} prob={:.4f} "
-        "label={} took_ms={:.1f}",
-        payload.report_id, ocr_used, len(clean_text), probability, label,
+        "risk={} reasons={} label={} took_ms={:.1f}",
+        payload.report_id, ocr_used, len(clean_text), probability,
+        result["risk_level"], len(result["explanation_reasons"]), label,
         (time.time() - t0) * 1000,
     )
 
     return PredictResponse(
         report_id=payload.report_id,
-        probability_score=round(probability, 4),
+        probability_score=probability,
         label=label,
+        is_scam=result["is_scam"],
+        confidence_score=result["confidence_score"],
+        risk_level=result["risk_level"],
+        explanation_reasons=result["explanation_reasons"],
         ocr_used=ocr_used,
         ocr_extracted_chars=ocr_char_count,
+        ocr_text=ocr_text or None,
         model_version=clf.model_version,
         advisory_only=True,
     )
+
+
+@app.post(
+    "/ocr",
+    response_model=OCRResponse,
+    tags=["ocr"],
+    responses={
+        401: {"description": "Invalid or missing X-API-KEY header."},
+        422: {"description": "Image could not be decoded."},
+    },
+)
+async def ocr_extract(
+    file: UploadFile = File(..., description="Screenshot image (jpeg/png/webp)."),
+    scamType: Optional[str] = Form(default="UNKNOWN"),
+) -> OCRResponse:
+    """
+    Multipart endpoint used by the Express gateway's /reports/ocr route.
+    Returns extracted text plus a confidence score, and (when the
+    classifier is loaded) a flattened Layer-1 risk assessment.
+    """
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Uploaded file is empty.",
+        )
+
+    try:
+        text, confidence = extract_text_and_confidence_from_bytes(raw)
+    except OCRError as exc:
+        logger.warning("OCR failed for upload {}: {}", file.filename, exc)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Could not process screenshot evidence: {exc}",
+        ) from exc
+
+    response = OCRResponse(
+        text=text,
+        confidence=confidence,
+        extracted_chars=len(text),
+        ocr_used=True,
+        scamType=(scamType or "UNKNOWN"),
+    )
+
+    # Best-effort Layer-1 classification of the extracted text.
+    clf = get_classifier()
+    if clf.loaded and text.strip():
+        try:
+            clean_text = normalize_text(text)
+            result = clf.analyze(raw_text=text, normalized_text=clean_text)
+            response.is_scam = result["is_scam"]
+            response.confidence_score = result["confidence_score"]
+            response.risk_level = result["risk_level"]
+            response.explanation_reasons = result["explanation_reasons"]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Layer-1 classification after OCR failed: {}", exc)
+
+    # FIX: the field's real Python attribute name is `scam_type`
+    # (schemas.py declares `scam_type: ... = Field(alias="scamType")`).
+    # `scamType` is only the JSON/wire alias — it doesn't exist as an
+    # attribute on the constructed model, which is exactly what crashed
+    # this endpoint with AttributeError before.
+    logger.info(
+        "ocr file={} scamType={} chars={} confidence={} risk={}",
+        file.filename, response.scam_type, response.extracted_chars,
+        response.confidence, response.risk_level,
+    )
+    return response
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
 // apps/web/src/pages/Login.jsx
 import { useState, useRef, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+
 import { useAuth, ROLES } from "../context/AuthContext";
+import { signInWithEmailAndPassword } from "firebase/auth";
+import { auth } from "../config/firebase";
 
 const ShieldIcon = ({ color }) => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -25,14 +27,14 @@ const ScalesIcon = ({ color }) => (
 
 const ROLE_OPTIONS = [
   { id: ROLES.OFFICER, label: "Barangay / NBI Officer", dept: "NBI Cybercrime Division", Icon: ShieldIcon, color: "#3b82f6", path: "/officer/dashboard" },
-  { id: ROLES.ANALYST, label: "Fraud Analyst", dept: "NTC Fraud Research Division", Icon: MagnifyIcon, color: "#a855f7", path: "/analyst/dashboard" },
-  { id: ROLES.AUDITOR, label: "System Auditor", dept: "DICT Independent Auditor", Icon: ScalesIcon, color: "#22c55e", path: "/auditor/dashboard" },
+  { id: ROLES.ADMIN, label: "Agency Admin", dept: "NTC Fraud Research Division", Icon: MagnifyIcon, color: "#a855f7", path: "/admin/dashboard" },
+  { id: ROLES.SUPERADMIN, label: "System Super Admin", dept: "DICT Independent Auditor", Icon: ScalesIcon, color: "#22c55e", path: "/superadmin/dashboard" },
 ];
 
 const DEMO_USERS = {
   officer: { name: "Insp. R. Cruz", badge: "NBI-CCRU-0041", email: "r.cruz@nbi-ccru.gov.ph", dept: "NBI Cybercrime Division", initials: "RC" },
-  analyst: { name: "Ana Mercado", badge: "NTC-FRO-0018", email: "a.mercado@ntc.gov.ph", dept: "NTC Fraud Research Division", initials: "AM" },
-  auditor: { name: "Dr. J. Santos", badge: "DICT-AUD-0903", email: "j.santos@dict.gov.ph", dept: "DICT Independent Auditor", initials: "JS" },
+  admin: { name: "Ana Mercado", badge: "NTC-FRO-0018", email: "a.mercado@ntc.gov.ph", dept: "NTC Fraud Research Division", initials: "AM" },
+  superadmin: { name: "Dr. J. Santos", badge: "DICT-AUD-0903", email: "j.santos@dict.gov.ph", dept: "DICT Independent Auditor", initials: "JS" },
 };
 
 function RoleDropdown({ value, onChange }) {
@@ -126,10 +128,9 @@ function RoleDropdown({ value, onChange }) {
 }
 
 export default function Login() {
-  const navigate = useNavigate();
-  const { isAuthenticated, loading: authLoading } = useAuth();
+const { isAuthenticated, role: authRole, loading: authLoading, requestPasswordReset } = useAuth();
   const [role, setRole] = useState("");
-  const [badgeId, setBadgeId] = useState("");
+ const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -139,33 +140,24 @@ export default function Login() {
   // Forgot Password state
   const [showForgotPw, setShowForgotPw] = useState(false);
   const [forgotEmail, setForgotEmail] = useState("");
-  const [forgotStage, setForgotStage] = useState("email");
-  const [forgotOtp, setForgotOtp] = useState("");
+  
+  
   const [forgotError, setForgotError] = useState(null);
   const [forgotSuccess, setForgotSuccess] = useState(false);
+  const [forgotLoading, setForgotLoading] = useState(false);
 
   const selectedRole = ROLE_OPTIONS.find((r) => r.id === role);
   const accent = selectedRole?.color ?? "#6366f1";
-  const canSubmit = role && badgeId && password && !loading;
+ const canSubmit = role && email && password && !loading;
+ 
 
-  useEffect(() => {
-    if (!authLoading && isAuthenticated) {
-      const storedUser = localStorage.getItem('sentinelph_user');
-      if (storedUser) {
-        try {
-          const userData = JSON.parse(storedUser);
-          const roleData = ROLE_OPTIONS.find(r => r.id === userData.role);
-          if (roleData) {
-            window.location.href = roleData.path;
-            return;
-          }
-        } catch (e) {
-          console.error('Error parsing user data:', e);
-        }
-      }
-      window.location.href = '/officer/dashboard';
+
+    useEffect(() => {
+    if (!authLoading && isAuthenticated && authRole) {
+      const roleData = ROLE_OPTIONS.find(r => r.id === authRole);
+      window.location.href = roleData?.path || '/unauthorized';
     }
-  }, [authLoading, isAuthenticated, navigate]);
+  }, [authLoading, isAuthenticated, authRole]);
 
   const sanitizePw = (value) => value.replace(/\s/g, "");
   const sanitizeBadge = (value) => value.toUpperCase().replace(/\s/g, "");
@@ -179,47 +171,48 @@ export default function Login() {
     transition: "all 0.3s", boxSizing: "border-box",
   });
 
-  function handleSubmit(e) {
-    e.preventDefault();
-    if (!canSubmit) return;
+ async function handleSubmit(e) {
+  e.preventDefault();
+  if (!canSubmit) return;
 
-    setError(null);
-    setLoading(true);
+  setError(null);
+  setLoading(true);
 
-    setTimeout(() => {
-      try {
-        const selectedRoleData = ROLE_OPTIONS.find((r) => r.id === role);
-        const userData = DEMO_USERS[role];
+  try {
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    const tokenResult = await cred.user.getIdTokenResult(true);
+    const actualRole = tokenResult.claims.role;
 
-        if (selectedRoleData && userData) {
-          const user = {
-            role: role,
-            ...userData,
-            isAuthenticated: true,
-            loginTime: new Date().toISOString()
-          };
+    if (!actualRole) {
+      await auth.signOut();
+      setError('Your account has no assigned role. Contact your system administrator.');
+      setLoading(false);
+      return;
+    }
 
-          localStorage.setItem('sentinelph_user', JSON.stringify(user));
+    if (actualRole !== role) {
+      await auth.signOut();
+      const correctPortal = ROLE_OPTIONS.find(r => r.id === actualRole)?.label || actualRole;
+      setError(`This account is registered as "${correctPortal}", not the portal you selected.`);
+      setLoading(false);
+      return;
+    }
 
-          const loginContainer = document.getElementById('login-page');
-          if (loginContainer) {
-            loginContainer.style.transition = "opacity 0.3s ease";
-            loginContainer.style.opacity = "0";
-          }
-
-          setTimeout(() => {
-            window.location.href = selectedRoleData.path;
-          }, 300);
-        } else {
-          setError('Invalid role selected');
-          setLoading(false);
-        }
-      } catch (err) {
-        setError('Login failed. Please try again.');
-        setLoading(false);
-      }
-    }, 800);
+     // Success — AuthContext's onAuthStateChanged will pick up the new
+    // role via getIdTokenResult, which triggers the redirect effect
+    // above. No manual navigation here, so there's no race.
+  } catch (err) {
+    console.error('[Login] Firebase sign-in failed:', err);
+    if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found') {
+      setError('Invalid email or password.');
+    } else if (err.code === 'auth/too-many-requests') {
+      setError('Too many failed attempts. Please try again later.');
+    } else {
+      setError('Login failed. Please try again.');
+    }
+    setLoading(false);
   }
+}
 
   return (
     <div id="login-page" className="login-container" style={{ width: "100%", minHeight: "100vh", display: "flex", overflow: "hidden", fontFamily: "'Inter',sans-serif", background: "#06060f", position: "relative", animation: "fadeIn 0.5s ease" }}>
@@ -320,36 +313,35 @@ export default function Login() {
                 </div>
 
                 <div style={{ marginBottom: "18px" }}>
-                  <div style={{ fontSize: "11px", marginBottom: "8px", fontWeight: 500, color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>BADGE / EMPLOYEE ID</div>
-                  <input
-                    type="text"
-                    value={badgeId}
-                    onChange={(e) => setBadgeId(sanitizeBadge(e.target.value))}
-                    placeholder="e.g. NBI-CCRU-0041"
-                    onFocus={() => setFocusField("badge")}
-                    onBlur={() => setFocusField(null)}
-                    autoComplete="off"
-                    style={{ ...inputStyle("badge"), fontFamily: "'JetBrains Mono',monospace" }}
-                  />
-                </div>
+  <div style={{ fontSize: "11px", marginBottom: "8px", fontWeight: 500, color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>EMAIL ADDRESS</div>
+  <input
+    type="email"
+    value={email}
+    onChange={(e) => setEmail(e.target.value.trim())}
+    placeholder="e.g. r.cruz@nbi-ccru.gov.ph"
+    onFocus={() => setFocusField("email")}
+    onBlur={() => setFocusField(null)}
+    autoComplete="username"
+    style={inputStyle("email")}
+  />
+</div>
 
                 <div style={{ marginBottom: "10px" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
                     <div style={{ fontSize: "11px", fontWeight: 500, color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>PASSWORD</div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowForgotPw(true);
-                        setForgotStage("email");
-                        setForgotEmail("");
-                        setForgotOtp("");
-                        setForgotError(null);
-                        setForgotSuccess(false);
-                      }}
-                      style={{ fontSize: "12px", fontWeight: 600, color: accent, background: "none", border: "none", cursor: "pointer" }}
-                    >
-                      Forgot password?
-                    </button>
+                  <button
+  type="button"
+  onClick={() => {
+    setShowForgotPw(true);
+    setForgotEmail("");
+    setForgotError(null);
+    setForgotSuccess(false);
+    setForgotLoading(false);
+  }}
+  style={{ fontSize: "12px", fontWeight: 600, color: accent, background: "none", border: "none", cursor: "pointer" }}
+>
+  Forgot password?
+</button>
                   </div>
                   <div style={{ position: "relative" }}>
                     <input
@@ -415,136 +407,110 @@ export default function Login() {
 
       {/* FORGOT PASSWORD MODAL */}
       {showForgotPw && (
-        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}>
-          <div style={{ width: "100%", maxWidth: "440px", margin: "0 16px", borderRadius: "20px", padding: "32px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a", boxShadow: "0 40px 80px rgba(0,0,0,0.5)" }}>
-            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: `linear-gradient(90deg,transparent,${accent},transparent)` }} />
+  <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}>
+    <div style={{ width: "100%", maxWidth: "440px", margin: "0 16px", borderRadius: "20px", padding: "32px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a", boxShadow: "0 40px 80px rgba(0,0,0,0.5)" }}>
+      <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: `linear-gradient(90deg,transparent,${accent},transparent)` }} />
 
-            <button
-              onClick={() => setShowForgotPw(false)}
-              style={{ position: "absolute", top: "16px", right: "16px", color: "#4b5563", background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}
-              aria-label="Close"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
+      <button
+        onClick={() => setShowForgotPw(false)}
+        style={{ position: "absolute", top: "16px", right: "16px", color: "#4b5563", background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}
+        aria-label="Close"
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
 
-            <div style={{ marginBottom: "24px" }}>
-              <div style={{ fontSize: "20px", fontWeight: 800, color: "#fff", marginBottom: "6px" }}>
-                Reset Password
-              </div>
-              <div style={{ fontSize: "13px", color: "#4b5563", lineHeight: 1.6 }}>
-                {forgotStage === "email"
-                  ? "Enter your registered email address. We'll send you a 6-digit code to reset your password."
-                  : `We've sent a 6-digit code to ${forgotEmail}. Enter it below to verify.`}
-              </div>
-            </div>
+      <div style={{ marginBottom: "24px" }}>
+        <div style={{ fontSize: "20px", fontWeight: 800, color: "#fff", marginBottom: "6px" }}>
+          Reset Password
+        </div>
+        <div style={{ fontSize: "13px", color: "#4b5563", lineHeight: 1.6 }}>
+          {forgotSuccess
+            ? `If an account exists for ${forgotEmail}, we've sent a password reset link. Check your inbox.`
+            : "Enter your registered email address. We'll send you a secure link to reset your password."}
+        </div>
+      </div>
 
-            {forgotSuccess ? (
-              <div style={{ padding: "16px", borderRadius: "12px", background: "#0a1a12", border: "1px solid #22c55e40", color: "#22c55e", textAlign: "center" }}>
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: "8px" }}>
-                  <path d="M20 6L9 17l-5-5" />
-                </svg>
-                <div style={{ fontSize: "14px", fontWeight: 600, marginBottom: "4px" }}>Code verified!</div>
-                <div style={{ fontSize: "12px", opacity: 0.8 }}>Contact your administrator to set a new password.</div>
-              </div>
-            ) : (
-              <>
-                {forgotStage === "email" && (
-                  <>
-                    <div style={{ marginBottom: "20px" }}>
-                      <div style={{ fontSize: "11px", fontWeight: 500, color: "#6b7280", marginBottom: "8px", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>EMAIL ADDRESS</div>
-                      <input
-                        type="email"
-                        value={forgotEmail}
-                        onChange={(e) => setForgotEmail(e.target.value)}
-                        placeholder="your.email@gov.ph"
-                        autoFocus
-                        style={{
-                          width: "100%", padding: "14px 16px", borderRadius: "12px", fontSize: "14px",
-                          background: "#080810", border: `1.5px solid ${focusField === "forgot-email" ? accent + "80" : "#1c1c2e"}`,
-                          color: "#e2e8f0", outline: "none", boxSizing: "border-box",
-                        }}
-                        onFocus={() => setFocusField("forgot-email")}
-                        onBlur={() => setFocusField(null)}
-                      />
-                    </div>
-
-                    {forgotError && (
-                      <div style={{ marginBottom: "16px", padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#ef444420", border: "1px solid #ef444430", color: "#ef4444" }}>
-                        {forgotError}
-                      </div>
-                    )}
-
-                    <button
-                      onClick={() => {
-                        if (!forgotEmail.trim() || !forgotEmail.includes("@")) {
-                          setForgotError("Please enter a valid email address.");
-                          return;
-                        }
-                        setForgotError(null);
-                        setForgotStage("otp");
-                      }}
-                      style={{ width: "100%", padding: "14px", borderRadius: "12px", fontSize: "14px", fontWeight: 700, border: "none", background: accent, color: "#fff", cursor: "pointer" }}
-                    >
-                      Send Reset Code
-                    </button>
-                  </>
-                )}
-
-                {forgotStage === "otp" && (
-                  <>
-                    <div style={{ marginBottom: "20px" }}>
-                      <div style={{ fontSize: "11px", fontWeight: 500, color: "#6b7280", marginBottom: "8px", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>6-DIGIT CODE</div>
-                      <input
-                        type="text"
-                        value={forgotOtp}
-                        onChange={(e) => setForgotOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                        placeholder="000000"
-                        maxLength={6}
-                        autoFocus
-                        style={{
-                          width: "100%", padding: "14px", borderRadius: "12px",
-                          fontSize: "24px", textAlign: "center", letterSpacing: "8px",
-                          background: "#080810", border: "1.5px solid #1a1a2a",
-                          color: "#fff", outline: "none", fontFamily: "'JetBrains Mono',monospace",
-                          boxSizing: "border-box",
-                        }}
-                      />
-                    </div>
-
-                    {forgotError && (
-                      <div style={{ marginBottom: "16px", padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#ef444420", border: "1px solid #ef444430", color: "#ef4444" }}>
-                        {forgotError}
-                      </div>
-                    )}
-
-                    <button
-                      onClick={() => {
-                        if (forgotOtp.length !== 6) {
-                          setForgotError("Please enter the full 6-digit code.");
-                          return;
-                        }
-                        setForgotError(null);
-                        setForgotSuccess(true);
-                      }}
-                      style={{ width: "100%", padding: "14px", borderRadius: "12px", fontSize: "14px", fontWeight: 700, border: "none", background: accent, color: "#fff", cursor: "pointer" }}
-                    >
-                      Verify Code
-                    </button>
-
-                    <div style={{ textAlign: "center", fontSize: "12px", marginTop: "16px", color: "#4b5563" }}>
-                      Didn't receive the code? <span style={{ color: accent, cursor: "pointer", fontWeight: 600 }} onClick={() => setForgotStage("email")}>Resend</span>
-                    </div>
-                  </>
-                )}
-              </>
-            )}
+      {forgotSuccess ? (
+        <div style={{ padding: "16px", borderRadius: "12px", background: "#0a1a12", border: "1px solid #22c55e40", color: "#22c55e", textAlign: "center" }}>
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: "8px" }}>
+            <path d="M20 6L9 17l-5-5" />
+          </svg>
+          <div style={{ fontSize: "14px", fontWeight: 600, marginBottom: "4px" }}>Check your inbox</div>
+          <div style={{ fontSize: "12px", opacity: 0.85, lineHeight: 1.5 }}>
+            The link expires in 15 minutes and can only be used once.
           </div>
         </div>
-      )}
+      ) : (
+        <>
+          <div style={{ marginBottom: "20px" }}>
+            <div style={{ fontSize: "11px", fontWeight: 500, color: "#6b7280", marginBottom: "8px", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>EMAIL ADDRESS</div>
+            <input
+              type="email"
+              value={forgotEmail}
+              onChange={(e) => setForgotEmail(e.target.value)}
+              placeholder="your.email@gov.ph"
+              autoFocus
+              disabled={forgotLoading}
+              style={{
+                width: "100%", padding: "14px 16px", borderRadius: "12px", fontSize: "14px",
+                background: "#080810",
+                border: `1.5px solid ${focusField === "forgot-email" ? accent + "80" : "#1c1c2e"}`,
+                color: "#e2e8f0", outline: "none", boxSizing: "border-box",
+                opacity: forgotLoading ? 0.6 : 1,
+              }}
+              onFocus={() => setFocusField("forgot-email")}
+              onBlur={() => setFocusField(null)}
+            />
+          </div>
 
+          {forgotError && (
+            <div style={{ marginBottom: "16px", padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#ef444420", border: "1px solid #ef444430", color: "#ef4444" }}>
+              {forgotError}
+            </div>
+          )}
+
+          <button
+            type="button"
+            disabled={forgotLoading}
+            onClick={async () => {
+              if (!forgotEmail.trim() || !forgotEmail.includes("@")) {
+                setForgotError("Please enter a valid email address.");
+                return;
+              }
+              setForgotError(null);
+              setForgotLoading(true);
+              try {
+                await requestPasswordReset(forgotEmail.trim().toLowerCase());
+                setForgotSuccess(true);
+              } catch (err) {
+                // Even on failure, we show the same success state to prevent enumeration.
+                setForgotSuccess(true);
+              } finally {
+                setForgotLoading(false);
+              }
+            }}
+            style={{
+              width: "100%", padding: "14px", borderRadius: "12px", fontSize: "14px",
+              fontWeight: 700, border: "none",
+              background: forgotLoading ? "#2a2a3a" : accent,
+              color: "#fff",
+              cursor: forgotLoading ? "not-allowed" : "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: "10px",
+            }}
+          >
+            {forgotLoading && (
+              <span style={{ width: "14px", height: "14px", borderRadius: "50%", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", animation: "spin 0.7s linear infinite", display: "inline-block" }} />
+            )}
+            {forgotLoading ? "Sending…" : "Send Reset Link"}
+          </button>
+        </>
+      )}
+    </div>
+  </div>
+)}
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes slideDown {

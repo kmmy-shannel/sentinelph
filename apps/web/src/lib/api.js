@@ -112,5 +112,19 @@ export async function verifyAuditChain() {
   const response = await apiClient.get('/api/v1/audit/verify');
   return response.data;
 }
+// ---- Review Queue endpoint wrappers -------------------------------------
+
+export async function fetchReports(params = {}) {
+  const response = await apiClient.get('/api/v1/reports', { params });
+  return response.data;
+}
+
+export async function submitReportVote(reportId, { decision, comment }) {
+  const response = await apiClient.post(`/api/v1/reports/${reportId}/vote`, {
+    decision,
+    comment,
+  });
+  return response.data;
+}
 
 export default apiClient;
