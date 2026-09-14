@@ -68,6 +68,7 @@ export default function Sidebar({ isOpen, onClose }) {
       }, 50);
     }, 300);
   }
+
   const roleColor =
     role === ROLES.OFFICER ? "#3b82f6" :
     role === ROLES.ADMIN ? "#a855f7" :
@@ -94,9 +95,10 @@ export default function Sidebar({ isOpen, onClose }) {
     } else if (role === ROLES.SUPERADMIN) {
       return [
         { id: "dashboard", label: "Dashboard", Icon: DashboardIcon, to: "/superadmin/dashboard" },
-        { id: "verify", label: "Verification Tool", Icon: QueueIcon, to: "/superadmin/verify" },
-        { id: "trail", label: "Audit Trail", Icon: RegistryIcon, to: "/superadmin/trail" },
-        { id: "anomalies", label: "Anomaly Reports", Icon: NotificationsIcon, to: "/superadmin/anomalies" },
+        { id: "users-rbac", label: "Users & RBAC", Icon: QueueIcon, to: "/superadmin/users-rbac" },
+        { id: "chain-integrity", label: "Chain Integrity", Icon: RegistryIcon, to: "/superadmin/chain-integrity" },
+        { id: "audit-logs", label: "Audit Logs", Icon: NotificationsIcon, to: "/superadmin/audit-logs" },
+        { id: "system-health", label: "System Health", Icon: AccountIcon, to: "/superadmin/system-health" },
         { id: "account", label: "Account", Icon: AccountIcon, to: "/superadmin/account" },
       ];
     }
@@ -139,9 +141,9 @@ export default function Sidebar({ isOpen, onClose }) {
         <div style={{ padding: "10px 12px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 10px", borderRadius: "8px", background: `${roleColor}12`, border: `1px solid ${roleColor}25` }}>
             <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: roleColor, flexShrink: 0 }} />
-         <span style={{ fontSize: "10px", fontWeight: 700, color: roleColor, fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.05em" }}>
-  {role === ROLES.OFFICER ? "NBI CCRU" : role === ROLES.ADMIN ? "AGENCY ADMIN" : "SUPER ADMIN"}
-</span>
+            <span style={{ fontSize: "10px", fontWeight: 700, color: roleColor, fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.05em" }}>
+              {role === ROLES.OFFICER ? "NBI CCRU" : role === ROLES.ADMIN ? "AGENCY ADMIN" : "SUPER ADMIN"}
+            </span>
           </div>
         </div>
 
@@ -170,10 +172,10 @@ export default function Sidebar({ isOpen, onClose }) {
 
         <div style={{ padding: "12px", borderTop: "1px solid #0f0f1a" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
-            <div style={{ width: "28px", height: "28px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "11px", fontWeight: 700, flexShrink: 0, background: `${roleColor}25`, color: roleColor, border: `1px solid ${roleColor}40` }}>{user?.initials ?? "RC"}</div>
+            <div style={{ width: "28px", height: "28px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "11px", fontWeight: 700, flexShrink: 0, background: `${roleColor}25`, color: roleColor, border: `1px solid ${roleColor}40` }}>{user?.initials ?? "SA"}</div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: "11px", fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.name ?? "Insp. R. Cruz"}</div>
-              <div style={{ fontSize: "9px", color: "#374151", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.email ?? "r.cruz@nbi.gov.ph"}</div>
+              <div style={{ fontSize: "11px", fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.name ?? "Platform Admin"}</div>
+              <div style={{ fontSize: "9px", color: "#374151", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.email ?? "admin@sentinelph.gov.ph"}</div>
             </div>
           </div>
           <button

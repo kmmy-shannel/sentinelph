@@ -23,12 +23,13 @@ import AIModelInsights from './pages/Admin-Tabs/AIModelInsights';
 import RegionalReports from './pages/Admin-Tabs/RegionalReports';
 import AdminAccount from './pages/Admin-Tabs/Account';
 
-// Super Admin Tabs (folder still named Auditor-Tabs — functionally fine, imports unchanged)
-import SuperAdminDashboard from './pages/Auditor-Tabs/AuditorDashboard';
-import VerificationTool from './pages/Auditor-Tabs/VerificationTool';
-import AuditTrail from './pages/Auditor-Tabs/AuditTrail';
-import AnomalyReports from './pages/Auditor-Tabs/AnomalyReports';
-import SuperAdminAccount from './pages/Auditor-Tabs/Account';
+// Super Admin Tabs
+import SuperAdminDashboard from './pages/SuperAdmin-Tabs/SuperAdminDashboard';
+import UsersRBAC from './pages/SuperAdmin-Tabs/UsersRBAC';
+import ChainIntegrity from './pages/SuperAdmin-Tabs/ChainIntegrity';
+import AuditLogs from './pages/SuperAdmin-Tabs/AuditLogs';
+import SystemHealth from './pages/SuperAdmin-Tabs/SystemHealth';
+import SuperAdminAccount from './pages/SuperAdmin-Tabs/Account';
 
 import CustomLayout from './layouts/CustomLayout';
 
@@ -38,10 +39,10 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Navigate to="/login" replace />} />
-<Route path="/login" element={<Login />} />
-<Route path="/activate" element={<Activate />} /> {/* NEW — must stay public, not wrapped in ProtectedRoute */}
-<Route path="/reset-password" element={<ResetPassword />} />
-<Route path="/unauthorized" element={<Unauthorized />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/activate" element={<Activate />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
+          <Route path="/unauthorized" element={<Unauthorized />} />
 
           {/* Officer Routes */}
           <Route element={<ProtectedRoute allowedRoles={['officer']}><CustomLayout /></ProtectedRoute>}>
@@ -61,12 +62,13 @@ export default function App() {
             <Route path="/admin/account" element={<AdminAccount />} />
           </Route>
 
-          {/* Super Admin Routes (was Auditor) */}
+          {/* Super Admin Routes */}
           <Route element={<ProtectedRoute allowedRoles={['superadmin']}><CustomLayout /></ProtectedRoute>}>
             <Route path="/superadmin/dashboard" element={<SuperAdminDashboard />} />
-            <Route path="/superadmin/verify" element={<VerificationTool />} />
-            <Route path="/superadmin/trail" element={<AuditTrail />} />
-            <Route path="/superadmin/anomalies" element={<AnomalyReports />} />
+            <Route path="/superadmin/users-rbac" element={<UsersRBAC />} />
+            <Route path="/superadmin/chain-integrity" element={<ChainIntegrity />} />
+            <Route path="/superadmin/audit-logs" element={<AuditLogs />} />
+            <Route path="/superadmin/system-health" element={<SystemHealth />} />
             <Route path="/superadmin/account" element={<SuperAdminAccount />} />
           </Route>
 

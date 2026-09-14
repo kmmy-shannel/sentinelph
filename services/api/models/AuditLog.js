@@ -13,7 +13,7 @@ const AuditLogSchema = new Schema(
     },
     role: {
       type: String,
-      enum: ['citizen', 'officer', 'analyst', 'auditor', 'system'],
+      enum: ['citizen', 'officer', 'analyst', 'auditor', 'admin', 'superadmin', 'system'],
       required: [true, 'role is required.'],
       immutable: true,
       index: true,
@@ -39,32 +39,23 @@ const AuditLogSchema = new Schema(
       default: null,
       immutable: true,
     },
-    // Optional structured context (e.g. { reportId }, { phoneNumber, decision }).
-    // Not part of the SRS's four core fields but kept append-only and immutable
-    // like the rest of the entry, purely to make audit entries self-explanatory.
     metadata: {
       type: Schema.Types.Mixed,
       default: null,
       immutable: true,
     },
   },
-  {
-    versionKey: false,
-  }
+  { versionKey: false }
 );
 
 AuditLogSchema.index({ timestamp: -1 });
+AuditLogSchema.index({ 'metadata.category': 1 });
+AuditLogSchema.index({ 'metadata.target': 1 });
 
-/** Convenience creator so route handlers can log in one line. */
 AuditLogSchema.statics.record = async function record({ userId, role, action, ipAddress = null, metadata = null }) {
   return this.create({ userId, role, action, ipAddress, metadata });
 };
 
-// ---------------------------------------------------------------------
-// Append-only enforcement: identical philosophy to Report.js — this is
-// an audit trail, so once written, an entry can never be altered or
-// removed by the application layer.
-// ---------------------------------------------------------------------
 function blockDirectMutation(next) {
   next(new Error('AuditLog entries are append-only. Update/delete operations are not permitted.'));
 }

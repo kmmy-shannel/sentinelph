@@ -15,31 +15,31 @@ export default function Topbar() {
     if (path === "/officer/notifications") return "Notifications";
     if (path === "/officer/account") return "Account";
 
-    // Analyst paths
-    if (path === "/analyst/dashboard") return "Trends Dashboard";
-    if (path === "/analyst/patterns") return "Pattern Explorer";
-    if (path === "/analyst/model") return "AI Model Insights";
-    if (path === "/analyst/reports") return "Regional Reports";
-    if (path === "/analyst/alerts") return "Alerts Configuration";
-    if (path === "/analyst/account") return "Account";
+    // Agency Admin paths
+    if (path === "/admin/dashboard") return "Agency Admin Dashboard";
+    if (path === "/admin/officers") return "Officers";
+    if (path === "/admin/model") return "AI Model Insights";
+    if (path === "/admin/reports") return "Analytics & Reports";
+    if (path === "/admin/account") return "Account";
 
-    // Auditor paths
-    if (path === "/auditor/dashboard") return "Chain Integrity Dashboard";
-    if (path === "/auditor/verify") return "Verification Tool";
-    if (path === "/auditor/trail") return "Audit Trail";
-    if (path === "/auditor/anomalies") return "Anomaly Reports";
-    if (path === "/auditor/account") return "Account";
+    // Super Admin paths
+    if (path === "/superadmin/dashboard") return "Platform Dashboard";
+    if (path === "/superadmin/users-rbac") return "Users & RBAC";
+    if (path === "/superadmin/chain-integrity") return "Chain Integrity";
+    if (path === "/superadmin/audit-logs") return "Audit Logs";
+    if (path === "/superadmin/system-health") return "System Health";
+    if (path === "/superadmin/account") return "Account";
 
     return "Dashboard";
   };
 
   return (
-    <div style={{ 
-      display: "flex", 
-      alignItems: "center", 
-      justifyContent: "space-between", 
-      padding: "12px 24px", 
-      borderBottom: "1px solid #13131e", 
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      padding: "12px 24px",
+      borderBottom: "1px solid #13131e",
       flexShrink: 0,
       background: "#09090f"
     }}>
