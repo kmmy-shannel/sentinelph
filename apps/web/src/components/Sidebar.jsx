@@ -1,7 +1,8 @@
 // apps/web/src/components/Sidebar.jsx
-import React, { useState } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useCallback } from 'react';
+import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, ROLES } from '../context/AuthContext';
+import apiClient from '../lib/api';
 
 const DashboardIcon = ({ color }) => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -53,7 +54,23 @@ export default function Sidebar({ isOpen, onClose }) {
   const { user, role, logout } = useAuth();
   const [activeTab, setActiveTab] = useState("dashboard");
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [badges, setBadges] = useState({});
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const loadBadges = useCallback(async () => {
+    if (!role) return;
+    try {
+      const { data } = await apiClient.get('/api/v1/stats/badges');
+      setBadges(data?.data ?? {});
+    } catch (err) {
+      console.warn('[Sidebar] badge fetch failed:', err?.message);
+    }
+  }, [role]);
+
+  useEffect(() => {
+    loadBadges();
+  }, [loadBadges, location.pathname]);
 
   function confirmLogout() {
     setShowLogoutConfirm(false);
@@ -79,15 +96,15 @@ export default function Sidebar({ isOpen, onClose }) {
     if (role === ROLES.OFFICER) {
       return [
         { id: "dashboard", label: "Dashboard", Icon: DashboardIcon, to: "/officer/dashboard" },
-        { id: "queue", label: "Review Queue", Icon: QueueIcon, badge: 14, to: "/officer/queue" },
+        { id: "queue", label: "Review Queue", Icon: QueueIcon, badge: badges.reviewQueue, to: "/officer/queue" },
         { id: "registry", label: "Blacklist Registry", Icon: RegistryIcon, to: "/officer/registry" },
-        { id: "notifications", label: "Notifications", Icon: NotificationsIcon, badge: 3, to: "/officer/notifications" },
+        { id: "notifications", label: "Notifications", Icon: NotificationsIcon, to: "/officer/notifications" },
         { id: "account", label: "Account", Icon: AccountIcon, to: "/officer/account" },
       ];
     } else if (role === ROLES.ADMIN) {
       return [
         { id: "dashboard", label: "Dashboard", Icon: DashboardIcon, to: "/admin/dashboard" },
-        { id: "officers", label: "Officers", Icon: QueueIcon, to: "/admin/officers" },
+        { id: "officers", label: "Officers", Icon: QueueIcon, badge: badges.officers, to: "/admin/officers" },
         { id: "model", label: "AI Insights", Icon: RegistryIcon, to: "/admin/model" },
         { id: "reports", label: "Analytics & Reports", Icon: NotificationsIcon, to: "/admin/reports" },
         { id: "account", label: "Account", Icon: AccountIcon, to: "/admin/account" },
@@ -95,9 +112,9 @@ export default function Sidebar({ isOpen, onClose }) {
     } else if (role === ROLES.SUPERADMIN) {
       return [
         { id: "dashboard", label: "Dashboard", Icon: DashboardIcon, to: "/superadmin/dashboard" },
-        { id: "users-rbac", label: "Users & RBAC", Icon: QueueIcon, to: "/superadmin/users-rbac" },
+        { id: "users-rbac", label: "Users & RBAC", Icon: QueueIcon, badge: badges.usersRbac, to: "/superadmin/users-rbac" },
         { id: "chain-integrity", label: "Chain Integrity", Icon: RegistryIcon, to: "/superadmin/chain-integrity" },
-        { id: "audit-logs", label: "Audit Logs", Icon: NotificationsIcon, to: "/superadmin/audit-logs" },
+        { id: "audit-logs", label: "Audit Logs", Icon: NotificationsIcon, badge: badges.auditLogs, to: "/superadmin/audit-logs" },
         { id: "system-health", label: "System Health", Icon: AccountIcon, to: "/superadmin/system-health" },
         { id: "account", label: "Account", Icon: AccountIcon, to: "/superadmin/account" },
       ];
@@ -165,7 +182,11 @@ export default function Sidebar({ isOpen, onClose }) {
             >
               <item.Icon color={activeTab === item.id ? roleColor : "#4b5563"} />
               <span style={{ flex: 1, fontSize: "12px", fontWeight: activeTab === item.id ? 600 : 500, color: activeTab === item.id ? "#fff" : "#6b7280", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
-              {item.badge && <span style={{ fontSize: "9px", fontWeight: 700, padding: "2px 5px", borderRadius: "999px", background: "#ef4444", color: "#fff", minWidth: "18px", textAlign: "center" }}>{item.badge}</span>}
+              {item.badge > 0 && (
+                <span style={{ fontSize: "9px", fontWeight: 700, padding: "2px 5px", borderRadius: "999px", background: "#ef4444", color: "#fff", minWidth: "18px", textAlign: "center" }}>
+                  {item.badge}
+                </span>
+              )}
             </NavLink>
           ))}
         </nav>

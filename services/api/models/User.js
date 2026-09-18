@@ -59,13 +59,16 @@ const userSchema = new Schema(
       default: 'pending_activation',
       index: true,
     },
+    lastSeenAuditLog: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
   }
 );
 
-// Sanitized JSON output — never leak internal Mongo fields to the client.
 userSchema.methods.toSafeJSON = function toSafeJSON() {
   return {
     id: this._id,
@@ -77,6 +80,7 @@ userSchema.methods.toSafeJSON = function toSafeJSON() {
     agency: this.agency,
     jurisdiction: this.jurisdiction,
     status: this.status,
+    lastSeenAuditLog: this.lastSeenAuditLog,
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,
   };

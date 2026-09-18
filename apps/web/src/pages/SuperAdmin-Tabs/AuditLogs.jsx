@@ -31,7 +31,6 @@ export default function AuditLogs() {
   const [catFilter, setCatFilter]       = useState("all");
   const [roleFilter, setRoleFilter]     = useState("all");
 
-  // ── Fetch logs ─────────────────────────────────────────────
   const loadLogs = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -48,9 +47,12 @@ export default function AuditLogs() {
     }
   }, []);
 
-  useEffect(() => { loadLogs(); }, [loadLogs]);
+  useEffect(() => {
+    loadLogs();
+    // Mark as seen — clears the sidebar badge
+    apiClient.post('/api/v1/stats/seen/audit-logs').catch(() => {});
+  }, [loadLogs]);
 
-  // ── Client-side filtering ──────────────────────────────────
   const filtered = logs.filter((e) => {
     const cat = (e.category || "").toLowerCase();
     const role = (e.role || "").toLowerCase();
@@ -67,7 +69,6 @@ export default function AuditLogs() {
     return mc && mr && mq;
   });
 
-  // Dynamic filter lists — exclude the em-dash placeholder
   const categories = ["all", ...new Set(
     logs
       .map((e) => (e.category || "").toLowerCase())
@@ -81,7 +82,6 @@ export default function AuditLogs() {
 
   return (
     <div>
-      {/* Immutability notice */}
       <div style={{ padding: "12px 16px", borderRadius: "10px", marginBottom: "16px", background: "#0a0a12", border: "1px solid #1a1a2a", display: "flex", gap: "10px", alignItems: "flex-start" }}>
         <span style={{ color: A, flexShrink: 0 }}>🔒</span>
         <p style={{ fontSize: "12px", color: "#4b5563", margin: 0, lineHeight: 1.6 }}>
@@ -89,14 +89,12 @@ export default function AuditLogs() {
         </p>
       </div>
 
-      {/* Error banner */}
       {error && (
         <div style={{ padding: "10px 14px", borderRadius: "8px", marginBottom: "16px", background: "#1a0606", border: "1px solid #ef444440", color: "#ef4444", fontSize: "12px" }}>
           {error}
         </div>
       )}
 
-      {/* Toolbar */}
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px", flexWrap: "wrap" }}>
         <div style={{ position: "relative" }}>
           <svg width="13" height="13" viewBox="0 0 14 14" fill="none" style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }}>
@@ -136,7 +134,6 @@ export default function AuditLogs() {
         </div>
       </div>
 
-      {/* Table */}
       <div style={{ borderRadius: "12px", overflow: "hidden", background: "#0e0e18", border: "1px solid #1a1a2a" }}>
         <div style={{ padding: "12px 20px", borderBottom: "1px solid #1a1a2a", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff" }}>Event Log</div>
