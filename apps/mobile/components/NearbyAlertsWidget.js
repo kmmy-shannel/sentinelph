@@ -1,9 +1,4 @@
 // apps/mobile/components/NearbyAlertsWidget.js
-//
-// Home-screen "Nearby Scam Activity" card: mini SVG map + scrollable
-// incident feed. Ported from the Figma Make MiniMap component using
-// react-native-svg (viewBox/preserveAspectRatio behave the same as web SVG).
-
 import React from 'react';
 import { View, Text, ScrollView } from 'react-native';
 import Svg, { Line, Rect, Circle } from 'react-native-svg';
@@ -20,7 +15,19 @@ const HEAT_DOT_BG = {
   low: 'rgba(16,185,129,0.15)',
 };
 
-function MiniMap({ incidents, radiusLabel = 'BGCRTA · 2km radius' }) {
+function timeAgo(dateStr) {
+  if (!dateStr) return 'just now';
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function MiniMap({ incidents, radiusLabel = 'Your area · 2km radius' }) {
   return (
     <View className="relative rounded-xl overflow-hidden" style={{ height: 148, backgroundColor: '#0c1929' }}>
       <Svg width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice">
@@ -49,8 +56,8 @@ function MiniMap({ incidents, radiusLabel = 'BGCRTA · 2km radius' }) {
 
         {incidents.map((inc) => (
           <React.Fragment key={inc.id}>
-            <Circle cx={inc.x} cy={inc.y} r={3.5} fill={HEAT_DOT_BG[inc.heat] || HEAT_DOT_BG.low} />
-            <Circle cx={inc.x} cy={inc.y} r={1.8} fill={HEAT_COLOR[inc.heat] || HEAT_COLOR.low} />
+            <Circle cx={inc.x ?? 50} cy={inc.y ?? 50} r={3.5} fill={HEAT_DOT_BG[inc.heat] || HEAT_DOT_BG.low} />
+            <Circle cx={inc.x ?? 50} cy={inc.y ?? 50} r={1.8} fill={HEAT_COLOR[inc.heat] || HEAT_COLOR.low} />
           </React.Fragment>
         ))}
 
@@ -88,22 +95,22 @@ function IncidentRow({ inc, isFirst }) {
       />
       <View className="flex-1 min-w-0">
         <Text style={{ color: '#e2e8f0', fontSize: 12, fontWeight: '500' }} numberOfLines={1}>
-          {inc.type}
+          {inc.type || 'Scam report'}
         </Text>
-        <Text style={{ color: '#475569', fontSize: 11 }}>
-          {inc.dist} away · {inc.time}
+        <Text style={{ color: '#475569', fontSize: 11 }} numberOfLines={1}>
+          {inc.number || 'Unknown'} · {inc.region || 'PH'} · {timeAgo(inc.reportedAt)}
         </Text>
       </View>
-      <Text style={{ color: '#334155', fontSize: 9, fontFamily: 'JetBrainsMono_400Regular' }}>{inc.id}</Text>
+      <Text style={{ color: '#334155', fontSize: 9, fontFamily: 'JetBrainsMono_400Regular' }}>
+        {inc.reportCount || 1}×
+      </Text>
     </View>
   );
 }
 
-/**
- * @param {Array} incidents - list from GET /api/v1/alerts/nearby, each with
- *   { id, type, dist, time, heat, x, y } where x/y are 0-100 map coordinates.
- */
 export default function NearbyAlertsWidget({ incidents = [] }) {
+  const hasData = incidents.length > 0;
+
   return (
     <View
       className="rounded-2xl overflow-hidden"
@@ -120,21 +127,42 @@ export default function NearbyAlertsWidget({ incidents = [] }) {
           className="px-2 py-0.5 rounded-full"
           style={{ backgroundColor: 'rgba(244,63,94,0.12)', borderWidth: 1, borderColor: 'rgba(244,63,94,0.25)' }}
         >
-          <Text style={{ color: '#f43f5e', fontSize: 10, fontWeight: '500' }}>{incidents.length} active</Text>
+          <Text style={{ color: '#f43f5e', fontSize: 10, fontWeight: '500' }}>
+            {incidents.length} active
+          </Text>
         </View>
       </View>
 
-      <View className="px-3 pb-3">
-        <MiniMap incidents={incidents} />
-      </View>
+      {hasData ? (
+        <>
+          <View className="px-3 pb-3">
+            <MiniMap incidents={incidents} />
+          </View>
 
-      <View style={{ borderTopWidth: 1, borderTopColor: 'rgba(148,163,184,0.08)' }}>
-        <ScrollView style={{ maxHeight: 168 }} nestedScrollEnabled showsVerticalScrollIndicator={false}>
-          {incidents.map((inc, i) => (
-            <IncidentRow key={inc.id} inc={inc} isFirst={i === 0} />
-          ))}
-        </ScrollView>
-      </View>
+          <View style={{ borderTopWidth: 1, borderTopColor: 'rgba(148,163,184,0.08)' }}>
+            <ScrollView style={{ maxHeight: 168 }} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+              {incidents.map((inc, i) => (
+                <IncidentRow key={inc.id} inc={inc} isFirst={i === 0} />
+              ))}
+            </ScrollView>
+          </View>
+        </>
+      ) : (
+        <View className="px-4 pb-6 pt-2 items-center">
+          <View
+            className="w-12 h-12 rounded-full items-center justify-center mb-3"
+            style={{ backgroundColor: 'rgba(16,185,129,0.1)' }}
+          >
+            <Text style={{ fontSize: 20 }}>🛡️</Text>
+          </View>
+          <Text style={{ color: '#e2e8f0', fontSize: 13, fontWeight: '600', marginBottom: 4 }}>
+            Your area is clear
+          </Text>
+          <Text style={{ color: '#64748b', fontSize: 11, textAlign: 'center', paddingHorizontal: 24 }}>
+            No active scam reports near you in the last 7 days. We'll alert you if that changes.
+          </Text>
+        </View>
+      )}
     </View>
   );
 }

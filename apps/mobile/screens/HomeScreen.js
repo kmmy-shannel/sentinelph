@@ -96,8 +96,13 @@ export default function HomeScreen() {
         underReview: statusRes.data?.underReviewCount ?? prev.underReview,
       }));
       setNearbyIncidents(alertsRes.data?.incidents || []);
-    } catch (err) {
-      if (!(err instanceof OfflineError)) {
+        } catch (err) {
+      if (err instanceof OfflineError) {
+        // Silent — expected when device has no internet
+      } else if (err?.status === 404) {
+        // Routes not yet deployed — silently skip until backend is updated
+        console.warn('[HomeScreen] dashboard endpoints not available yet');
+      } else {
         console.warn('[HomeScreen] failed to load remote dashboard data:', err?.message);
       }
     }
@@ -137,15 +142,12 @@ export default function HomeScreen() {
       >
         <OfflineSyncIndicator />
 
-        <QuickReportCard
-          onQuickReport={() => navigation.navigate('ReportWizard')}
-          onCameraShortcut={() =>
-            navigation.navigate('ReportWizard', { openStep: 2, focus: 'camera' })
-          }
-          onMicShortcut={() =>
-            navigation.navigate('ReportWizard', { openStep: 2, focus: 'mic' })
-          }
-        />
+       <QuickReportCard
+  onQuickReport={() => navigation.navigate('ReportWizard')}
+  onCameraShortcut={() =>
+    navigation.navigate('ReportWizard', { openStep: 2, focus: 'camera' })
+  }
+/>
 
         <View
           style={{
@@ -175,7 +177,7 @@ export default function HomeScreen() {
         </View>
 
         <NearbyAlertsWidget incidents={nearbyIncidents} />
-      </ScrollView>
+      </ScrollView> 
     </SafeAreaView>
   );
 }

@@ -72,13 +72,15 @@ api.interceptors.request.use(
 );
 // ---- Review Queue endpoint wrappers -------------------------------------
 
+// ---- Review Queue endpoint wrappers -------------------------------------
+
 export async function fetchReports(params = {}) {
-  const response = await apiClient.get('/api/v1/reports', { params });
+  const response = await api.get('/api/v1/reports', { params });
   return response.data;
 }
 
 export async function submitReportVote(reportId, { decision, comment }) {
-  const response = await apiClient.post(`/api/v1/reports/${reportId}/vote`, {
+  const response = await api.post(`/api/v1/reports/${reportId}/vote`, {
     decision,
     comment,
   });

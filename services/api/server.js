@@ -20,6 +20,14 @@ const authRoutes         = require('./routes/auth');
 const superadminRoutes   = require('./routes/superadmin');
 const statsRoutes        = require('./routes/stats');
 const officerRoutes      = require('./routes/officer');
+const healthRoutes = require('./routes/health');
+const reportRoutes = require('./routes/reports');
+const blacklistRoutes = require('./routes/blacklist');
+const auditorRoutes = require('./routes/auditor');
+const adminRoutes = require('./routes/admin');
+const authRoutes = require('./routes/auth');
+const statusRoutes = require('./routes/status');
+const alertsRoutes = require('./routes/alerts');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -74,6 +82,8 @@ app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/superadmin', superadminRoutes);
 app.use('/api/v1/stats', statsRoutes);
 
+app.use('/api/v1/status', statusRoutes);
+app.use('/api/v1/alerts', alertsRoutes);
 app.get('/', (req, res) => {
   res.status(200).json({
     success: true,

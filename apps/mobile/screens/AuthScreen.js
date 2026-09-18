@@ -9,7 +9,7 @@
 
 import React, { useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
+  ActivityIndicator,  Image,   
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -234,10 +234,12 @@ function Toast({ message }) {
 function BrandHeader() {
   return (
     <View style={styles.headerBlock}>
-      <View style={styles.logoBadge}>
-        <Text style={styles.logoLetter}>S</Text>
-      </View>
-      <Text style={styles.appName}>SentinelPH</Text>
+            <Image
+       source={require('../assets/LOGO1.png')}
+        style={styles.logoImage}
+        resizeMode="contain"
+      />
+      <Text style={styles.appName}>Sentinel</Text>
       <View style={styles.statusPill}>
         <View style={styles.statusDot} />
         <Text style={styles.statusPillText}>CITIZEN PROTECTION PORTAL</Text>
@@ -1318,6 +1320,12 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: '800',
   },
+  logoImage: {
+  width: 110,
+    height: 110,
+    marginBottom: 12,
+  
+},
   appName: {
     fontSize: 24,
     fontWeight: '800',
