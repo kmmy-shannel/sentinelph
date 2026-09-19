@@ -113,18 +113,18 @@ async function run() {
     {
       email: process.env.SEED_SUPERADMIN_EMAIL.trim().toLowerCase(),
       password: process.env.SEED_SUPERADMIN_PASS,
-      fullName: 'SentinelPH Superadmin',
+      fullName: 'Sentinel Superadmin',
       role: 'superadmin',
       badgeId: 'SUPERADMIN-000',
-      agency: 'SentinelPH Systems',
+      agency: 'Sentinel Systems',
     },
     {
       email: process.env.SEED_ADMIN_EMAIL.trim().toLowerCase(),
       password: process.env.SEED_ADMIN_PASS,
-      fullName: 'SentinelPH Admin',
+      fullName: 'Sentinel Admin',
       role: 'admin',
       badgeId: 'ADMIN-000',
-      agency: 'SentinelPH Systems',
+      agency: 'Sentinel Systems',
     },
   ];
 

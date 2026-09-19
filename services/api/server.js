@@ -20,12 +20,7 @@ const authRoutes         = require('./routes/auth');
 const superadminRoutes   = require('./routes/superadmin');
 const statsRoutes        = require('./routes/stats');
 const officerRoutes      = require('./routes/officer');
-const healthRoutes = require('./routes/health');
-const reportRoutes = require('./routes/reports');
-const blacklistRoutes = require('./routes/blacklist');
-const auditorRoutes = require('./routes/auditor');
-const adminRoutes = require('./routes/admin');
-const authRoutes = require('./routes/auth');
+
 const statusRoutes = require('./routes/status');
 const alertsRoutes = require('./routes/alerts');
 
