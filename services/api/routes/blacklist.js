@@ -1,6 +1,7 @@
+// services/api/routes/blacklist.js
 const express = require('express');
 const { verifyFirebaseToken } = require('../middleware/auth');
-const { requireRole } = require('../middleware/rbac');
+const { requireRole, enforceAuditorReadOnly } = require('../middleware/rbac');
 const { asyncHandler, ApiError } = require('../middleware/errorHandler');
 const BlacklistEntry = require('../models/BlacklistEntry');
 const Report = require('../models/Report');
@@ -8,13 +9,24 @@ const AuditLog = require('../models/AuditLog');
 
 const router = express.Router();
 
+const UNCLASSIFIED = 'UNCLASSIFIED';
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // =====================================================================
 // POST /api/v1/blacklist/candidates — Open (or fetch) a candidate for
 // review (Officer, Analyst)
+//
+// NOTE: a candidate can no longer be voted on directly. It becomes
+// 'blacklisted' only when a report filed against the same number reaches
+// Two-Officer consensus (POST /api/v1/reports/:reportId/vote).
 // =====================================================================
 router.post(
   '/candidates',
   verifyFirebaseToken,
+  enforceAuditorReadOnly,
   requireRole('officer', 'analyst'),
   asyncHandler(async (req, res) => {
     const { phoneNumber, region } = req.body;
@@ -37,7 +49,7 @@ router.post(
 
     entry = await BlacklistEntry.create({
       phoneNumber: phoneNumber.trim(),
-      region: region || null,
+      region: typeof region === 'string' && region.trim() ? region.trim() : null,
       status: 'pending',
       reportCount,
     });
@@ -59,73 +71,28 @@ router.post(
 );
 
 // =====================================================================
-// POST /api/v1/blacklist/:phoneNumber/vote — Cast Approve/Reject vote
-// (Officer only). Approval/rejection is an emergent property of two
-// independent officers voting the same way — there is deliberately no
-// separate "force approve" endpoint, since that would bypass the
-// Two-Officer Consensus guarantee.
+// POST /api/v1/blacklist/:phoneNumber/vote — RETIRED (410 Gone)
+//
+// Report-level consensus is the single source of truth. Voting directly on
+// a phone number ran a second, independent state machine that could
+// disagree with the report votes, and it also force-mirrored its result
+// onto every Report for the number, bypassing per-report consensus.
+// Officers now vote on the underlying report:
+//   POST /api/v1/reports/:reportId/vote
+// The route is kept (behind auth) so stale clients get an explicit
+// message instead of a bare 404.
 // =====================================================================
 router.post(
   '/:phoneNumber/vote',
   verifyFirebaseToken,
+  enforceAuditorReadOnly,
   requireRole('officer'),
-  asyncHandler(async (req, res) => {
-    const { decision, comment } = req.body;
-    const { phoneNumber } = req.params;
-
-    if (!['approve', 'reject'].includes(decision)) {
-      throw new ApiError(400, "decision is required and must be either 'approve' or 'reject'.", 'VALIDATION_ERROR');
-    }
-
-    const entry = await BlacklistEntry.findOne({ phoneNumber });
-
-    if (!entry) {
-      throw new ApiError(404, `No blacklist candidate found for phoneNumber "${phoneNumber}".`, 'NOT_FOUND');
-    }
-
-    if (
-      req.user.jurisdiction &&
-      entry.region &&
-      entry.region !== req.user.jurisdiction
-    ) {
-      throw new ApiError(403, 'This candidate falls outside your assigned jurisdiction.', 'JURISDICTION_MISMATCH');
-    }
-
-    try {
-      entry.registerVote(req.user.uid, decision, comment);
-    } catch (err) {
-      throw new ApiError(err.statusCode || 400, err.message, 'VOTE_REJECTED');
-    }
-
-    await entry.save();
-
-    await AuditLog.record({
-      userId: req.user.uid,
-      role: req.user.role,
-      action: 'BLACKLIST_VOTE_CAST',
-      ipAddress: req.ip,
-      metadata: {
-        phoneNumber: entry.phoneNumber,
-        decision,
-        resultingStatus: entry.status,
-      },
-    });
-
-    // If this vote finalized the number as blacklisted, mirror that
-    // onto any Report documents already filed against it (workflow
-    // status only — never touches the hashed fields).
-    if (entry.status === 'blacklisted' || entry.status === 'rejected') {
-      await Report.collection.updateMany(
-        { reportedNumber: entry.phoneNumber },
-        { $set: { status: entry.status } }
-      );
-    }
-
-    return res.status(200).json({
-      success: true,
-      message: `Vote recorded. Candidate status: ${entry.status}.`,
-      data: entry,
-    });
+  asyncHandler(async () => {
+    throw new ApiError(
+      410,
+      'Voting on a phone number directly has been retired. Vote on the underlying report via POST /api/v1/reports/:reportId/vote; the number is blacklisted automatically once two officers approve a report.',
+      'ENDPOINT_DEPRECATED'
+    );
   })
 );
 
@@ -136,14 +103,16 @@ router.post(
 router.get(
   '/:phoneNumber/status',
   verifyFirebaseToken,
+  enforceAuditorReadOnly,
   requireRole('citizen', 'officer', 'analyst', 'auditor'),
   asyncHandler(async (req, res) => {
-    const entry = await BlacklistEntry.findOne({ phoneNumber: req.params.phoneNumber }).lean();
+    const phoneNumber = String(req.params.phoneNumber);
+    const entry = await BlacklistEntry.findOne({ phoneNumber }).lean();
 
     if (!entry) {
       return res.status(200).json({
         success: true,
-        data: { phoneNumber: req.params.phoneNumber, status: 'not_found', blacklistedAt: null },
+        data: { phoneNumber, status: 'not_found', blacklistedAt: null },
       });
     }
 
@@ -167,24 +136,51 @@ router.get(
 // =====================================================================
 // GET /api/v1/blacklist — List candidates/entries with filters
 // (Officer, Analyst, Auditor)
+//
+//   ?page=1&limit=20
+//   &status=blacklisted            (or a comma list: pending,under_review)
+//   &q=<text>                      (matches number or scam type)
+//   &region=<r>                    (analyst/auditor only; officers are scoped)
 // =====================================================================
 router.get(
   '/',
   verifyFirebaseToken,
+  enforceAuditorReadOnly,
   requireRole('officer', 'analyst', 'auditor'),
   asyncHandler(async (req, res) => {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
 
     const query = {};
+
+    // Every query-string value is coerced to a string so an operator object
+    // (e.g. ?status[$ne]=x) can never reach the Mongo filter.
     if (req.query.status) {
-      query.status = req.query.status;
+      const statuses = String(req.query.status)
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (statuses.length === 1) query.status = statuses[0];
+      else if (statuses.length > 1) query.status = { $in: statuses };
     }
 
+    // Officers see their own region plus entries with no region / the
+    // UNCLASSIFIED sentinel (same visibility rule as the review queue, so a
+    // number blacklisted from a non-geolocated report is not hidden).
     if (req.user.role === 'officer' && req.user.jurisdiction) {
-      query.region = req.user.jurisdiction;
+      query.region = { $in: [req.user.jurisdiction, UNCLASSIFIED, null] };
     } else if (req.query.region) {
-      query.region = req.query.region;
+      query.region = String(req.query.region);
+    }
+
+    if (req.query.q) {
+      const pattern = escapeRegex(String(req.query.q).trim().slice(0, 60));
+      if (pattern) {
+        query.$or = [
+          { phoneNumber: { $regex: pattern, $options: 'i' } },
+          { scamType: { $regex: pattern, $options: 'i' } },
+        ];
+      }
     }
 
     const [items, total] = await Promise.all([

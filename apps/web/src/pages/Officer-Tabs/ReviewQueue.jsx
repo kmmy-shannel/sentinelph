@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { fetchReports, submitReportVote } from "../../lib/api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import apiClient, { fetchReports, submitReportVote } from "../../lib/api";
 
 // ─── Status buckets ─────────────────────────────────────────
 const UNRESOLVED = ['pending', 'under_review', 'one_approval'];
-const RESOLVED   = ['blacklisted', 'approved', 'rejected'];
+
+// ─── Pagination ─────────────────────────────────────────────
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+const DEFAULT_PAGE_SIZE = 25;
+const POLL_INTERVAL_MS = 15000;
 
 const CheckIcon = ({ color }) => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -59,6 +63,7 @@ function mapReportToRow(r) {
     isUnresolved: UNRESOLVED.includes(rawStatus),
     evidenceText: r.evidenceText || r.content || r.textData || "",
     evidenceImage: r.evidenceImage || null,
+    hasEvidenceImage: Boolean(r.hasEvidenceImage || r.evidenceImage),
     evidenceFiles: Array.isArray(r.evidenceFiles) ? r.evidenceFiles : [],
     aiLabel: ai.label || "unavailable",
     aiRiskLevel: ai.riskLevel || "UNKNOWN",
@@ -69,83 +74,190 @@ function mapReportToRow(r) {
   };
 }
 
+// The API mixes two error envelopes: { error: { code, message } } (ApiError)
+// and { error: "CODE", message } (rbac / rate limiters). Handle both so an
+// error object never renders as "[object Object]".
+function extractErrorMessage(err, fallback) {
+  const data = err?.response?.data;
+  const nested = data?.error && typeof data.error === "object" ? data.error.message : null;
+  const flat = typeof data?.error === "string" ? data.error : null;
+  return nested || data?.message || flat || err?.message || fallback;
+}
+
 export default function ReviewQueue() {
   const [tab, setTab] = useState("pending");
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
+
   const [reports, setReports] = useState([]);
+  const [pagination, setPagination] = useState({ total: 0, totalPages: 1, hasMore: false });
+  const [counts, setCounts] = useState({ pending: 0, resolved: 0, all: 0 });
+  // false when the backend still returns the legacy un-paginated array;
+  // the tab filter is then applied client-side so the queue keeps working.
+  const [serverPaginated, setServerPaginated] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   const [voteModal, setVoteModal] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [decision, setDecision] = useState(null);
   const [comment, setComment] = useState("");
-  const [showSuccess, setShowSuccess] = useState(false);
+  const [successMessage, setSuccessMessage] = useState(null);
   const [submittingVote, setSubmittingVote] = useState(false);
 
-  const loadReports = useCallback(async () => {
-    setLoading(true);
+  // Sequence guards: only the newest list / detail request may write state,
+  // so a slow earlier response can never overwrite a fresher one.
+  const listSeqRef = useRef(0);
+  const detailSeqRef = useRef(0);
+
+  const loadReports = useCallback(async ({ silent = false } = {}) => {
+    const seq = ++listSeqRef.current;
+    if (!silent) setLoading(true);
     setError(null);
+
     try {
-      const data = await fetchReports({ limit: 200 });
-      const list = Array.isArray(data) ? data : data.reports || data.data || [];
-      setReports(list.map(mapReportToRow));
+      const data = await fetchReports({ page, limit, bucket: tab });
+      if (seq !== listSeqRef.current) return;
+
+      const isLegacyArray = Array.isArray(data);
+      const list = isLegacyArray ? data : data?.reports || data?.data || [];
+      const rows = list.map(mapReportToRow);
+      const serverPagination = isLegacyArray ? null : data?.pagination;
+      const serverCounts = isLegacyArray ? null : data?.counts;
+
+      // The last item on the last page was just resolved: step back a page.
+      if (serverPagination && serverPagination.totalPages >= 1 && page > serverPagination.totalPages) {
+        setPage(serverPagination.totalPages);
+        return;
+      }
+
+      setServerPaginated(Boolean(serverPagination));
+      setReports(rows);
+      setPagination(
+        serverPagination
+          ? {
+              total: serverPagination.total ?? rows.length,
+              totalPages: serverPagination.totalPages ?? 1,
+              hasMore: Boolean(serverPagination.hasMore),
+            }
+          : { total: rows.length, totalPages: 1, hasMore: false }
+      );
+      setCounts(
+        serverCounts
+          ? {
+              pending: serverCounts.pending ?? 0,
+              resolved: serverCounts.resolved ?? 0,
+              all: serverCounts.all ?? rows.length,
+            }
+          : {
+              pending: rows.filter((r) => r.isUnresolved).length,
+              resolved: rows.filter((r) => !r.isUnresolved).length,
+              all: rows.length,
+            }
+      );
     } catch (err) {
-      setError(err.response?.data?.error || err.message || "Failed to load review queue.");
+      if (seq !== listSeqRef.current) return;
+      setError(extractErrorMessage(err, "Failed to load review queue."));
       setReports([]);
     } finally {
-      setLoading(false);
+      if (seq === listSeqRef.current) setLoading(false);
     }
-  }, []);
+  }, [page, limit, tab]);
 
   useEffect(() => {
     loadReports();
-    const interval = setInterval(loadReports, 15000);
+    const interval = setInterval(() => loadReports({ silent: true }), POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [loadReports]);
 
-  const pendingCount  = reports.filter((r) => r.isUnresolved).length;
-  const resolvedCount = reports.filter((r) => !r.isUnresolved).length;
-  const allCount      = reports.length;
-
-  const filtered = useMemo(() => {
+  const visibleRows = useMemo(() => {
+    if (serverPaginated) return reports;
     if (tab === "pending")  return reports.filter((r) => r.isUnresolved);
     if (tab === "resolved") return reports.filter((r) => !r.isUnresolved);
     return reports;
-  }, [reports, tab]);
+  }, [reports, tab, serverPaginated]);
+
+  const pendingCount  = counts.pending;
+  const resolvedCount = counts.resolved;
+  const allCount      = counts.all;
+
+  const totalItems = serverPaginated ? pagination.total : visibleRows.length;
+  const totalPages = serverPaginated ? pagination.totalPages : 1;
+  const rangeFrom = totalItems === 0 ? 0 : serverPaginated ? (page - 1) * limit + 1 : 1;
+  const rangeTo = serverPaginated ? Math.min(page * limit, totalItems) : totalItems;
+
+  function changeTab(nextTab) {
+    if (nextTab === tab) return;
+    setTab(nextTab);
+    setPage(1);
+  }
+
+  function changePageSize(nextLimit) {
+    setLimit(nextLimit);
+    setPage(1);
+  }
 
   function closeModal() {
+    detailSeqRef.current += 1; // cancel any in-flight detail fetch
+    setDetailLoading(false);
     setVoteModal(null);
     setDecision(null);
     setComment("");
+  }
+
+  // The list intentionally omits the (large) base64 screenshot; fetch it
+  // for the one case the officer opened.
+  async function openVoteModal(row) {
+    setVoteModal(row);
+    setDecision(null);
+    setComment("");
+
+    if (!row.hasEvidenceImage || row.evidenceImage) return;
+
+    const seq = ++detailSeqRef.current;
+    setDetailLoading(true);
+    try {
+      const { data } = await apiClient.get(`/api/v1/reports/${encodeURIComponent(row.id)}`);
+      if (seq !== detailSeqRef.current) return;
+
+      const full = data?.report || data?.data || null;
+      if (full?.evidenceImage) {
+        setVoteModal((prev) =>
+          prev && prev.id === row.id ? { ...prev, evidenceImage: full.evidenceImage } : prev
+        );
+      }
+    } catch (err) {
+      console.warn("[ReviewQueue] could not load screenshot evidence:", err?.message);
+    } finally {
+      if (seq === detailSeqRef.current) setDetailLoading(false);
+    }
   }
 
   async function handleSubmitVote() {
     if (!decision || !comment.trim() || !voteModal) return;
     setSubmittingVote(true);
     try {
-      await submitReportVote(voteModal.id, { decision, comment: comment.trim() });
-
-      setReports((prev) =>
-        prev.map((r) =>
-          r.id === voteModal.id
-            ? {
-                ...r,
-                status: decision === "approve" ? "1 Approval" : "Rejected",
-                rawStatus: decision === "approve" ? "one_approval" : "rejected",
-                isUnresolved: decision === "approve" ? true : false,
-              }
-            : r
-        )
-      );
+      const result = await submitReportVote(voteModal.id, { decision, comment: comment.trim() });
 
       closeModal();
-      setShowSuccess(true);
-      setTimeout(() => setShowSuccess(false), 3000);
+      setSuccessMessage(
+        result?.blacklisted
+          ? "Vote submitted. Two-officer consensus reached — the number was added to the Blacklist Registry."
+          : "Vote submitted successfully."
+      );
+      setTimeout(() => setSuccessMessage(null), 4000);
+
+      // The server owns status/consensus — reload instead of guessing.
+      loadReports({ silent: true });
     } catch (err) {
-      alert(err.response?.data?.error || err.message || "Failed to submit vote.");
+      alert(extractErrorMessage(err, "Failed to submit vote."));
     } finally {
       setSubmittingVote(false);
     }
   }
+
+  const canPrev = page > 1 && !loading;
+  const canNext = serverPaginated && page < totalPages && !loading;
 
   return (
     <div>
@@ -171,14 +283,14 @@ export default function ReviewQueue() {
           { id: "pending",  label: "Pending",  count: pendingCount },
           { id: "resolved", label: "Resolved", count: resolvedCount },
         ].map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)}
+          <button key={t.id} onClick={() => changeTab(t.id)}
             style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 14px", fontSize: "12px", fontWeight: 500, background: "none", border: "none", cursor: "pointer", borderBottom: tab === t.id ? "2px solid #3b82f6" : "2px solid transparent", color: tab === t.id ? "#3b82f6" : "#4b5563" }}>
             {t.label}
             {t.count > 0 && <span style={{ padding: "1px 6px", borderRadius: "999px", fontSize: "9px", fontWeight: 700, background: "#ef4444", color: "#fff" }}>{t.count}</span>}
           </button>
         ))}
         <button
-          onClick={loadReports}
+          onClick={() => loadReports()}
           disabled={loading}
           style={{ marginLeft: "auto", padding: "6px 12px", fontSize: "11px", fontWeight: 600, background: "none", border: "1px solid #1a1a2a", borderRadius: "8px", color: loading ? "#374151" : "#9ca3af", cursor: loading ? "not-allowed" : "pointer" }}
         >
@@ -192,10 +304,10 @@ export default function ReviewQueue() {
         </div>
       )}
 
-      {showSuccess && (
+      {successMessage && (
         <div style={{ marginBottom: "16px", padding: "12px 16px", borderRadius: "10px", fontSize: "13px", fontWeight: 500, background: "#0a1a12", border: "1px solid #22c55e40", color: "#22c55e", display: "flex", alignItems: "center", gap: "10px" }}>
           <CheckIcon color="#22c55e" />
-          Vote submitted successfully.
+          {successMessage}
         </div>
       )}
 
@@ -213,14 +325,14 @@ export default function ReviewQueue() {
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0 ? (
+            {visibleRows.length === 0 ? (
               <tr>
                 <td colSpan={9} style={{ padding: "40px 20px", textAlign: "center", fontSize: "12px", color: "#4b5563" }}>
                   {loading ? "Loading reports…" : "No reports in this view."}
                 </td>
               </tr>
             ) : (
-              filtered.map((row) => (
+              visibleRows.map((row) => (
                 <tr key={row.id} style={{ borderBottom: "1px solid #13131e" }}>
                   <td style={{ padding: "12px 20px", fontSize: "12px", color: "#3b82f6", fontFamily: "'JetBrains Mono',monospace" }}>{row.id.slice(0, 12)}</td>
                   <td style={{ padding: "12px 20px", fontSize: "12px", color: "#fff", fontFamily: "'JetBrains Mono',monospace" }}>{row.number}</td>
@@ -237,7 +349,7 @@ export default function ReviewQueue() {
                   </td>
                   <td style={{ padding: "12px 20px" }}>
                     {row.isUnresolved ? (
-                      <button onClick={() => setVoteModal(row)}
+                      <button onClick={() => openVoteModal(row)}
                         style={{ fontSize: "11px", fontWeight: 600, color: "#3b82f6", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
                         Vote →
                       </button>
@@ -250,6 +362,50 @@ export default function ReviewQueue() {
             )}
           </tbody>
         </table>
+
+        {/* Pagination footer */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "12px", padding: "12px 20px", borderTop: "1px solid #1a1a2a" }}>
+          <span style={{ fontSize: "11px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace" }}>
+            {totalItems === 0 ? "0 reports" : `${rangeFrom}–${rangeTo} of ${totalItems}`}
+          </span>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+            {serverPaginated && (
+              <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#4b5563" }}>
+                Per page
+                <select
+                  value={limit}
+                  onChange={(e) => changePageSize(Number(e.target.value))}
+                  style={{ padding: "4px 8px", fontSize: "11px", borderRadius: "6px", background: "#080810", border: "1px solid #1a1a28", color: "#9ca3af", outline: "none" }}
+                >
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <option key={size} value={size}>{size}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={!canPrev}
+                style={{ padding: "6px 12px", fontSize: "11px", fontWeight: 600, background: "none", border: "1px solid #1a1a2a", borderRadius: "8px", color: canPrev ? "#9ca3af" : "#374151", cursor: canPrev ? "pointer" : "not-allowed" }}
+              >
+                ← Prev
+              </button>
+              <span style={{ fontSize: "11px", color: "#6b7280", fontFamily: "'JetBrains Mono',monospace" }}>
+                Page {page} / {totalPages}
+              </span>
+              <button
+                onClick={() => setPage((p) => p + 1)}
+                disabled={!canNext}
+                style={{ padding: "6px 12px", fontSize: "11px", fontWeight: 600, background: "none", border: "1px solid #1a1a2a", borderRadius: "8px", color: canNext ? "#9ca3af" : "#374151", cursor: canNext ? "pointer" : "not-allowed" }}
+              >
+                Next →
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
 
       {voteModal && (
@@ -326,7 +482,7 @@ export default function ReviewQueue() {
                 </div>
               </div>
 
-              {voteModal.evidenceImage && (
+              {voteModal.evidenceImage ? (
                 <div style={{ marginBottom: "16px" }}>
                   <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>
                     SCREENSHOT EVIDENCE
@@ -335,7 +491,16 @@ export default function ReviewQueue() {
                     <img src={voteModal.evidenceImage} alt="Reported screenshot" style={{ maxWidth: "100%", maxHeight: "260px", objectFit: "contain" }} />
                   </div>
                 </div>
-              )}
+              ) : voteModal.hasEvidenceImage ? (
+                <div style={{ marginBottom: "16px" }}>
+                  <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>
+                    SCREENSHOT EVIDENCE
+                  </div>
+                  <div style={{ padding: "24px 12px", borderRadius: "8px", textAlign: "center", fontSize: "11px", background: "#080810", border: "1px solid #13131e", color: "#4b5563" }}>
+                    {detailLoading ? "Loading screenshot…" : "Screenshot could not be loaded."}
+                  </div>
+                </div>
+              ) : null}
 
               {voteModal.evidenceText && (
                 <div style={{ marginBottom: "16px" }}>

@@ -50,13 +50,44 @@ const LogoutIcon = ({ color }) => (
   </svg>
 );
 
+/**
+ * Safely derives the avatar initials. Never throws, whatever shape `user`
+ * has (null, missing name, non-string fields, extra whitespace).
+ *   1. an explicit string `user.initials`
+ *   2. first letters of up to two words of `user.name`
+ *   3. first two characters of `user.email`
+ *   4. "??"
+ */
+function deriveInitials(user) {
+  if (typeof user?.initials === 'string' && user.initials.trim()) {
+    return user.initials.trim().slice(0, 2).toUpperCase();
+  }
+
+  if (typeof user?.name === 'string' && user.name.trim()) {
+    return user.name
+      .trim()
+      .split(/\s+/)
+      .map((w) => w[0])
+      .join('')
+      .slice(0, 2)
+      .toUpperCase();
+  }
+
+  if (typeof user?.email === 'string' && user.email.trim()) {
+    return user.email.trim().slice(0, 2).toUpperCase();
+  }
+
+  return "??";
+}
+
 export default function Sidebar({ isOpen, onClose }) {
   const { user, role, logout } = useAuth();
-  const [activeTab, setActiveTab] = useState("dashboard");
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [badges, setBadges] = useState({});
   const navigate = useNavigate();
   const location = useLocation();
+
+  const initials = deriveInitials(user);
 
   const loadBadges = useCallback(async () => {
     if (!role) return;
@@ -124,6 +155,12 @@ export default function Sidebar({ isOpen, onClose }) {
 
   const NAV = getNavItems();
 
+  // Single source of truth for the highlighted item: the current URL.
+  // (Previously a click-set `activeTab` state fought with NavLink's own
+  // isActive, so a direct load of /officer/queue highlighted "Dashboard".)
+  const isItemActive = (item) =>
+    location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
+
   return (
     <>
       <aside
@@ -165,35 +202,37 @@ export default function Sidebar({ isOpen, onClose }) {
         </div>
 
         <nav style={{ flex: 1, padding: "4px 12px", overflowY: "auto" }}>
-          {NAV.map(item => (
-            <NavLink
-              key={item.id}
-              to={item.to}
-              onClick={() => {
-                setActiveTab(item.id);
-                if (onClose) onClose();
-              }}
-              style={({ isActive }) => ({
-                width: "100%", display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px", borderRadius: "8px", marginBottom: "2px",
-                background: isActive || activeTab === item.id ? `${roleColor}18` : "transparent",
-                border: isActive || activeTab === item.id ? `1px solid ${roleColor}30` : "1px solid transparent",
-                textDecoration: "none", cursor: "pointer", transition: "all 0.2s ease",
-              })}
-            >
-              <item.Icon color={activeTab === item.id ? roleColor : "#4b5563"} />
-              <span style={{ flex: 1, fontSize: "12px", fontWeight: activeTab === item.id ? 600 : 500, color: activeTab === item.id ? "#fff" : "#6b7280", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
-              {item.badge > 0 && (
-                <span style={{ fontSize: "9px", fontWeight: 700, padding: "2px 5px", borderRadius: "999px", background: "#ef4444", color: "#fff", minWidth: "18px", textAlign: "center" }}>
-                  {item.badge}
-                </span>
-              )}
-            </NavLink>
-          ))}
+          {NAV.map(item => {
+            const active = isItemActive(item);
+            return (
+              <NavLink
+                key={item.id}
+                to={item.to}
+                onClick={() => {
+                  if (onClose) onClose();
+                }}
+                style={{
+                  width: "100%", display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px", borderRadius: "8px", marginBottom: "2px",
+                  background: active ? `${roleColor}18` : "transparent",
+                  border: active ? `1px solid ${roleColor}30` : "1px solid transparent",
+                  textDecoration: "none", cursor: "pointer", transition: "all 0.2s ease",
+                }}
+              >
+                <item.Icon color={active ? roleColor : "#4b5563"} />
+                <span style={{ flex: 1, fontSize: "12px", fontWeight: active ? 600 : 500, color: active ? "#fff" : "#6b7280", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
+                {item.badge > 0 && (
+                  <span style={{ fontSize: "9px", fontWeight: 700, padding: "2px 5px", borderRadius: "999px", background: "#ef4444", color: "#fff", minWidth: "18px", textAlign: "center" }}>
+                    {item.badge}
+                  </span>
+                )}
+              </NavLink>
+            );
+          })}
         </nav>
 
         <div style={{ padding: "12px", borderTop: "1px solid #0f0f1a" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
-            <div style={{ width: "28px", height: "28px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "11px", fontWeight: 700, flexShrink: 0, background: `${roleColor}25`, color: roleColor, border: `1px solid ${roleColor}40` }}>{user?.initials ?? "SA"}</div>
+            <div style={{ width: "28px", height: "28px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "11px", fontWeight: 700, flexShrink: 0, background: `${roleColor}25`, color: roleColor, border: `1px solid ${roleColor}40` }}>{initials}</div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: "11px", fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.name ?? "Platform Admin"}</div>
               <div style={{ fontSize: "9px", color: "#374151", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.email ?? "admin@sentinelph.gov.ph"}</div>
