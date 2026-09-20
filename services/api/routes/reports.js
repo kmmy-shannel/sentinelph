@@ -9,7 +9,7 @@ const {
   requireJurisdictionMatch,
 } = require('../middleware/rbac');
 const { reportSubmissionLimiter } = require('../middleware/rateLimiter');
-const { analyzeLimiter, ocrLimiter } = require('../middleware/rateLimiters');
+const { analyzeLimiter, ocrLimiter } = require('../middleware/rateLimiter');
 const { asyncHandler, ApiError } = require('../middleware/errorHandler');
 
 const Report = require('../models/Report');

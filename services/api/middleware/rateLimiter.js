@@ -1,4 +1,4 @@
-// services/api/middleware/rateLimiters.js
+// services/api/middleware/rateLimiter.js
 'use strict';
 
 const rateLimit = require('express-rate-limit');
@@ -24,14 +24,22 @@ function buildLimiter({ windowMs, max, code, message }) {
 }
 
 /**
- * POST /api/v1/reports/analyze - Layer 1 instant AI preview.
+ * POST /api/v1/reports — citizen report submission.
+ * Default: 20 submissions per hour per IP. Override with
+ * REPORT_SUBMIT_RATE_LIMIT_PER_HOUR.
+ */
+const reportSubmissionLimiter = buildLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: readPositiveInt('REPORT_SUBMIT_RATE_LIMIT_PER_HOUR', 20),
+  code: 'REPORT_SUBMIT_RATE_LIMITED',
+  message: 'Too many report submissions. Please try again later.',
+});
+
+/**
+ * POST /api/v1/reports/analyze — Layer 1 instant AI preview.
  * Each call hits the metered FastAPI / Hugging Face backend.
  * Default: 10 requests per minute per client. Override with
  * AI_ANALYZE_RATE_LIMIT_PER_MIN.
- *
- * NOTE: keyed by req.ip (express-rate-limit default). Behind Render/Vercel
- * you MUST call `app.set('trust proxy', 1)` in the Express bootstrap,
- * otherwise every client shares the proxy's IP and one global bucket.
  */
 const analyzeLimiter = buildLimiter({
   windowMs: 60 * 1000,
@@ -41,7 +49,7 @@ const analyzeLimiter = buildLimiter({
 });
 
 /**
- * POST /api/v1/reports/ocr - screenshot OCR (most expensive AI call).
+ * POST /api/v1/reports/ocr — screenshot OCR (most expensive AI call).
  * Default: 10 requests per minute per client. Override with
  * AI_OCR_RATE_LIMIT_PER_MIN.
  */
@@ -53,6 +61,7 @@ const ocrLimiter = buildLimiter({
 });
 
 module.exports = {
+  reportSubmissionLimiter,
   analyzeLimiter,
   ocrLimiter,
 };
