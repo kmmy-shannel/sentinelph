@@ -24,9 +24,24 @@ function buildLimiter({ windowMs, max, code, message }) {
 }
 
 /**
+ * Global fallback limiter, applied to every request in server.js.
+ * Wide window, generous cap — it exists to stop obvious abuse, not to
+ * throttle normal traffic. Specific routes layer their own limiters on
+ * top of this one.
+ * Default: 300 requests per 15 minutes per client.
+ * Override with GLOBAL_RATE_LIMIT_PER_15MIN.
+ */
+const globalLimiter = buildLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: readPositiveInt('GLOBAL_RATE_LIMIT_PER_15MIN', 300),
+  code: 'GLOBAL_RATE_LIMITED',
+  message: 'Too many requests. Please slow down and try again shortly.',
+});
+
+/**
  * POST /api/v1/reports — citizen report submission.
- * Default: 20 submissions per hour per IP. Override with
- * REPORT_SUBMIT_RATE_LIMIT_PER_HOUR.
+ * Default: 20 submissions per hour per client.
+ * Override with REPORT_SUBMIT_RATE_LIMIT_PER_HOUR.
  */
 const reportSubmissionLimiter = buildLimiter({
   windowMs: 60 * 60 * 1000,
@@ -38,8 +53,8 @@ const reportSubmissionLimiter = buildLimiter({
 /**
  * POST /api/v1/reports/analyze — Layer 1 instant AI preview.
  * Each call hits the metered FastAPI / Hugging Face backend.
- * Default: 10 requests per minute per client. Override with
- * AI_ANALYZE_RATE_LIMIT_PER_MIN.
+ * Default: 10 requests per minute per client.
+ * Override with AI_ANALYZE_RATE_LIMIT_PER_MIN.
  */
 const analyzeLimiter = buildLimiter({
   windowMs: 60 * 1000,
@@ -50,8 +65,8 @@ const analyzeLimiter = buildLimiter({
 
 /**
  * POST /api/v1/reports/ocr — screenshot OCR (most expensive AI call).
- * Default: 10 requests per minute per client. Override with
- * AI_OCR_RATE_LIMIT_PER_MIN.
+ * Default: 10 requests per minute per client.
+ * Override with AI_OCR_RATE_LIMIT_PER_MIN.
  */
 const ocrLimiter = buildLimiter({
   windowMs: 60 * 1000,
@@ -61,6 +76,7 @@ const ocrLimiter = buildLimiter({
 });
 
 module.exports = {
+  globalLimiter,
   reportSubmissionLimiter,
   analyzeLimiter,
   ocrLimiter,
