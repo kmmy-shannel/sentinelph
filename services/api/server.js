@@ -8,6 +8,7 @@ const morgan = require('morgan');
 const mongoSanitize = require('express-mongo-sanitize');
 
 const { connectDB } = require('./config/db');
+const { initFirebase } = require('./config/firebase');
 const { globalLimiter } = require('./middleware/rateLimiter');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 
@@ -48,9 +49,24 @@ const allowedOrigins = [
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
+      // No origin = server-to-server or curl. Allow.
+      if (!origin) return callback(null, true);
+
+      // Explicit allowlist from env (put your production URL here,
+      // e.g. https://sentinelph-web-gamma.vercel.app).
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+
+      // Any Vercel deployment under the comsec-1 team (prod + preview + git-branch URLs).
+      // [a-z0-9-]+ allows hyphens, e.g. sentinelph-web-git-main-comsec-1.vercel.app
+      if (/^https:\/\/sentinelph-[a-z0-9-]+-comsec-1\.vercel\.app$/.test(origin)) {
         return callback(null, true);
       }
+
+      // Local dev.
+      if (/^http:\/\/localhost:\d+$/.test(origin)) {
+        return callback(null, true);
+      }
+
       return callback(new Error(`CORS blocked for origin: ${origin}`));
     },
     credentials: true,
@@ -100,6 +116,21 @@ app.use(errorHandler);
 async function start() {
   try {
     await connectDB();
+
+    // Validate Firebase Admin credentials at startup so a bad key shows
+    // up in the logs immediately instead of on the first request.
+    // Non-fatal by default so the rest of the API stays up.
+    // Set FIREBASE_STRICT=true to make a bad key fail the deploy.
+    try {
+      initFirebase();
+      console.log('[Firebase] Admin SDK initialized.');
+    } catch (fbErr) {
+      console.error('[Firebase] Admin SDK failed to initialize:', fbErr.message);
+      if (process.env.FIREBASE_STRICT === 'true') {
+        throw fbErr;
+      }
+      console.error('[Firebase] Continuing without it. Authenticated routes will return 500 until fixed.');
+    }
 
     app.listen(PORT, () => {
       console.log(`[SentinelPH API] Listening on port ${PORT} (${process.env.NODE_ENV || 'development'})`);
