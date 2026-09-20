@@ -29,51 +29,54 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 
 // ------------------------------------------------------------------
+// CORS Configuration
+// ------------------------------------------------------------------
+const allowedOrigins = [
+  'https://sentinelph-web-gamma.vercel.app',
+  ...(process.env.CLIENT_ORIGIN_WEB || '').split(','),
+  ...(process.env.CLIENT_ORIGIN_MOBILE || '').split(','),
+]
+  .map((o) => o.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+
+const vercelPattern = /^https:\/\/sentinelph-[a-z0-9-]+\.vercel\.app$/;
+const localPattern = /^http:\/\/localhost:\d+$/;
+
+const corsOptions = {
+  origin(origin, callback) {
+    // No origin = server-to-server or curl.
+    if (!origin) return callback(null, true);
+
+    if (
+      allowedOrigins.includes(origin) ||
+      vercelPattern.test(origin) ||
+      localPattern.test(origin)
+    ) {
+      return callback(null, true);
+    }
+
+    console.warn(`[CORS] Blocked origin: ${origin}`);
+    return callback(null, false); // reject without throwing a 500
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+};
+
+// ------------------------------------------------------------------
 // Security & parsing middleware
 // ------------------------------------------------------------------
 app.set('trust proxy', 1);
+
+// CORS must come first so every response (including preflights,
+// rate-limit rejections, and errors) carries the CORS headers.
+app.use(cors(corsOptions));
+
 app.use(helmet());
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 app.use(mongoSanitize());
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
-
-// ------------------------------------------------------------------
-// CORS Configuration
-// ------------------------------------------------------------------
-const allowedOrigins = [
-  process.env.CLIENT_ORIGIN_WEB,
-  process.env.CLIENT_ORIGIN_MOBILE,
-].filter(Boolean);
-
-app.use(
-  cors({
-    origin(origin, callback) {
-      // No origin = server-to-server or curl. Allow.
-      if (!origin) return callback(null, true);
-
-      // Explicit allowlist from env (put your production URL here,
-      // e.g. https://sentinelph-web-gamma.vercel.app).
-      if (allowedOrigins.includes(origin)) return callback(null, true);
-
-      // Any Vercel deployment under the comsec-1 team (prod + preview + git-branch URLs).
-      // [a-z0-9-]+ allows hyphens, e.g. sentinelph-web-git-main-comsec-1.vercel.app
-      if (/^https:\/\/sentinelph-[a-z0-9-]+-comsec-1\.vercel\.app$/.test(origin)) {
-        return callback(null, true);
-      }
-
-      // Local dev.
-      if (/^http:\/\/localhost:\d+$/.test(origin)) {
-        return callback(null, true);
-      }
-
-      return callback(new Error(`CORS blocked for origin: ${origin}`));
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-  })
-);
 
 // ------------------------------------------------------------------
 // Global rate limiting
