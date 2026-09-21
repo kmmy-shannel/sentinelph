@@ -51,31 +51,14 @@ function CameraIcon({ size = 16, color = 'currentColor' }) {
   );
 }
 
-function MicIcon({ size = 16, color = 'currentColor' }) {
-  return (
-    <Svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-      <Path
-        d="M5.5 1.5h5v8a2.5 2.5 0 01-5 0v-8z"
-        stroke={color}
-        strokeWidth={1.2}
-      />
-      <Path
-        d="M3 8.5c0 2.76 2.24 5 5 5s5-2.24 5-5"
-        stroke={color}
-        strokeWidth={1.2}
-        strokeLinecap="round"
-      />
-      <Path d="M8 13.5V15" stroke={color} strokeWidth={1.2} strokeLinecap="round" />
-    </Svg>
-  );
-}
+
 
 /**
  * @param {() => void} onQuickReport - navigate to ReportScreen step 1
  * @param {() => void} onCameraShortcut - navigate to ReportScreen with camera pre-opened
- * @param {() => void} onMicShortcut - navigate to ReportScreen with voice recorder pre-opened
+
  */
-export default function QuickReportCard({ onQuickReport, onCameraShortcut, onMicShortcut }) {
+export default function QuickReportCard({ onQuickReport, onCameraShortcut }) {
   return (
     <View
       className="rounded-2xl p-4"
@@ -109,23 +92,16 @@ export default function QuickReportCard({ onQuickReport, onCameraShortcut, onMic
           <Text style={{ color: 'white', fontSize: 13, fontWeight: '600' }}>Quick Report</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
+                <TouchableOpacity
           onPress={onCameraShortcut}
           activeOpacity={0.85}
-          className="w-11 h-10 rounded-xl items-center justify-center"
+          className="w-14 h-10 rounded-xl items-center justify-center"
           style={{ backgroundColor: 'rgba(148,163,184,0.1)', borderWidth: 1, borderColor: 'rgba(148,163,184,0.15)' }}
         >
           <CameraIcon size={16} color="#94a3b8" />
         </TouchableOpacity>
 
-        <TouchableOpacity
-          onPress={onMicShortcut}
-          activeOpacity={0.85}
-          className="w-11 h-10 rounded-xl items-center justify-center"
-          style={{ backgroundColor: 'rgba(148,163,184,0.1)', borderWidth: 1, borderColor: 'rgba(148,163,184,0.15)' }}
-        >
-          <MicIcon size={16} color="#94a3b8" />
-        </TouchableOpacity>
+       
       </View>
     </View>
   );

@@ -2,12 +2,27 @@
 //
 // Coordinates flushing the local reports_outbox to
 // POST /api/v1/reports whenever connectivity is available.
+//
+// FIX (offline sender/region loss — CRITICAL): previously this file only
+// forwarded scamType, content, evidenceFiles, evidenceImage, nullifier,
+// zkpHash, and clientCreatedAt to the server. `senderNumber` was never
+// sent at all, and `location` only ever carried latitude/longitude (never
+// region), and only when both were non-null. Since reportController.js
+// requires a sender (400 SENDER_REQUIRED otherwise), every offline-queued
+// report was guaranteed to fail sync permanently — it would just retry
+// until sync_attempts hit MAX_SYNC_ATTEMPTS and then silently stop.
+// Both senderNumber and region (now read from sqlite.js's new columns via
+// getPendingReports()) are forwarded on every sync attempt, in the same
+// shape ReportScreen.js already sends on the live/online submission path
+// (a `location` object carrying region, plus a top-level `region` field —
+// reportController.js accepts either).
 
 import NetInfo from '@react-native-community/netinfo';
 import api, { OfflineError } from '../lib/api';
 import { getPendingReports, markReportSynced, markReportSyncFailed } from './sqlite';
 
 const DEFAULT_SCAM_TYPE = 'UNKNOWN';
+const DEFAULT_REGION = 'UNCLASSIFIED';
 
 const parsedMaxAttempts = parseInt(process.env.EXPO_PUBLIC_SQLITE_MAX_SYNC_ATTEMPTS, 10);
 const MAX_SYNC_ATTEMPTS = Number.isFinite(parsedMaxAttempts) ? parsedMaxAttempts : 5;
@@ -35,6 +50,16 @@ function normalizeScamType(value) {
   if (typeof value !== 'string') return DEFAULT_SCAM_TYPE;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : DEFAULT_SCAM_TYPE;
+}
+
+// FIX: mirrors normalizeScamType()'s defensive pattern for region, so a
+// row with a blank/legacy value still forwards something the officer
+// queue's region filter can match against — 'UNCLASSIFIED' is the same
+// sentinel reportController.js falls back to server-side.
+function normalizeRegion(value) {
+  if (typeof value !== 'string') return DEFAULT_REGION;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : DEFAULT_REGION;
 }
 
 export function initSyncListener() {
@@ -88,16 +113,28 @@ export async function syncNow() {
 
       try {
         const scamType = normalizeScamType(report.scamType);
+        const region = normalizeRegion(report.region);
 
         const response = await api.post('/api/v1/reports', {
           scamType,
+          // FIX: previously omitted entirely — this is what caused every
+          // offline report to be rejected with 400 SENDER_REQUIRED.
+          senderNumber: report.senderNumber || undefined,
           content: report.content,
           evidenceFiles: report.evidenceFiles,
           evidenceImage: report.evidenceImage,
-          location:
-            report.latitude != null && report.longitude != null
-              ? { latitude: report.latitude, longitude: report.longitude }
-              : undefined,
+          // FIX: always send a location object carrying `region`, not just
+          // lat/lng, and not gated on both being present — matches the
+          // shape ReportScreen.js already sends on the online path.
+          location: {
+            latitude: report.latitude ?? null,
+            longitude: report.longitude ?? null,
+            region,
+          },
+          // FIX: also send region at the top level, mirroring
+          // ReportScreen.js's online payload — reportController.js
+          // accepts either location.region or body.region.
+          region,
           nullifier: report.nullifier,
           zkpHash: report.zkpHash,
           clientCreatedAt: report.createdAt,

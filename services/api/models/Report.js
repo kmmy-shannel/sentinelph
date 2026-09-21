@@ -5,6 +5,32 @@ const { computeHash } = require('../utils/hashChain');
 
 const { Schema } = mongoose;
 
+// Workflow status buckets shared by the vote pipeline, the review-queue
+// listing, and the blacklist promotion logic.
+const OPEN_STATUSES = ['pending', 'under_review', 'one_approval'];
+const RESOLVED_STATUSES = ['blacklisted', 'approved', 'rejected'];
+const CONSENSUS_REQUIRED = 2;
+
+function httpError(statusCode, code, message) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  err.code = code;
+  return err;
+}
+
+/**
+ * The MongoDB driver's findOneAndUpdate returns the document directly in
+ * driver v6+, but a `{ value, ok, lastErrorObject }` envelope in v4/v5.
+ * Normalize both shapes to "document or null".
+ */
+function unwrapFindOneAndUpdate(result) {
+  if (!result) return null;
+  const isEnvelope =
+    Object.prototype.hasOwnProperty.call(result, 'value') &&
+    Object.prototype.hasOwnProperty.call(result, 'ok');
+  return isEnvelope ? result.value || null : result;
+}
+
 /**
  * AiFlagSchema - Phase 4 AI Microservice Advisory Assessment
  * Stores the response metadata from the FastAPI AI Scam Detection
@@ -185,6 +211,20 @@ const ReportSchema = new Schema(
     zkpHash: { type: String, trim: true, default: null },
     aiScore: { type: Number, min: 0, max: 1, default: null },
 
+    // Pseudonymous reporter identifier: HMAC-SHA256(CITIZEN_SALT, uid || ip).
+    // - NOT part of getCanonicalPayload(), so the hash chain is unaffected.
+    // - Indexed so per-citizen rate limiting stays a cheap count query.
+    // - select:false keeps it out of every default query result (officer
+    //   queue, exports, audit views); it must be requested explicitly.
+    citizenHash: {
+      type: String,
+      trim: true,
+      index: true,
+      immutable: true,
+      select: false,
+      default: null,
+    },
+
     // ---- Workflow state ----
     // 'pending' → 'under_review' | 'one_approval' → 'blacklisted' | 'rejected'
     // 'approved' is retained as an alias for 'blacklisted' so the vote
@@ -248,7 +288,7 @@ ReportSchema.pre('save', function preSaveHashChain(next) {
     return next(
       new Error(
         'Report documents are immutable and cannot be modified after creation. ' +
-          'Use Report.applyWorkflowUpdate() or Report.collection.updateOne() for ' +
+          'Use Report.castVote() or Report.collection.updateOne() for ' +
           'sanctioned workflow-field changes.'
       )
     );
@@ -288,10 +328,143 @@ ReportSchema.pre('findOneAndDelete', blockDirectMutation);
 ReportSchema.pre('findOneAndRemove', blockDirectMutation);
 
 /**
- * Sanctioned exception for Two-Officer workflow updates.
- * Use this from the vote route (instead of save()) to persist
- * votes / consensusState / status without tripping the append-only guard.
+ * CANONICAL VOTE ENTRY POINT (Two-Officer Consensus).
  *
+ * Records one officer's vote on this report and recomputes the consensus
+ * counters and workflow status in a SINGLE atomic update (an aggregation-
+ * pipeline update, MongoDB 4.2+), so two officers voting at the same
+ * instant can never overwrite each other's vote or leave counters/status
+ * out of sync.
+ *
+ * Guards enforced inside the same atomic filter:
+ *   - the report must still be open (pending / under_review / one_approval)
+ *   - the officer must not already appear in `votes`
+ *
+ * Status rules (identical to the legacy BlacklistEntry state machine):
+ *   approvals >= 2 -> 'blacklisted'
+ *   rejections >= 2 -> 'rejected'
+ *   approvals === 1 -> 'one_approval'
+ *   otherwise       -> 'under_review'
+ *
+ * Returns the updated report document (plain object). Throws an Error
+ * with .statusCode / .code on 400, 404 and 409 conditions.
+ *
+ * This bypasses Mongoose middleware on purpose (it is the sanctioned
+ * exception to the append-only guard) and only ever touches the
+ * workflow fields: votes, consensusState, status.
+ */
+ReportSchema.statics.castVote = async function castVote(
+  reportId,
+  { userId, role = 'officer', decision, comment = '' } = {}
+) {
+  if (!reportId || typeof reportId !== 'string') {
+    throw httpError(400, 'VALIDATION_ERROR', 'A valid reportId is required to vote.');
+  }
+  if (!userId || typeof userId !== 'string') {
+    throw httpError(400, 'VALIDATION_ERROR', 'A voter identity is required to register a vote.');
+  }
+  if (!['approve', 'reject'].includes(decision)) {
+    throw httpError(400, 'VALIDATION_ERROR', "decision must be either 'approve' or 'reject'.");
+  }
+
+  const collection = mongoose.model('Report').collection;
+
+  const vote = {
+    userId,
+    role,
+    decision,
+    comment: String(comment || '').trim().slice(0, 2000),
+    votedAt: new Date(),
+  };
+
+  // $literal is REQUIRED around the vote: inside an aggregation pipeline a
+  // string beginning with "$" (e.g. an officer comment of "$100 scam") would
+  // otherwise be parsed as a field path / expression.
+  const pipeline = [
+    {
+      $set: {
+        votes: {
+          $concatArrays: [{ $ifNull: ['$votes', []] }, [{ $literal: vote }]],
+        },
+      },
+    },
+    {
+      $set: {
+        'consensusState.approvals': {
+          $size: {
+            $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'approve'] } },
+          },
+        },
+        'consensusState.rejections': {
+          $size: {
+            $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'reject'] } },
+          },
+        },
+        'consensusState.required': CONSENSUS_REQUIRED,
+      },
+    },
+    {
+      $set: {
+        status: {
+          $switch: {
+            branches: [
+              { case: { $gte: ['$consensusState.approvals', CONSENSUS_REQUIRED] }, then: 'blacklisted' },
+              { case: { $gte: ['$consensusState.rejections', CONSENSUS_REQUIRED] }, then: 'rejected' },
+              { case: { $eq: ['$consensusState.approvals', 1] }, then: 'one_approval' },
+            ],
+            default: 'under_review',
+          },
+        },
+      },
+    },
+  ];
+
+  const result = await collection.findOneAndUpdate(
+    {
+      reportId,
+      status: { $in: OPEN_STATUSES },
+      'votes.userId': { $ne: userId },
+    },
+    pipeline,
+    { returnDocument: 'after' }
+  );
+
+  const updated = unwrapFindOneAndUpdate(result);
+  if (updated) return updated;
+
+  // No document matched — work out why so the caller gets a precise error.
+  const existing = await collection.findOne(
+    { reportId },
+    { projection: { status: 1, votes: 1 } }
+  );
+
+  if (!existing) {
+    throw httpError(404, 'NOT_FOUND', 'Report not found.');
+  }
+  if (!OPEN_STATUSES.includes(existing.status)) {
+    throw httpError(
+      409,
+      'REPORT_FINALIZED',
+      `This report is already finalized as "${existing.status}" and no longer accepts votes.`
+    );
+  }
+  if (Array.isArray(existing.votes) && existing.votes.some((v) => v.userId === userId)) {
+    throw httpError(
+      409,
+      'DUPLICATE_VOTE',
+      'You have already voted on this report. A single officer cannot vote twice.'
+    );
+  }
+
+  throw httpError(409, 'VOTE_CONFLICT', 'The vote could not be recorded. Please refresh and try again.');
+};
+
+/**
+ * @deprecated Use Report.castVote(). This full-array overwrite is not
+ * concurrency-safe (two simultaneous voters can clobber each other) and is
+ * retained only for backward compatibility with older scripts.
+ *
+ * Sanctioned exception for Two-Officer workflow updates.
  * NOTE: This bypasses Mongoose middleware and writes directly to the
  * underlying collection — only workflow fields are allowed to change.
  */
@@ -348,4 +521,11 @@ ReportSchema.statics.updateStatus = async function updateStatus(reportId, newSta
   );
 };
 
-module.exports = mongoose.model('Report', ReportSchema);
+const ReportModel = mongoose.model('Report', ReportSchema);
+
+// Shared constants, exposed so controllers never re-declare the buckets.
+ReportModel.OPEN_STATUSES = OPEN_STATUSES;
+ReportModel.RESOLVED_STATUSES = RESOLVED_STATUSES;
+ReportModel.CONSENSUS_REQUIRED = CONSENSUS_REQUIRED;
+
+module.exports = ReportModel;

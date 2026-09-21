@@ -7,10 +7,20 @@ const mongoose = require('mongoose');
 const Report = require('../models/Report');
 const { getAiScamAssessment, forwardImageForOcr } = require('../utils/aiServiceClient');
 const { getGenesisHash } = require('../utils/hashChain');
+const { computeCitizenHash } = require('../utils/citizenHash');
 
 const DEFAULT_SCAM_TYPE = 'UNKNOWN';
 const PENDING_STATUS = 'pending';
 const SCREENSHOT_PLACEHOLDER = '[screenshot attached]';
+
+// Sybil / spam guard: max reports one pseudonymous citizen may file per
+// rolling hour. Enforced against the database (not process memory), so it
+// holds across restarts and multiple API instances.
+const CITIZEN_RATE_WINDOW_MS = 60 * 60 * 1000;
+const CITIZEN_MAX_REPORTS_PER_WINDOW = (() => {
+  const parsed = parseInt(process.env.CITIZEN_MAX_REPORTS_PER_HOUR, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 20;
+})();
 
 function normalizeScamType(value) {
   if (typeof value !== 'string') return DEFAULT_SCAM_TYPE;
@@ -46,14 +56,15 @@ async function createReport(req, res, next) {
     const sender =
       body.sender ?? body.senderNumber ?? body.reportedNumber ?? body.scammerNumber ?? null;
     const scamType = normalizeScamType(body.scamType ?? body.category);
-        // Sender is required (Option A). Return 400 with a clear message
+
+    // Sender is required (Option A). Return 400 with a clear message
     // instead of letting Mongoose throw a raw 500 ValidationError.
     if (!sender || typeof sender !== 'string' || sender.trim().length === 0) {
       return res.status(400).json({
         error: 'SENDER_REQUIRED',
         message: 'A sender number or header is required to submit a report.',
       });
-    }  
+    }
     const nullifier = body.nullifier ?? body.nullifierHash ?? null;
     const zkpHash = body.zkpHash ?? null;
 
@@ -70,6 +81,31 @@ async function createReport(req, res, next) {
       return res.status(400).json({
         error: 'A report must include content and/or a screenshot.',
       });
+    }
+
+    // ─── Pseudonymous citizen identity (Sybil prevention) ──────────────
+    // citizenHash = HMAC-SHA256(CITIZEN_SALT, req.user.uid || req.ip).
+    // The raw uid / IP is never stored; only the keyed hash is, which lets
+    // us rate-limit per citizen without a plain identity link in Report.
+    // The check runs BEFORE the AI call so a throttled citizen cannot burn
+    // metered FastAPI / Hugging Face quota.
+    const citizenHash = computeCitizenHash(req);
+
+    if (citizenHash) {
+      const windowStart = new Date(Date.now() - CITIZEN_RATE_WINDOW_MS);
+      const recentCount = await Report.countDocuments({
+        citizenHash,
+        createdAt: { $gte: windowStart },
+      });
+
+      if (recentCount >= CITIZEN_MAX_REPORTS_PER_WINDOW) {
+        res.set('Retry-After', String(Math.ceil(CITIZEN_RATE_WINDOW_MS / 1000)));
+        return res.status(429).json({
+          error: 'REPORT_RATE_LIMITED',
+          message:
+            'You have reached the hourly report limit. Please try again later.',
+        });
+      }
     }
 
     // ─── AI assessment (unchanged) ────────────────────────────────────
@@ -99,7 +135,7 @@ async function createReport(req, res, next) {
       aiFlag = normalizeAiFlag(await getAiScamAssessment({ text: content }));
     }
 
-     // ─── Location normalization ────────────────────────────────────────
+    // ─── Location normalization ────────────────────────────────────────
     // The mobile client sends latitude/longitude (from GPS) plus an
     // already-resolved `region` string (from the bundled bounding-box
     // resolver). We persist all three so:
@@ -132,7 +168,7 @@ async function createReport(req, res, next) {
       ? [body.evidenceFiles]
       : [];
 
-    // ─── NEW: fetch the chain tail so the required immutable fields ────
+    // ─── Fetch the chain tail so the required immutable fields ─────────
     // The Report model's `pre('save')` hook computes `hash` from
     // `previousHash` + the canonical payload, so we must set `previousHash`
     // and `sequence` BEFORE the first save. This mirrors exactly what
@@ -184,7 +220,11 @@ async function createReport(req, res, next) {
         aiFlag && typeof aiFlag.probabilityScore === 'number'
           ? aiFlag.probabilityScore
           : null,
-                  // Region always wins over any legacy `jurisdiction` field.
+
+      // Pseudonymous reporter identifier (not part of the hash payload).
+      citizenHash,
+
+      // Region always wins over any legacy `jurisdiction` field.
       // Priority: canonical location.region → legacy body.jurisdiction → UNCLASSIFIED.
       jurisdiction:
         (location && location.region) ||
@@ -209,6 +249,10 @@ async function createReport(req, res, next) {
     // computeHash + getGenesisHash utilities, so the chain stays valid
     // and `verifyReportChain` continues to pass.
 
+    // Never echo the pseudonymous identifier back to the client.
+    const reportPayload = report.toObject();
+    delete reportPayload.citizenHash;
+
     return res.status(201).json({
       message: 'Report created successfully.',
       reportId: report.reportId,
@@ -218,7 +262,7 @@ async function createReport(req, res, next) {
       sequence: report.sequence,
       hash: report.hash,
       previousHash: report.previousHash,
-      report,
+      report: reportPayload,
     });
   } catch (err) {
     return next(err);

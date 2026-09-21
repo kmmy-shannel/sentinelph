@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const { Schema } = mongoose;
 
-const USER_ROLES = ['citizen', 'officer', 'analyst', 'auditor', 'admin', 'superadmin'];
+const USER_ROLES = ['citizen', 'officer', 'admin', 'superadmin'];
 const USER_STATUSES = ['active', 'pending_activation', 'suspended'];
 
 const userSchema = new Schema(
