@@ -1,6 +1,7 @@
 {
   "name": "@sentinelph/api",
   "version": "1.0.0",
+  "private": true,
   "description": "SentinelPH Express API Gateway - Auth, RBAC, Hash-Chain Reports, Blacklist Governance",
   "main": "server.js",
   "type": "commonjs",
@@ -19,6 +20,7 @@
     "express": "^4.19.2",
     "express-mongo-sanitize": "^2.2.0",
     "express-rate-limit": "^7.4.0",
+    "express-validator": "^7.3.2",
     "firebase-admin": "^12.3.1",
     "helmet": "^7.1.0",
     "install": "^0.13.0",
@@ -26,6 +28,7 @@
     "morgan": "^1.10.0",
     "multer": "^2.4.0",
     "nodemailer": "^6.10.1",
+    "resend": "^6.28.1",
     "uuid": "^9.0.1"
   },
   "devDependencies": {
