@@ -32,6 +32,12 @@ export default function ResetPassword() {
 
   const token = searchParams.get('token') || '';
 
+  // Which flow brought the user here?
+  //   mode=activate  → officer invitation (heading: "Set Your Password")
+  //   (anything else) → forgot-password reset (heading: "Set a New Password")
+  const mode = searchParams.get('mode') || '';
+  const isActivate = mode === 'activate';
+
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
@@ -56,6 +62,18 @@ export default function ResetPassword() {
       setError('This reset link is invalid. Please request a new one.');
     }
   }, [token]);
+
+  // Headings driven by the flow
+  const heading = isActivate ? 'Set Your Password' : 'Set a New Password';
+  const subtitle = isActivate
+    ? 'Welcome to SentinelPH. Choose a strong password to activate your officer account.'
+    : "Choose a strong password you haven't used before.";
+  const successHeading = isActivate
+    ? 'Account activated'
+    : 'Password updated';
+  const successBody = isActivate
+    ? 'Your officer account is ready. Redirecting you to sign in…'
+    : 'Redirecting you to sign in…';
 
   const inputStyle = (name, isError = false) => ({
     width: '100%',
@@ -109,7 +127,6 @@ export default function ResetPassword() {
         overflow: 'hidden',
       }}
     >
-      {/* Grid + glow backdrop, matches Login.jsx */}
       <div
         style={{
           position: 'absolute',
@@ -190,10 +207,10 @@ export default function ResetPassword() {
                 letterSpacing: '-0.02em',
               }}
             >
-              Set a New Password
+              {heading}
             </h2>
             <p style={{ fontSize: '13px', color: '#4b5563', lineHeight: 1.6 }}>
-              Choose a strong password you haven&apos;t used before.
+              {subtitle}
             </p>
           </div>
 
@@ -222,11 +239,9 @@ export default function ResetPassword() {
                 <path d="M20 6L9 17l-5-5" />
               </svg>
               <div style={{ fontSize: '15px', fontWeight: 700, marginBottom: '6px' }}>
-                Password updated
+                {successHeading}
               </div>
-              <div style={{ fontSize: '13px', opacity: 0.85 }}>
-                Redirecting you to sign in…
-              </div>
+              <div style={{ fontSize: '13px', opacity: 0.85 }}>{successBody}</div>
             </div>
           ) : (
             <form onSubmit={handleSubmit}>
@@ -301,7 +316,6 @@ export default function ResetPassword() {
                   </button>
                 </div>
 
-                {/* Strength meter */}
                 {newPassword && (
                   <div style={{ marginTop: '10px' }}>
                     <div style={{ display: 'flex', gap: '4px' }}>
@@ -443,7 +457,13 @@ export default function ResetPassword() {
                     }}
                   />
                 )}
-                {loading ? 'Updating password…' : 'Update Password'}
+                {loading
+                  ? isActivate
+                    ? 'Activating…'
+                    : 'Updating password…'
+                  : isActivate
+                  ? 'Activate Account'
+                  : 'Update Password'}
               </button>
             </form>
           )}
