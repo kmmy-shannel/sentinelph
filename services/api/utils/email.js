@@ -1,28 +1,47 @@
-const nodemailer = require('nodemailer');
+// services/api/utils/email.js
+'use strict';
 
-let transporter = null;
+const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
 
-function getTransporter() {
-  if (transporter) {
-    return transporter;
-  }
+if (!APPS_SCRIPT_URL) {
+  console.warn(
+    '[email] APPS_SCRIPT_URL is not set — email sending will fail. ' +
+    'See the Google Apps Script setup instructions.'
+  );
+}
 
-  const user = process.env.SYSTEM_EMAIL_USER;
-  const pass = process.env.SYSTEM_EMAIL_PASS;
-
-  if (!user || !pass) {
+async function sendViaAppsScript({ to, subject, html, text = '' }) {
+  if (!APPS_SCRIPT_URL) {
     throw new Error(
-      'Email transporter is not configured. Set SYSTEM_EMAIL_USER and SYSTEM_EMAIL_PASS in .env ' +
-      '(use a Gmail App Password, not the account password).'
+      'APPS_SCRIPT_URL is not configured. Set it in the environment to the ' +
+      '/exec URL of your deployed Google Apps Script Web App.'
     );
   }
 
-  transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: { user, pass },
+  const response = await fetch(APPS_SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to, subject, html, text }),
   });
 
-  return transporter;
+  if (!response.ok) {
+    throw new Error(`Apps Script HTTP ${response.status}`);
+  }
+
+  const result = await response.json();
+  if (!result.ok) {
+    throw new Error(`Apps Script error: ${result.error || 'unknown'}`);
+  }
+  return result;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function buildActivationEmailHtml({ fullName, agency, activationLink }) {
@@ -100,34 +119,6 @@ function buildActivationEmailHtml({ fullName, agency, activationLink }) {
   `;
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-/**
- * Sends the officer activation email.
- * @param {string} toEmail - recipient's official email address
- * @param {string} fullName - recipient's full name
- * @param {string} agency - recipient's agency
- * @param {string} activationLink - single-use Firebase activation link
- */
-async function sendActivationEmail(toEmail, fullName, agency, activationLink) {
-  const mailer = getTransporter();
-
-  const info = await mailer.sendMail({
-    from: `"Sentinel Provisioning" <${process.env.SYSTEM_EMAIL_USER}>`,
-    to: toEmail,
-    subject: 'Sentinel — Activate Your Officer Account',
-    html: buildActivationEmailHtml({ fullName, agency, activationLink }),
-  });
-
-  return info;
-}
 function buildPasswordResetEmailHtml({ fullName, resetLink, expiresInMinutes }) {
   return `
   <!DOCTYPE html>
@@ -204,20 +195,7 @@ function buildPasswordResetEmailHtml({ fullName, resetLink, expiresInMinutes }) 
   `;
 }
 
-async function sendPasswordResetEmail(toEmail, fullName, resetLink, expiresInMinutes = 15) {
-  const mailer = getTransporter();
-
-  const info = await mailer.sendMail({
-    from: `"Sentinel Security" <${process.env.SYSTEM_EMAIL_USER}>`,
-    to: toEmail,
-    subject: 'Sentinel — Reset Your Password',
-    html: buildPasswordResetEmailHtml({ fullName, resetLink, expiresInMinutes }),
-  });
-
-  return info;
-}
 function buildOtpEmailHtml({ fullName, otp, expiresInMinutes }) {
-  // Renders the OTP as 6 large monospace digits.
   const otpDigits = String(otp)
     .split('')
     .map(
@@ -290,23 +268,37 @@ function buildOtpEmailHtml({ fullName, otp, expiresInMinutes }) {
   `;
 }
 
-/**
- * Sends a 6-digit OTP for password reset.
- * @param {string} toEmail
- * @param {string} fullName
- * @param {string} otp - 6-digit code
- * @param {number} expiresInMinutes
- */
-async function sendPasswordResetOtpEmail(toEmail, fullName, otp, expiresInMinutes = 10) {
-  const mailer = getTransporter();
+async function sendActivationEmail(toEmail, fullName, agency, activationLink) {
+  return sendViaAppsScript({
+    to: toEmail,
+    subject: 'Sentinel — Activate Your Officer Account',
+    html: buildActivationEmailHtml({ fullName, agency, activationLink }),
+  });
+}
 
-  const info = await mailer.sendMail({
-    from: `"SentinelPH Security" <${process.env.SYSTEM_EMAIL_USER}>`,
+async function sendPasswordResetEmail(toEmail, fullName, resetLink, expiresInMinutes = 15) {
+  return sendViaAppsScript({
+    to: toEmail,
+    subject: 'Sentinel — Reset Your Password',
+    html: buildPasswordResetEmailHtml({ fullName, resetLink, expiresInMinutes }),
+  });
+}
+
+async function sendPasswordResetOtpEmail(toEmail, fullName, otp, expiresInMinutes = 10) {
+  return sendViaAppsScript({
     to: toEmail,
     subject: 'SentinelPH — Your Password Reset Code',
     html: buildOtpEmailHtml({ fullName, otp, expiresInMinutes }),
   });
-
-  return info;
 }
-module.exports = { sendActivationEmail, sendPasswordResetEmail,  sendPasswordResetOtpEmail,   getTransporter };
+
+function getTransporter() {
+  return { sendViaAppsScript };
+}
+
+module.exports = {
+  sendActivationEmail,
+  sendPasswordResetEmail,
+  sendPasswordResetOtpEmail,
+  getTransporter,
+};

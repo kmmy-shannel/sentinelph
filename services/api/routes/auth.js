@@ -1,12 +1,14 @@
 const express = require('express');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
+const { body } = require('express-validator');                                    // ← NEW
 const { verifyFirebaseToken, verifyFirebaseTokenWithoutRole } = require('../middleware/auth');
 const { initFirebase } = require('../config/firebase');
 const User = require('../models/User');
 const PasswordResetToken = require('../models/PasswordResetToken');
 const AuditLog = require('../models/AuditLog');
-const { sendPasswordResetOtpEmail } = require('../utils/email');
+const { sendPasswordResetEmail, sendPasswordResetOtpEmail } = require('../utils/email');
+const { handleValidationErrors } = require('../middleware/validation');
 
 const router = express.Router();
 
@@ -106,7 +108,14 @@ const passwordResetLimiter = rateLimit({
 
 const RESET_TOKEN_TTL_MINUTES = 15;
 
-router.post('/request-password-reset', passwordResetLimiter, async (req, res) => {
+router.post(
+  '/request-password-reset',
+  passwordResetLimiter,
+  [
+    body('email').optional().isString().trim().isLength({ max: 254 }),
+  ],
+  handleValidationErrors,
+  async (req, res) => {
   try {
     const email = String(req.body?.email || '').trim().toLowerCase();
 
@@ -216,7 +225,25 @@ function isStrongPassword(pw) {
   return hasLetter && hasNumber;
 }
 
-router.post('/confirm-password-reset', async (req, res) => {
+router.post(
+  '/confirm-password-reset',
+  [
+    body('token')
+      .isString()
+      .trim()
+      .isLength({ min: 32, max: 128 })
+      .withMessage('Invalid reset token'),
+    body('newPassword')
+      .isString()
+      .isLength({ min: 8, max: 64 })
+      .withMessage('Password must be 8–64 characters')
+      .matches(/[A-Za-z]/)
+      .withMessage('Password must contain a letter')
+      .matches(/[0-9]/)
+      .withMessage('Password must contain a number'),
+  ],
+  handleValidationErrors,
+  async (req, res) => {
   try {
     const { token, newPassword } = req.body || {};
 
@@ -342,7 +369,14 @@ const passwordOtpVerifyLimiter = rateLimit({
 });
 
 // ============ ENDPOINT 1: REQUEST OTP ============
-router.post('/request-password-otp', passwordOtpRequestLimiter, async (req, res) => {
+router.post(
+  '/request-password-otp',
+  passwordOtpRequestLimiter,
+  [
+    body('email').optional().isString().trim().isLength({ max: 254 }),
+  ],
+  handleValidationErrors,
+  async (req, res) => {
   const genericResponse = {
     success: true,
     message: 'If an account exists for that email, a reset code has been sent.',
@@ -421,7 +455,24 @@ router.post('/request-password-otp', passwordOtpRequestLimiter, async (req, res)
 });
 
 // ============ ENDPOINT 2: VERIFY OTP ============
-router.post('/verify-password-otp', passwordOtpVerifyLimiter, async (req, res) => {
+router.post(
+  '/verify-password-otp',
+  passwordOtpVerifyLimiter,
+  [
+    body('email')
+      .isEmail()
+      .withMessage('A valid email is required')
+      .normalizeEmail(),
+    body('otp')
+      .isString()
+      .trim()
+      .isLength({ min: 4, max: 8 })
+      .withMessage('Please enter the code')
+      .matches(/^\d+$/)
+      .withMessage('Code must be digits only'),
+  ],
+  handleValidationErrors,
+  async (req, res) => {
   try {
     const email = String(req.body?.email || '').trim().toLowerCase();
     const otp = String(req.body?.otp || '').trim();
@@ -521,7 +572,25 @@ function isStrongPassword(pw) {
   return /[A-Za-z]/.test(pw) && /[0-9]/.test(pw);
 }
 
-router.post('/reset-password-with-otp', async (req, res) => {
+router.post(
+  '/reset-password-with-otp',
+  [
+    body('resetSessionToken')
+      .isString()
+      .trim()
+      .isLength({ min: 32, max: 128 })
+      .withMessage('Invalid reset session'),
+    body('newPassword')
+      .isString()
+      .isLength({ min: 8, max: 128 })
+      .withMessage('Password must be 8–128 characters')
+      .matches(/[A-Za-z]/)
+      .withMessage('Password must contain a letter')
+      .matches(/[0-9]/)
+      .withMessage('Password must contain a number'),
+  ],
+  handleValidationErrors,
+  async (req, res) => {
   try {
     const { resetSessionToken, newPassword } = req.body || {};
 
