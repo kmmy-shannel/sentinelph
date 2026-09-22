@@ -3,17 +3,20 @@ const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
 /**
- * Stores a single live OTP-based password reset attempt per user.
+ * Stores password reset attempts for BOTH flows:
  *
- * Security model:
- *   • The raw 6-digit OTP is only ever emailed to the user.
- *   • The DB stores sha256(otp + salt) — never the raw OTP.
- *   • Max 5 verification attempts, then the record is locked.
- *   • OTP expires after 10 minutes (TTL index auto-purges).
- *   • After OTP verification succeeds, a random resetSessionToken is
- *     issued and stored as sha256(sessionToken). The client uses that
- *     token in the final reset-password step — the raw OTP is never
- *     used again.
+ *   • Web / link flow (routes/auth.js /request-password-reset):
+ *     writes `tokenHash` + `expiresAt` + `usedAt`.
+ *     The emailed link contains a 32-byte random token; only
+ *     sha256(token) is stored.
+ *
+ *   • Mobile / OTP flow (routes/auth.js /request-password-otp):
+ *     writes `otpHash` + `otpExpiresAt` + `otpAttempts` + `otpVerifiedAt`
+ *     + `resetSessionTokenHash` + `resetSessionExpiresAt` + `resetCompletedAt`.
+ *     The 6-digit OTP is emailed; only sha256(otp) is stored.
+ *
+ * All flow-specific fields are optional so whichever flow writes the
+ * document doesn't trip the other flow's `required` validators.
  */
 const passwordResetTokenSchema = new Schema(
   {
@@ -31,14 +34,29 @@ const passwordResetTokenSchema = new Schema(
       index: true,
     },
 
-    // ─── OTP storage ───────────────────────────────────────────────
+    // ─── Web / link flow fields ────────────────────────────────────
+    tokenHash: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    expiresAt: {
+      type: Date,
+      default: null,
+    },
+    usedAt: {
+      type: Date,
+      default: null,
+    },
+
+    // ─── Mobile / OTP flow fields ──────────────────────────────────
     otpHash: {
       type: String,
-      required: true,
+      default: null,
     },
     otpExpiresAt: {
       type: Date,
-      required: true,
+      default: null,
     },
     otpAttempts: {
       type: Number,
@@ -48,8 +66,6 @@ const passwordResetTokenSchema = new Schema(
       type: Date,
       default: null,
     },
-
-    // ─── Reset session token (issued after OTP verification) ────────
     resetSessionTokenHash: {
       type: String,
       default: null,
@@ -64,7 +80,7 @@ const passwordResetTokenSchema = new Schema(
       default: null,
     },
 
-    // ─── Request metadata ───────────────────────────────────────────
+    // ─── Request metadata ──────────────────────────────────────────
     requestedIp: {
       type: String,
       default: null,
@@ -77,11 +93,16 @@ const passwordResetTokenSchema = new Schema(
   { timestamps: true }
 );
 
-// TTL: purge records 5 minutes after the OTP expires, so the collection
-// never grows unbounded.
+// TTL indexes for both flows. Sparse so documents missing the other
+// flow's expiry field aren't immediately purged. MongoDB runs the TTL
+// monitor on the field that exists in each document.
+passwordResetTokenSchema.index(
+  { expiresAt: 1 },
+  { expireAfterSeconds: 300, sparse: true }
+);
 passwordResetTokenSchema.index(
   { otpExpiresAt: 1 },
-  { expireAfterSeconds: 300 }
+  { expireAfterSeconds: 300, sparse: true }
 );
 
 const PasswordResetToken =
