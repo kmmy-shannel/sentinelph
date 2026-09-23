@@ -1,7 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
-const { body } = require('express-validator');
+const { body } = require('express-validator');                                    // ← NEW
 const { verifyFirebaseToken, verifyFirebaseTokenWithoutRole } = require('../middleware/auth');
 const { initFirebase } = require('../config/firebase');
 const User = require('../models/User');
@@ -424,6 +424,7 @@ const passwordOtpVerifyLimiter = rateLimit({
   },
 });
 
+// ============ ENDPOINT 1: REQUEST OTP ============
 router.post(
   '/request-password-otp',
   passwordOtpRequestLimiter,
@@ -505,6 +506,7 @@ router.post(
   }
 });
 
+// ============ ENDPOINT 2: VERIFY OTP ============
 router.post(
   '/verify-password-otp',
   passwordOtpVerifyLimiter,
@@ -614,6 +616,7 @@ router.post(
   }
 });
 
+// ============ ENDPOINT 3: RESET PASSWORD WITH OTP SESSION ============
 router.post(
   '/reset-password-with-otp',
   [

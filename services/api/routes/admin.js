@@ -1,14 +1,20 @@
+// services/api/routes/admin.js
 const express = require('express');
+const crypto = require('crypto');
 const { initFirebase } = require('../config/firebase');
 const { verifyFirebaseToken } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
 const User = require('../models/User');
+const PasswordResetToken = require('../models/PasswordResetToken');
 const { sendActivationEmail } = require('../utils/email');
 const { PH_REGIONS, isValidRegion } = require('../../../shared/regions');
 
 const router = express.Router();
 
 const REQUIRED_FIELDS = ['email', 'fullName', 'badgeId', 'agency', 'jurisdiction'];
+
+// Invite activation links expire in 15 minutes, same as web forgot-password.
+const ACTIVATION_TOKEN_TTL_MINUTES = 15;
 
 function getAllowedDomains() {
   return (process.env.ALLOWED_EMAIL_DOMAINS || '')
@@ -34,7 +40,11 @@ function isDomainAllowed(email) {
  * POST /api/v1/admin/invite-officer
  * Restricted to admin / superadmin. Provisions a passwordless Firebase
  * account, saves a pending_activation profile in MongoDB, and emails the
- * invitee a single-use activation link.
+ * invitee a single-use activation link pointing at our own ResetPassword
+ * page with ?mode=activate.
+ *
+ * Uses the same custom-token system as /auth/request-password-reset so
+ * the frontend's confirm-password-reset handler needs no changes.
  */
 router.post(
   '/invite-officer',
@@ -53,12 +63,10 @@ router.post(
         });
       }
 
-         const normalizedEmail = String(email).trim().toLowerCase();
+      const normalizedEmail = String(email).trim().toLowerCase();
 
       // Region whitelist — must be one of the canonical Roman-numeral
-      // names in shared/regions.js. A typo here would create an officer
-      // whose jurisdiction filter matches nothing, so this check prevents
-      // the invite from ever being issued with an unknown region.
+      // names in shared/regions.js.
       const normalizedJurisdiction = String(jurisdiction).trim();
       if (!isValidRegion(normalizedJurisdiction)) {
         return res.status(400).json({
@@ -109,16 +117,43 @@ router.post(
         jurisdiction: normalizedJurisdiction,
       });
 
-      const actionCodeSettings = {
-  url: process.env.ACTIVATION_REDIRECT_URL || `${process.env.CLIENT_ORIGIN_WEB}/activate`,
-  handleCodeInApp: true, // was false — now Firebase deep-links straight to our own page
-};
+      // ─── Build a custom activation link (NOT a Firebase link) ────────
+      // Same token mechanics as /auth/request-password-reset:
+      //   • 32-byte random token emailed to the officer
+      //   • sha256(token) stored in PasswordResetToken
+      //   • confirm-password-reset verifies the hash and updates the
+      //     Firebase password — no changes needed on that endpoint.
+      const rawToken = crypto.randomBytes(32).toString('hex');
+      const tokenHash = crypto
+        .createHash('sha256')
+        .update(rawToken)
+        .digest('hex');
 
-      const activationLink = await admin
-        .auth()
-        .generatePasswordResetLink(normalizedEmail, actionCodeSettings);
+      const expiresAt = new Date(
+        Date.now() + ACTIVATION_TOKEN_TTL_MINUTES * 60 * 1000
+      );
 
-           const newUser = await User.create({
+      // One live token per user — clear any stale invite/reset tokens.
+      await PasswordResetToken.deleteMany({ firebaseUid: firebaseUser.uid });
+
+      await PasswordResetToken.create({
+        firebaseUid: firebaseUser.uid,
+        email: normalizedEmail,
+        tokenHash,
+        expiresAt,
+        requestedIp: req.ip || null,
+        userAgent: (req.headers['user-agent'] || '').slice(0, 200),
+      });
+
+      const webOrigin =
+        process.env.CLIENT_ORIGIN_WEB ||
+        process.env.PASSWORD_RESET_WEB_ORIGIN ||
+        'http://localhost:5173';
+
+      const activationLink = `${webOrigin.replace(/\/$/, '')}/reset-password?mode=activate&token=${rawToken}`;
+      // ─────────────────────────────────────────────────────────────────
+
+      const newUser = await User.create({
         firebaseUid: firebaseUser.uid,
         email: normalizedEmail,
         fullName,
@@ -128,6 +163,7 @@ router.post(
         jurisdiction: normalizedJurisdiction,
         status: 'pending_activation',
       });
+
       try {
         await sendActivationEmail(normalizedEmail, fullName, agency, activationLink);
       } catch (mailErr) {
@@ -165,10 +201,11 @@ router.post(
     }
   }
 );
+
 /**
  * GET /api/v1/admin/officers
  * Lists all officer-role users (across every region), sorted newest first.
- * Restricted to admin/superadmin. Returns only safe fields via toSafeJSON.
+ * Restricted to admin/superadmin.
  */
 router.get(
   '/officers',
@@ -207,4 +244,5 @@ router.get(
     }
   }
 );
+
 module.exports = router;

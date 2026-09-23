@@ -3,6 +3,11 @@
 """
 Pydantic models defining the /predict and /ocr request/response contracts
 between the Express API Gateway and this FastAPI microservice.
+
+3-class schema:
+    legitimate  -> risk_level: "LOW"
+    grey_area   -> risk_level: "MEDIUM"
+    malicious   -> risk_level: "HIGH"
 """
 
 from typing import List, Literal, Optional
@@ -50,19 +55,27 @@ class PredictResponse(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     report_id: Optional[str] = None
+
+    # Legacy field kept for UI backward-compat: P(malicious) as a scalar.
     probability_score: float = Field(
         ..., ge=0.0, le=1.0,
-        description="Model-estimated probability the content is scam-like.",
+        description="Model-estimated probability the content is malicious.",
     )
-    label: Literal["likely_scam", "uncertain", "likely_legitimate"]
 
+    # === 3-CLASS CHANGE ===
+    label: Literal[
+    "legitimate", "grey_area", "malicious",
+    "likely_scam", "likely_legitimate", "uncertain",
+] = Field(
+    ..., description="Argmax class from the 3-class model. Legacy strings accepted during migration."
+)
     # --- Layer 1: Instant AI Warning fields ---
     is_scam: bool = Field(
-        ..., description="Convenience boolean: probability_score >= 0.5."
+        ..., description="True when the model's argmax class is 'malicious'."
     )
     confidence_score: float = Field(
         ..., ge=0.0, le=1.0,
-        description="Model confidence in the assigned label (mirrors probability_score).",
+        description="Model confidence in the assigned label (probability of the argmax class).",
     )
     risk_level: RiskLevel = Field(
         ..., description="Coarse risk bucket for UI banner rendering."
@@ -78,8 +91,6 @@ class PredictResponse(BaseModel):
     ocr_extracted_chars: int = Field(
         default=0, description="Character count of OCR-extracted text, for debugging."
     )
-    # NEW: raw extracted text so the mobile client can populate its OCR
-    # panel directly from /predict or /analyze without a second call.
     ocr_text: Optional[str] = Field(
         default=None,
         description="Raw text extracted from screenshot evidence, if OCR ran.",

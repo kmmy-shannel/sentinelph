@@ -8,8 +8,7 @@
       "expo-splash-screen",
       "expo-sqlite",
       "expo-status-bar",
-      "expo-asset",
-      "expo-audio"
+      "expo-asset"
     ]
   }
 }

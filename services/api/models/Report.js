@@ -30,7 +30,11 @@ const AiFlagSchema = new Schema(
     probabilityScore: { type: Number, min: 0, max: 1, default: null },
     label: {
       type: String,
-      enum: ['likely_scam', 'uncertain', 'likely_legitimate', 'unavailable'],
+     enum: [
+    'legitimate', 'grey_area', 'malicious',
+    'likely_scam', 'uncertain', 'likely_legitimate',
+    'unavailable',
+  ],
       default: 'unavailable',
     },
     isScam: { type: Boolean, default: null },
