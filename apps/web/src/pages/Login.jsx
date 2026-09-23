@@ -132,10 +132,8 @@ export default function Login() {
   const [focusField, setFocusField] = useState(null);
   const [error, setError] = useState(null);
 
-  // Live public stats
-  const [stats, setStats] = useState({ reportsFiled: 0, casesClosed: 0, version: "2.4.1" });
+  const [stats, setStats] = useState({ reportsFiled: 0, casesClosed: 0, uptime: 99.97, version: "2.4.1" });
 
-  // Forgot Password state
   const [showForgotPw, setShowForgotPw] = useState(false);
   const [forgotEmail, setForgotEmail] = useState("");
   const [forgotError, setForgotError] = useState(null);
@@ -146,15 +144,18 @@ export default function Login() {
   const accent = selectedRole?.color ?? "#6366f1";
   const canSubmit = role && email && password && !loading;
 
-  // Fetch public stats on mount
   useEffect(() => {
     let cancelled = false;
-    apiClient.get("/api/v1/stats/public")
-      .then((res) => {
-        if (!cancelled && res.data?.data) setStats(res.data.data);
-      })
-      .catch(() => { /* silent fail — page still renders */ });
-    return () => { cancelled = true; };
+    const load = () => {
+      apiClient.get("/api/v1/stats/public")
+        .then((res) => {
+          if (!cancelled && res.data?.data) setStats(res.data.data);
+        })
+        .catch(() => {});
+    };
+    load();
+    const id = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(id); };
   }, []);
 
   useEffect(() => {
@@ -183,6 +184,19 @@ export default function Login() {
     setLoading(true);
 
     try {
+      const check = await apiClient.post('/api/v1/auth/check-email', {
+        email: email.trim().toLowerCase(),
+      });
+
+      if (!check.data?.exists) {
+        setError(
+          check.data?.message ||
+          "This email isn't registered in SentinelPH. Contact your administrator."
+        );
+        setLoading(false);
+        return;
+      }
+
       const cred = await signInWithEmailAndPassword(auth, email, password);
       const tokenResult = await cred.user.getIdTokenResult(true);
       const actualRole = tokenResult.claims.role;
@@ -201,10 +215,8 @@ export default function Login() {
         setLoading(false);
         return;
       }
-
-      // Success — AuthContext picks up the new role and redirects.
     } catch (err) {
-      console.error('[Login] Firebase sign-in failed:', err);
+      console.error('[Login] sign-in failed:', err);
       if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found') {
         setError('Invalid email or password.');
       } else if (err.code === 'auth/too-many-requests') {
@@ -263,9 +275,9 @@ export default function Login() {
           </p>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "16px", padding: "24px", borderRadius: "16px", background: "#0d0d18", border: "1px solid #13131e" }}>
             {[
-              { v: stats.reportsFiled.toLocaleString(), l: "Reports Filed" },
-              { v: stats.casesClosed.toLocaleString(), l: "Cases Closed" },
-              { v: "99.97%", l: "Uptime" },
+              { v: (stats.reportsFiled ?? 0).toLocaleString(), l: "Reports Filed" },
+              { v: (stats.casesClosed ?? 0).toLocaleString(), l: "Cases Closed" },
+              { v: `${(stats.uptime ?? 99.97).toFixed(2)}%`, l: "Uptime" },
             ].map((s) => (
               <div key={s.l} style={{ textAlign: "center" }}>
                 <div style={{ fontWeight: 800, color: "#fff", fontSize: "18px", fontFamily: "'JetBrains Mono',monospace" }}>{s.v}</div>
@@ -324,7 +336,7 @@ export default function Login() {
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value.trim())}
-                    placeholder="e.g. r.cruz@nbi-ccru.gov.ph"
+                    placeholder="e.g. r.cruz@gmail.com"
                     onFocus={() => setFocusField("email")}
                     onBlur={() => setFocusField(null)}
                     autoComplete="username"
@@ -454,7 +466,7 @@ export default function Login() {
                     type="email"
                     value={forgotEmail}
                     onChange={(e) => setForgotEmail(e.target.value)}
-                    placeholder="your.email@gov.ph"
+                    placeholder="your.email@gmail.com"
                     autoFocus
                     disabled={forgotLoading}
                     style={{

@@ -1,5 +1,6 @@
 // apps/web/src/pages/Officer-Tabs/BlacklistRegistry.jsx
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
+import apiClient from "../../lib/api";
 
 const SearchIcon = () => (
   <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -15,26 +16,71 @@ const CloseIcon = ({ color }) => (
   </svg>
 );
 
-const REGISTRY = [
-  { id: "BLK-00341", number: "+63 998 011 2233", type: "Bank Impersonation",   reports: 132, status: "Blocked",  officers: "Cruz, R. · Dela Torre, M.", date: "Aug 28 08:52", hash: "0x8f3a2b1c9d4e...f2a1", notes: "Confirmed BDO impersonation via SMS + call. 132 reports in 5 days." },
-  { id: "BLK-00340", number: "+63 905 338 8810", type: "Parcel/Delivery",      reports: 89,  status: "Blocked",  officers: "Cruz, R. · Bautista, L.",   date: "Aug 27 22:45", hash: "0x1a9d7e4b2f8c...d0e3", notes: "Fake LBC customs fee scam. Verified by SMS screenshots." },
-  { id: "BLK-00339", number: "+63 943 112 5560", type: "Gov't Impersonation",  reports: 61,  status: "Blocked",  officers: "Dela Torre, M. · Santos, P.",date: "Aug 27 21:18", hash: "0x77ba4c1e9a3d...b1c8", notes: "SSS/PhilSys impersonation. Calls to elderly victims." },
-  { id: "BLK-00338", number: "+63 912 778 4430", type: "OTP Phishing",         reports: 33,  status: "Rejected", officers: "Cruz, R.",                   date: "Aug 27 18:22", hash: "0x3c55e9b1a2f4...c8a7", notes: "Insufficient evidence — number belongs to a retail store." },
-  { id: "BLK-00337", number: "+63 961 887 3394", type: "Bank Impersonation",   reports: 74,  status: "Blocked",  officers: "Cruz, R. · Bautista, L.",   date: "Aug 27 15:00", hash: "0x9e11d3f8b4a2...e5b9", notes: "Confirmed. Full audit trail attached." },
-  { id: "BLK-00336", number: "+63 921 554 2290", type: "Investment Scam",      reports: 47,  status: "Blocked",  officers: "Dela Torre, M.",            date: "Aug 27 12:33", hash: "0x22aa8f9c1e7b...a4d6", notes: "Crypto mining pool scam. 47 victims identified." },
-  { id: "BLK-00335", number: "+63 933 441 8881", type: "Investment Scam",      reports: 91,  status: "Blocked",  officers: "Cruz, R. · Santos, P.",     date: "Aug 26 20:10", hash: "0x55bc1e9f3a8d...f7c2", notes: "High-volume investment fraud. Multiple bank accounts linked." },
-  { id: "BLK-00334", number: "+63 908 112 5540", type: "Parcel/Delivery",      reports: 28,  status: "Rejected", officers: "Bautista, L.",              date: "Aug 26 17:44", hash: "0x77f2a8b4e1c9...d3a5", notes: "Rejected due to insufficient reports." },
-];
+function mapEntryToRow(e) {
+  const votes = e.votes || [];
+  const approvingOfficers = votes
+    .filter(v => v.decision === 'approve')
+    .map(v => (v.officerId || v.userId || '').slice(-6) || '—')
+    .join(' · ') || '—';
+  const decisionDate = e.resolvedAt || e.updatedAt
+    ? new Date(e.resolvedAt || e.updatedAt).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : "—";
+  return {
+    id: e._id ? String(e._id).slice(-6).toUpperCase() : "—",
+    number: e.phoneNumber || "—",
+    type: e.scamType || "UNKNOWN",
+    reports: e.reportCount ?? 0,
+    status: 'Blocked',
+    rawStatus: e.status,
+    officers: approvingOfficers,
+    date: decisionDate,
+    hash: e.hash || '—',
+    notes: e.notes || 'No officer notes recorded.',
+  };
+}
 
 export default function BlacklistRegistry() {
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [selectedCase, setSelectedCase] = useState(null);
   const [showExportSuccess, setShowExportSuccess] = useState(false);
 
-  const filtered = REGISTRY.filter((e) => {
+  const loadEntries = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { data } = await apiClient.get('/api/v1/blacklist', { params: { limit: 100 } });
+      setEntries((data.data ?? []).map(mapEntryToRow));
+    } catch (err) {
+      console.error('[BlacklistRegistry] fetch failed:', err);
+      setError(err?.response?.data?.message || 'Failed to load blacklist registry.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    // ── Optimistic UI: hide the sidebar badge INSTANTLY ────────────────
+    if (window.__clearSidebarBadge) {
+      window.__clearSidebarBadge('registry');
+    }
+
+    loadEntries();
+
+    // Fire the "seen" POST. On success or failure, sync the true count
+    // from the server in the background (no visible delay either way).
+    apiClient.post('/api/v1/stats/seen/blacklist')
+      .then(() => window.dispatchEvent(new CustomEvent('badges:refresh')))
+      .catch(() => window.dispatchEvent(new CustomEvent('badges:refresh')));
+  }, [loadEntries]);
+
+  const filtered = entries.filter((e) => {
     const matchFilter = filter === "all" || e.status.toLowerCase() === filter;
-    const matchSearch = !search || e.number.includes(search) || e.type.toLowerCase().includes(search.toLowerCase()) || e.id.toLowerCase().includes(search.toLowerCase());
+    const q = search.toLowerCase();
+    const matchSearch = !search || e.number.includes(search) || e.type.toLowerCase().includes(q) || e.id.toLowerCase().includes(q);
     return matchFilter && matchSearch;
   });
 
@@ -64,7 +110,7 @@ export default function BlacklistRegistry() {
             style={{ width: "100%", padding: "8px 12px 8px 34px", borderRadius: "8px", fontSize: "12px", background: "#0e0e18", border: "1px solid #1a1a2a", color: "#e2e8f0", outline: "none", boxSizing: "border-box" }} />
         </div>
         <div style={{ display: "flex", gap: "4px" }}>
-          {["all", "blocked", "rejected"].map((f) => (
+          {["all", "blocked"].map((f) => (
             <button key={f} onClick={() => setFilter(f)}
               style={{ padding: "8px 14px", borderRadius: "8px", fontSize: "12px", fontWeight: 500, cursor: "pointer", background: filter === f ? "#1a1a2a" : "transparent", border: "1px solid #1a1a2a", color: filter === f ? "#e2e8f0" : "#4b5563", textTransform: "capitalize" }}>
               {f === "all" ? "All" : f.charAt(0).toUpperCase() + f.slice(1)}
@@ -77,8 +123,14 @@ export default function BlacklistRegistry() {
         </button>
       </div>
 
+      {error && (
+        <div style={{ marginBottom: "16px", padding: "10px 14px", borderRadius: "8px", background: "#1a0606", border: "1px solid #ef444440", color: "#ef4444", fontSize: "12px" }}>
+          {error}
+        </div>
+      )}
+
       {showExportSuccess && (
-        <div style={{ marginBottom: "16px", padding: "12px 16px", borderRadius: "10px", fontSize: "13px", fontWeight: 500, background: "#0a1a12", border: "1px solid #22c55e40", color: "#22c55e", display: "flex", alignItems: "center", gap: "10px", animation: "fadeIn 0.3s ease" }}>
+        <div style={{ marginBottom: "16px", padding: "12px 16px", borderRadius: "10px", fontSize: "13px", fontWeight: 500, background: "#0a1a12", border: "1px solid #22c55e40", color: "#22c55e", display: "flex", alignItems: "center", gap: "10px" }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
           CSV exported successfully. Check your downloads folder.
         </div>
@@ -87,7 +139,9 @@ export default function BlacklistRegistry() {
       <div style={{ borderRadius: "12px", overflow: "hidden", background: "#0e0e18", border: "1px solid #1a1a2a" }}>
         <div style={{ padding: "12px 20px", borderBottom: "1px solid #1a1a2a" }}>
           <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff" }}>Blacklist Registry</div>
-          <div style={{ fontSize: "11px", marginTop: "2px", color: "#4b5563" }}>{filtered.length} entries · Click any row for details</div>
+          <div style={{ fontSize: "11px", marginTop: "2px", color: "#4b5563" }}>
+            {loading ? "Loading…" : `${filtered.length} entries · Click any row for details`}
+          </div>
         </div>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
@@ -98,8 +152,10 @@ export default function BlacklistRegistry() {
             </tr>
           </thead>
           <tbody>
-            {filtered.map((row) => (
-              <tr key={row.id} 
+            {loading && <tr><td colSpan={7} style={{ padding: "40px", textAlign: "center", color: "#4b5563", fontSize: "12px" }}>Loading registry…</td></tr>}
+            {!loading && filtered.length === 0 && <tr><td colSpan={7} style={{ padding: "40px", textAlign: "center", color: "#4b5563", fontSize: "12px" }}>No entries in this view.</td></tr>}
+            {!loading && filtered.map((row) => (
+              <tr key={row.number}
                 onClick={() => setSelectedCase(row)}
                 style={{ borderBottom: "1px solid #13131e", cursor: "pointer" }}
                 onMouseEnter={(e) => e.currentTarget.style.background = "#111120"}
@@ -109,9 +165,9 @@ export default function BlacklistRegistry() {
                 <td style={{ padding: "12px 20px", fontSize: "12px", color: "#9ca3af" }}>{row.type}</td>
                 <td style={{ padding: "12px 20px", fontSize: "12px", fontWeight: 700, color: "#fff" }}>{row.reports}</td>
                 <td style={{ padding: "12px 20px" }}>
-                  <span style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "12px", fontWeight: 600, color: row.status === "Blocked" ? "#ef4444" : "#f59e0b" }}>
-                    <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: row.status === "Blocked" ? "#ef4444" : "#f59e0b", display: "inline-block" }} />
-                    {row.status}
+                  <span style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "12px", fontWeight: 600, color: "#ef4444" }}>
+                    <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#ef4444", display: "inline-block" }} />
+                    Blocked
                   </span>
                 </td>
                 <td style={{ padding: "12px 20px", fontSize: "12px", color: "#6b7280" }}>{row.officers}</td>
@@ -122,12 +178,10 @@ export default function BlacklistRegistry() {
         </table>
       </div>
 
-      {/* Case Detail Modal - Click outside NO LONGER closes it */}
       {selectedCase && (
         <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}>
-          <div style={{ width: "100%", maxWidth: "520px", margin: "0 16px", borderRadius: "20px", padding: "28px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a", boxShadow: "0 40px 80px rgba(0,0,0,0.5)" }}>
-            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: `linear-gradient(90deg,transparent,${selectedCase.status === "Blocked" ? "#ef4444" : "#f59e0b"},transparent)` }} />
-
+          <div style={{ width: "100%", maxWidth: "520px", margin: "0 16px", borderRadius: "20px", padding: "28px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a" }}>
+            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: `linear-gradient(90deg,transparent,#ef4444,transparent)` }} />
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "20px" }}>
               <div>
                 <div style={{ fontWeight: 700, color: "#fff", fontSize: "18px" }}>{selectedCase.id}</div>
@@ -137,40 +191,30 @@ export default function BlacklistRegistry() {
                 <CloseIcon color="#4b5563" />
               </button>
             </div>
-
-            <div style={{ display: "inline-block", marginBottom: "20px", padding: "4px 12px", borderRadius: "999px", fontSize: "11px", fontWeight: 600, background: selectedCase.status === "Blocked" ? "#ef444420" : "#f59e0b20", color: selectedCase.status === "Blocked" ? "#ef4444" : "#f59e0b" }}>
-              {selectedCase.status}
+            <div style={{ display: "inline-block", marginBottom: "20px", padding: "4px 12px", borderRadius: "999px", fontSize: "11px", fontWeight: 600, background: "#ef444420", color: "#ef4444" }}>
+              Blocked
             </div>
-
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px 24px", marginBottom: "20px" }}>
-              <div>
-                <div style={{ fontSize: "9px", fontWeight: 500, marginBottom: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>SCAM TYPE</div>
-                <div style={{ fontSize: "13px", color: "#fff" }}>{selectedCase.type}</div>
-              </div>
-              <div>
-                <div style={{ fontSize: "9px", fontWeight: 500, marginBottom: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>TOTAL REPORTS</div>
-                <div style={{ fontSize: "13px", color: "#fff" }}>{selectedCase.reports}</div>
-              </div>
-              <div>
-                <div style={{ fontSize: "9px", fontWeight: 500, marginBottom: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>APPROVING OFFICERS</div>
-                <div style={{ fontSize: "13px", color: "#fff" }}>{selectedCase.officers}</div>
-              </div>
-              <div>
-                <div style={{ fontSize: "9px", fontWeight: 500, marginBottom: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>DECISION DATE</div>
-                <div style={{ fontSize: "13px", color: "#fff", fontFamily: "'JetBrains Mono',monospace" }}>{selectedCase.date}</div>
-              </div>
+              {[
+                { l: "SCAM TYPE", v: selectedCase.type },
+                { l: "TOTAL REPORTS", v: selectedCase.reports },
+                { l: "APPROVING OFFICERS", v: selectedCase.officers },
+                { l: "DECISION DATE", v: selectedCase.date, mono: true },
+              ].map(f => (
+                <div key={f.l}>
+                  <div style={{ fontSize: "9px", fontWeight: 500, marginBottom: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>{f.l}</div>
+                  <div style={{ fontSize: "13px", color: "#fff", fontFamily: f.mono ? "'JetBrains Mono',monospace" : "inherit" }}>{f.v}</div>
+                </div>
+              ))}
             </div>
-
             <div style={{ padding: "12px 16px", borderRadius: "10px", marginBottom: "16px", background: "#080810", border: "1px solid #13131e" }}>
               <div style={{ fontSize: "9px", fontWeight: 500, marginBottom: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>BLOCK HASH</div>
               <div style={{ fontSize: "12px", color: "#3b82f6", fontFamily: "'JetBrains Mono',monospace", wordBreak: "break-all" }}>{selectedCase.hash}</div>
             </div>
-
             <div style={{ padding: "14px 16px", borderRadius: "10px", marginBottom: "20px", background: "#080810", border: "1px solid #13131e" }}>
               <div style={{ fontSize: "9px", fontWeight: 500, marginBottom: "6px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>OFFICER NOTES</div>
               <div style={{ fontSize: "13px", color: "#9ca3af", lineHeight: 1.7 }}>{selectedCase.notes}</div>
             </div>
-
             <button onClick={() => setSelectedCase(null)}
               style={{ width: "100%", padding: "12px", borderRadius: "12px", fontSize: "13px", fontWeight: 700, border: "none", background: "#1a1a2a", color: "#fff", cursor: "pointer" }}>
               Close
@@ -178,13 +222,6 @@ export default function BlacklistRegistry() {
           </div>
         </div>
       )}
-
-      <style>{`
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(-6px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
     </div>
   );
 }

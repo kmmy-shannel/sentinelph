@@ -5,11 +5,9 @@ const { computeHash } = require('../utils/hashChain');
 
 const { Schema } = mongoose;
 
-// Workflow status buckets shared by the vote pipeline, the review-queue
-// listing, and the blacklist promotion logic.
-const OPEN_STATUSES = ['pending', 'under_review', 'one_approval'];
+const OPEN_STATUSES = ['pending', 'under_review', 'one_approval', 'two_approvals'];
 const RESOLVED_STATUSES = ['blacklisted', 'approved', 'rejected'];
-const CONSENSUS_REQUIRED = 2;
+const CONSENSUS_REQUIRED = 3;
 
 function httpError(statusCode, code, message) {
   const err = new Error(message);
@@ -18,11 +16,6 @@ function httpError(statusCode, code, message) {
   return err;
 }
 
-/**
- * The MongoDB driver's findOneAndUpdate returns the document directly in
- * driver v6+, but a `{ value, ok, lastErrorObject }` envelope in v4/v5.
- * Normalize both shapes to "document or null".
- */
 function unwrapFindOneAndUpdate(result) {
   if (!result) return null;
   const isEnvelope =
@@ -31,28 +24,15 @@ function unwrapFindOneAndUpdate(result) {
   return isEnvelope ? result.value || null : result;
 }
 
-/**
- * AiFlagSchema - Phase 4 AI Microservice Advisory Assessment
- * Stores the response metadata from the FastAPI AI Scam Detection
- * microservice. Captured in the canonical payload before hashing to
- * ensure auditability.
- *
- * Fields mirror the normalized `aiFlag` object produced by
- * services/api/utils/aiServiceClient.js.
- */
 const AiFlagSchema = new Schema(
   {
     available: { type: Boolean, default: false },
-
     probabilityScore: { type: Number, min: 0, max: 1, default: null },
-
     label: {
       type: String,
       enum: ['likely_scam', 'uncertain', 'likely_legitimate', 'unavailable'],
       default: 'unavailable',
     },
-
-    // Layer-1 convenience fields (mirrors FastAPI PredictResponse)
     isScam: { type: Boolean, default: null },
     confidenceScore: { type: Number, min: 0, max: 1, default: null },
     riskLevel: {
@@ -72,13 +52,9 @@ const AiFlagSchema = new Schema(
       ],
       default: [],
     },
-
-    // OCR metadata
     ocrUsed: { type: Boolean, default: false },
     ocrText: { type: String, default: null },
     ocrExtractedChars: { type: Number, default: 0 },
-
-    // Model provenance + guardrails
     modelVersion: { type: String, default: null },
     advisoryOnly: { type: Boolean, default: true },
     checkedAt: { type: Date, default: null },
@@ -93,7 +69,6 @@ const LocationSchema = new Schema(
     region: { type: String, trim: true, maxlength: 120, default: null },
     lat: { type: Number, min: -90, max: 90, default: null },
     lng: { type: Number, min: -180, max: 180, default: null },
-    // Mobile sends { latitude, longitude } — accept both naming conventions.
     latitude: { type: Number, min: -90, max: 90, default: null },
     longitude: { type: Number, min: -180, max: 180, default: null },
   },
@@ -115,7 +90,7 @@ const ConsensusSchema = new Schema(
   {
     approvals: { type: Number, default: 0 },
     rejections: { type: Number, default: 0 },
-    required: { type: Number, default: 2 },
+    required: { type: Number, default: 3 },
   },
   { _id: false }
 );
@@ -129,11 +104,6 @@ const ReportSchema = new Schema(
       default: () => uuidv4(),
       immutable: true,
     },
-
-    // ---- Data_n fields (participate in the hash computation) ----
-    // textData is NOT required: a citizen may submit a screenshot-only
-    // report. The controller fills it from OCR when available and leaves
-    // it null otherwise. All other immutable/hashed fields remain strict.
     textData: {
       type: String,
       required: false,
@@ -172,8 +142,6 @@ const ReportSchema = new Schema(
       unique: true,
       immutable: true,
     },
-
-    // ---- Chain-linkage fields (immutable, hashed) ----
     previousHash: {
       type: String,
       required: true,
@@ -185,9 +153,6 @@ const ReportSchema = new Schema(
       immutable: true,
     },
 
-    // ---- Non-hashed display / workflow fields ----
-    // These are NOT part of getCanonicalPayload(), so they can be added
-    // without invalidating existing chain records.
     sender: { type: String, trim: true, maxlength: 40, default: null },
     scammerNumber: { type: String, trim: true, maxlength: 40, default: null },
     evidenceText: { type: String, trim: true, maxlength: 2000, default: null },
@@ -200,22 +165,13 @@ const ReportSchema = new Schema(
 
     evidenceFiles: { type: [String], default: [] },
 
-    // Screenshot evidence — stored as a base64 data-URI so the officer
-    // Review Queue can render it without a separate storage lookup.
-    // Consider GridFS/S3 for production scale.
     evidenceImage: { type: String, default: null },
     hasEvidenceImage: { type: Boolean, default: false },
 
-    // Chain metadata convenience copies (not hashed)
     nullifierHash: { type: String, trim: true, default: null },
     zkpHash: { type: String, trim: true, default: null },
     aiScore: { type: Number, min: 0, max: 1, default: null },
 
-    // Pseudonymous reporter identifier: HMAC-SHA256(CITIZEN_SALT, uid || ip).
-    // - NOT part of getCanonicalPayload(), so the hash chain is unaffected.
-    // - Indexed so per-citizen rate limiting stays a cheap count query.
-    // - select:false keeps it out of every default query result (officer
-    //   queue, exports, audit views); it must be requested explicitly.
     citizenHash: {
       type: String,
       trim: true,
@@ -225,22 +181,22 @@ const ReportSchema = new Schema(
       default: null,
     },
 
-    // ---- Workflow state ----
-    // 'pending' → 'under_review' | 'one_approval' → 'blacklisted' | 'rejected'
-    // 'approved' is retained as an alias for 'blacklisted' so the vote
-    // route can map its decision without loss.
+    // 'pending' → 'under_review' → 'one_approval' → 'two_approvals' → terminal
     status: {
       type: String,
       enum: [
         'pending',
         'under_review',
         'one_approval',
+        'two_approvals',
         'blacklisted',
         'approved',
         'rejected',
       ],
       default: 'pending',
     },
+
+    resolvedAt: { type: Date, default: null },
 
     votes: { type: [VoteSchema], default: [] },
     consensusState: { type: ConsensusSchema, default: () => ({}) },
@@ -250,27 +206,13 @@ const ReportSchema = new Schema(
   }
 );
 
-// createdAt participates in the canonical hash payload, so it must never change.
 ReportSchema.path('createdAt', { immutable: true });
 
-// Compound index for workflow lookups
 ReportSchema.index({ reportedNumber: 1, status: 1 });
 ReportSchema.index({ status: 1, sequence: -1 });
+ReportSchema.index({ status: 1, resolvedAt: -1 });
 
-/**
- * Rebuilds the exact object that was (or will be) hashed for this record.
- * Kept byte-for-byte identical to the previous version so existing chain
- * records continue to verify.
- */
 ReportSchema.methods.getCanonicalPayload = function getCanonicalPayload() {
-  // Return a plain, fully-detached object. Mongoose subdocuments
-  // (location, aiFlag) carry internal `$__` pointers back to their
-  // parent document; passing them straight into computeHash() causes
-  // canonicalize() to walk that circular graph and blow the call
-  // stack. `.toObject()` on each subdocument flattens it to a plain
-  // object that hashes deterministically — the JSON produced is
-  // identical to what the hash chain has always used, so existing
-  // records continue to verify.
   return {
     reportId: this.reportId,
     textData: this.textData,
@@ -282,7 +224,7 @@ ReportSchema.methods.getCanonicalPayload = function getCanonicalPayload() {
     createdAt: this.createdAt,
   };
 };
-// Cryptographic integrity hook — runs only on creation.
+
 ReportSchema.pre('save', function preSaveHashChain(next) {
   if (!this.isNew) {
     return next(
@@ -314,7 +256,6 @@ ReportSchema.pre('save', function preSaveHashChain(next) {
   }
 });
 
-// Write-once enforcement — block direct update/delete mutations.
 function blockDirectMutation(next) {
   next(new Error('Report documents are append-only. Direct update/delete operations are not permitted.'));
 }
@@ -328,30 +269,19 @@ ReportSchema.pre('findOneAndDelete', blockDirectMutation);
 ReportSchema.pre('findOneAndRemove', blockDirectMutation);
 
 /**
- * CANONICAL VOTE ENTRY POINT (Two-Officer Consensus).
+ * CANONICAL VOTE ENTRY POINT — 3-Officer Consensus (majority 2-of-3)
  *
- * Records one officer's vote on this report and recomputes the consensus
- * counters and workflow status in a SINGLE atomic update (an aggregation-
- * pipeline update, MongoDB 4.2+), so two officers voting at the same
- * instant can never overwrite each other's vote or leave counters/status
- * out of sync.
+ * ALL 3 officers must vote. The majority decides:
+ *   2+ approvals  → 'blacklisted'
+ *   2+ rejections → 'rejected'
  *
- * Guards enforced inside the same atomic filter:
- *   - the report must still be open (pending / under_review / one_approval)
- *   - the officer must not already appear in `votes`
+ * Intermediate states (fewer than 3 votes cast):
+ *   2 approvals → 'two_approvals'
+ *   1 approval  → 'one_approval'
+ *   otherwise   → 'under_review'
  *
- * Status rules (identical to the legacy BlacklistEntry state machine):
- *   approvals >= 2 -> 'blacklisted'
- *   rejections >= 2 -> 'rejected'
- *   approvals === 1 -> 'one_approval'
- *   otherwise       -> 'under_review'
- *
- * Returns the updated report document (plain object). Throws an Error
- * with .statusCode / .code on 400, 404 and 409 conditions.
- *
- * This bypasses Mongoose middleware on purpose (it is the sanctioned
- * exception to the append-only guard) and only ever touches the
- * workflow fields: votes, consensusState, status.
+ * The 3rd officer is the FINALIZER — the case can't close before
+ * all 3 votes are in. Stamps `resolvedAt` on the FIRST terminal transition.
  */
 ReportSchema.statics.castVote = async function castVote(
   reportId,
@@ -377,9 +307,6 @@ ReportSchema.statics.castVote = async function castVote(
     votedAt: new Date(),
   };
 
-  // $literal is REQUIRED around the vote: inside an aggregation pipeline a
-  // string beginning with "$" (e.g. an officer comment of "$100 scam") would
-  // otherwise be parsed as a field path / expression.
   const pipeline = [
     {
       $set: {
@@ -408,12 +335,54 @@ ReportSchema.statics.castVote = async function castVote(
         status: {
           $switch: {
             branches: [
-              { case: { $gte: ['$consensusState.approvals', CONSENSUS_REQUIRED] }, then: 'blacklisted' },
-              { case: { $gte: ['$consensusState.rejections', CONSENSUS_REQUIRED] }, then: 'rejected' },
+              // ── Finalized ONLY when all 3 have voted AND majority agrees ──
+              {
+                case: {
+                  $and: [
+                    { $gte: [{ $size: '$votes' }, 3] },
+                    { $gte: ['$consensusState.approvals', 2] },
+                  ],
+                },
+                then: 'blacklisted',
+              },
+              {
+                case: {
+                  $and: [
+                    { $gte: [{ $size: '$votes' }, 3] },
+                    { $gte: ['$consensusState.rejections', 2] },
+                  ],
+                },
+                then: 'rejected',
+              },
+              // ── Intermediate states (still waiting for the 3rd vote) ──
+              { case: { $eq: ['$consensusState.approvals', 2] }, then: 'two_approvals' },
               { case: { $eq: ['$consensusState.approvals', 1] }, then: 'one_approval' },
             ],
             default: 'under_review',
           },
+        },
+      },
+    },
+    {
+      // Stamp resolvedAt only on the FIRST transition to terminal.
+      $set: {
+        resolvedAt: {
+          $cond: [
+            {
+              $and: [
+                { $gte: [{ $size: '$votes' }, 3] },
+                {
+                  $or: [
+                    { $gte: ['$consensusState.approvals', 2] },
+                    { $gte: ['$consensusState.rejections', 2] },
+                  ],
+                },
+                { $eq: [{ $ifNull: ['$resolvedAt', null] }, null] },
+              ],
+            },
+            '$$NOW',
+            { $ifNull: ['$resolvedAt', null] },
+          ],
         },
       },
     },
@@ -432,7 +401,6 @@ ReportSchema.statics.castVote = async function castVote(
   const updated = unwrapFindOneAndUpdate(result);
   if (updated) return updated;
 
-  // No document matched — work out why so the caller gets a precise error.
   const existing = await collection.findOne(
     { reportId },
     { projection: { status: 1, votes: 1 } }
@@ -459,15 +427,6 @@ ReportSchema.statics.castVote = async function castVote(
   throw httpError(409, 'VOTE_CONFLICT', 'The vote could not be recorded. Please refresh and try again.');
 };
 
-/**
- * @deprecated Use Report.castVote(). This full-array overwrite is not
- * concurrency-safe (two simultaneous voters can clobber each other) and is
- * retained only for backward compatibility with older scripts.
- *
- * Sanctioned exception for Two-Officer workflow updates.
- * NOTE: This bypasses Mongoose middleware and writes directly to the
- * underlying collection — only workflow fields are allowed to change.
- */
 ReportSchema.statics.applyWorkflowUpdate = async function applyWorkflowUpdate(
   reportId,
   { votes, consensusState, status }
@@ -476,6 +435,7 @@ ReportSchema.statics.applyWorkflowUpdate = async function applyWorkflowUpdate(
     'pending',
     'under_review',
     'one_approval',
+    'two_approvals',
     'blacklisted',
     'approved',
     'rejected',
@@ -487,7 +447,12 @@ ReportSchema.statics.applyWorkflowUpdate = async function applyWorkflowUpdate(
   const update = {};
   if (votes !== undefined) update.votes = votes;
   if (consensusState !== undefined) update.consensusState = consensusState;
-  if (status !== undefined) update.status = status;
+  if (status !== undefined) {
+    update.status = status;
+    if (RESOLVED_STATUSES.includes(status)) {
+      update.resolvedAt = new Date();
+    }
+  }
 
   if (Object.keys(update).length === 0) {
     throw new Error('applyWorkflowUpdate requires at least one workflow field to change.');
@@ -499,14 +464,12 @@ ReportSchema.statics.applyWorkflowUpdate = async function applyWorkflowUpdate(
   );
 };
 
-/**
- * Legacy sanctioned status-update path — kept for backward compatibility.
- */
 ReportSchema.statics.updateStatus = async function updateStatus(reportId, newStatus) {
   const allowed = [
     'pending',
     'under_review',
     'one_approval',
+    'two_approvals',
     'blacklisted',
     'approved',
     'rejected',
@@ -515,15 +478,19 @@ ReportSchema.statics.updateStatus = async function updateStatus(reportId, newSta
     throw new Error(`Invalid status "${newStatus}". Allowed: ${allowed.join(', ')}`);
   }
 
+  const update = { status: newStatus };
+  if (RESOLVED_STATUSES.includes(newStatus)) {
+    update.resolvedAt = new Date();
+  }
+
   return mongoose.model('Report').collection.updateOne(
     { reportId },
-    { $set: { status: newStatus } }
+    { $set: update }
   );
 };
 
 const ReportModel = mongoose.model('Report', ReportSchema);
 
-// Shared constants, exposed so controllers never re-declare the buckets.
 ReportModel.OPEN_STATUSES = OPEN_STATUSES;
 ReportModel.RESOLVED_STATUSES = RESOLVED_STATUSES;
 ReportModel.CONSENSUS_REQUIRED = CONSENSUS_REQUIRED;

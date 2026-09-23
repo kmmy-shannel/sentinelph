@@ -50,44 +50,13 @@ const LogoutIcon = ({ color }) => (
   </svg>
 );
 
-/**
- * Safely derives the avatar initials. Never throws, whatever shape `user`
- * has (null, missing name, non-string fields, extra whitespace).
- *   1. an explicit string `user.initials`
- *   2. first letters of up to two words of `user.name`
- *   3. first two characters of `user.email`
- *   4. "??"
- */
-function deriveInitials(user) {
-  if (typeof user?.initials === 'string' && user.initials.trim()) {
-    return user.initials.trim().slice(0, 2).toUpperCase();
-  }
-
-  if (typeof user?.name === 'string' && user.name.trim()) {
-    return user.name
-      .trim()
-      .split(/\s+/)
-      .map((w) => w[0])
-      .join('')
-      .slice(0, 2)
-      .toUpperCase();
-  }
-
-  if (typeof user?.email === 'string' && user.email.trim()) {
-    return user.email.trim().slice(0, 2).toUpperCase();
-  }
-
-  return "??";
-}
-
 export default function Sidebar({ isOpen, onClose }) {
   const { user, role, logout } = useAuth();
+  const [activeTab, setActiveTab] = useState("dashboard");
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [badges, setBadges] = useState({});
   const navigate = useNavigate();
   const location = useLocation();
-
-  const initials = deriveInitials(user);
 
   const loadBadges = useCallback(async () => {
     if (!role) return;
@@ -101,7 +70,29 @@ export default function Sidebar({ isOpen, onClose }) {
 
   useEffect(() => {
     loadBadges();
+    const interval = setInterval(loadBadges, 30000);
+    return () => clearInterval(interval);
   }, [loadBadges, location.pathname]);
+
+  // ── Optimistic badge clearing ─────────────────────────────────────────
+  // Any page can call window.__clearSidebarBadge('registry') to zero out a
+  // badge locally (instant UI feedback). The server request confirms it in
+  // the background; if it fails, 'badges:refresh' restores the true count.
+  const clearBadgeLocally = useCallback((key) => {
+    setBadges(prev => ({ ...prev, [key]: 0 }));
+  }, []);
+
+  useEffect(() => {
+    window.__clearSidebarBadge = clearBadgeLocally;
+    return () => { delete window.__clearSidebarBadge; };
+  }, [clearBadgeLocally]);
+
+  // Refresh badges when any page dispatches 'badges:refresh'.
+  useEffect(() => {
+    const handler = () => loadBadges();
+    window.addEventListener('badges:refresh', handler);
+    return () => window.removeEventListener('badges:refresh', handler);
+  }, [loadBadges]);
 
   function confirmLogout() {
     setShowLogoutConfirm(false);
@@ -126,40 +117,34 @@ export default function Sidebar({ isOpen, onClose }) {
   const getNavItems = () => {
     if (role === ROLES.OFFICER) {
       return [
-        { id: "dashboard", label: "Dashboard", Icon: DashboardIcon, to: "/officer/dashboard" },
-        { id: "queue", label: "Review Queue", Icon: QueueIcon, badge: badges.reviewQueue, to: "/officer/queue" },
-        { id: "registry", label: "Blacklist Registry", Icon: RegistryIcon, to: "/officer/registry" },
-        { id: "notifications", label: "Notifications", Icon: NotificationsIcon, to: "/officer/notifications" },
-        { id: "account", label: "Account", Icon: AccountIcon, to: "/officer/account" },
+        { id: "dashboard",     label: "Dashboard",          Icon: DashboardIcon,     to: "/officer/dashboard" },
+        { id: "queue",         label: "Review Queue",       Icon: QueueIcon,         badge: badges.reviewQueue, to: "/officer/queue" },
+        { id: "registry",      label: "Blacklist Registry", Icon: RegistryIcon,      badge: badges.registry,    to: "/officer/registry" },
+        { id: "notifications", label: "Notifications", Icon: NotificationsIcon, badge: badges.notifications, to: "/officer/notifications" },
+        { id: "account",       label: "Account",            Icon: AccountIcon,       to: "/officer/account" },
       ];
     } else if (role === ROLES.ADMIN) {
       return [
-        { id: "dashboard", label: "Dashboard", Icon: DashboardIcon, to: "/admin/dashboard" },
-        { id: "officers", label: "Officers", Icon: QueueIcon, badge: badges.officers, to: "/admin/officers" },
-        { id: "model", label: "AI Insights", Icon: RegistryIcon, to: "/admin/model" },
-        { id: "reports", label: "Analytics & Reports", Icon: NotificationsIcon, to: "/admin/reports" },
-        { id: "account", label: "Account", Icon: AccountIcon, to: "/admin/account" },
+        { id: "dashboard", label: "Dashboard",           Icon: DashboardIcon,     to: "/admin/dashboard" },
+        { id: "officers",  label: "Officers",            Icon: QueueIcon,         badge: badges.officers, to: "/admin/officers" },
+        { id: "model",     label: "AI Insights",         Icon: RegistryIcon,      to: "/admin/model" },
+        { id: "reports",   label: "Analytics & Reports", Icon: NotificationsIcon, to: "/admin/reports" },
+        { id: "account",   label: "Account",             Icon: AccountIcon,       to: "/admin/account" },
       ];
     } else if (role === ROLES.SUPERADMIN) {
       return [
-        { id: "dashboard", label: "Dashboard", Icon: DashboardIcon, to: "/superadmin/dashboard" },
-        { id: "users-rbac", label: "Users & RBAC", Icon: QueueIcon, badge: badges.usersRbac, to: "/superadmin/users-rbac" },
-        { id: "chain-integrity", label: "Chain Integrity", Icon: RegistryIcon, to: "/superadmin/chain-integrity" },
-        { id: "audit-logs", label: "Audit Logs", Icon: NotificationsIcon, badge: badges.auditLogs, to: "/superadmin/audit-logs" },
-        { id: "system-health", label: "System Health", Icon: AccountIcon, to: "/superadmin/system-health" },
-        { id: "account", label: "Account", Icon: AccountIcon, to: "/superadmin/account" },
+        { id: "dashboard",       label: "Dashboard",       Icon: DashboardIcon,     to: "/superadmin/dashboard" },
+        { id: "users-rbac",      label: "Users & RBAC",    Icon: QueueIcon,         badge: badges.usersRbac, to: "/superadmin/users-rbac" },
+        { id: "chain-integrity", label: "Chain Integrity", Icon: RegistryIcon,      to: "/superadmin/chain-integrity" },
+        { id: "audit-logs",      label: "Audit Logs",      Icon: NotificationsIcon, badge: badges.auditLogs, to: "/superadmin/audit-logs" },
+        { id: "system-health",   label: "System Health",   Icon: AccountIcon,       to: "/superadmin/system-health" },
+        { id: "account",         label: "Account",         Icon: AccountIcon,       to: "/superadmin/account" },
       ];
     }
     return [];
   };
 
   const NAV = getNavItems();
-
-  // Single source of truth for the highlighted item: the current URL.
-  // (Previously a click-set `activeTab` state fought with NavLink's own
-  // isActive, so a direct load of /officer/queue highlighted "Dashboard".)
-  const isItemActive = (item) =>
-    location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
 
   return (
     <>
@@ -180,11 +165,7 @@ export default function Sidebar({ isOpen, onClose }) {
               <div style={{ fontSize: "9px", color: "#374151", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>CONTROL CENTER</div>
             </div>
           </div>
-          <button
-            className="sidebar-close-btn"
-            onClick={onClose}
-            aria-label="Close menu"
-          >
+          <button className="sidebar-close-btn" onClick={onClose} aria-label="Close menu">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
@@ -202,120 +183,76 @@ export default function Sidebar({ isOpen, onClose }) {
         </div>
 
         <nav style={{ flex: 1, padding: "4px 12px", overflowY: "auto" }}>
-          {NAV.map(item => {
-            const active = isItemActive(item);
-            return (
-              <NavLink
-                key={item.id}
-                to={item.to}
-                onClick={() => {
-                  if (onClose) onClose();
-                }}
-                style={{
-                  width: "100%", display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px", borderRadius: "8px", marginBottom: "2px",
-                  background: active ? `${roleColor}18` : "transparent",
-                  border: active ? `1px solid ${roleColor}30` : "1px solid transparent",
-                  textDecoration: "none", cursor: "pointer", transition: "all 0.2s ease",
-                }}
-              >
-                <item.Icon color={active ? roleColor : "#4b5563"} />
-                <span style={{ flex: 1, fontSize: "12px", fontWeight: active ? 600 : 500, color: active ? "#fff" : "#6b7280", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
-                {item.badge > 0 && (
-                  <span style={{ fontSize: "9px", fontWeight: 700, padding: "2px 5px", borderRadius: "999px", background: "#ef4444", color: "#fff", minWidth: "18px", textAlign: "center" }}>
-                    {item.badge}
-                  </span>
-                )}
-              </NavLink>
-            );
-          })}
+          {NAV.map(item => (
+            <NavLink
+              key={item.id}
+              to={item.to}
+              onClick={() => { setActiveTab(item.id); if (onClose) onClose(); }}
+              style={({ isActive }) => ({
+                width: "100%", display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px", borderRadius: "8px", marginBottom: "2px",
+                background: isActive || activeTab === item.id ? `${roleColor}18` : "transparent",
+                border: isActive || activeTab === item.id ? `1px solid ${roleColor}30` : "1px solid transparent",
+                textDecoration: "none", cursor: "pointer", transition: "all 0.2s ease",
+              })}
+            >
+              <item.Icon color={activeTab === item.id ? roleColor : "#4b5563"} />
+              <span style={{ flex: 1, fontSize: "12px", fontWeight: activeTab === item.id ? 600 : 500, color: activeTab === item.id ? "#fff" : "#6b7280", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
+              {item.badge > 0 && (
+                <span style={{ fontSize: "9px", fontWeight: 700, padding: "2px 5px", borderRadius: "999px", background: "#ef4444", color: "#fff", minWidth: "18px", textAlign: "center" }}>
+                  {item.badge}
+                </span>
+              )}
+            </NavLink>
+          ))}
         </nav>
 
         <div style={{ padding: "12px", borderTop: "1px solid #0f0f1a" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
-            <div style={{ width: "28px", height: "28px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "11px", fontWeight: 700, flexShrink: 0, background: `${roleColor}25`, color: roleColor, border: `1px solid ${roleColor}40` }}>{initials}</div>
+            <div style={{ width: "28px", height: "28px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "11px", fontWeight: 700, flexShrink: 0, background: `${roleColor}25`, color: roleColor, border: `1px solid ${roleColor}40` }}>{user?.initials ?? "SA"}</div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: "11px", fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.name ?? "Platform Admin"}</div>
               <div style={{ fontSize: "9px", color: "#374151", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.email ?? "admin@sentinelph.gov.ph"}</div>
             </div>
           </div>
-          <button
-            onClick={() => setShowLogoutConfirm(true)}
+          <button onClick={() => setShowLogoutConfirm(true)}
             style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "11px", color: "#374151", background: "none", border: "none", cursor: "pointer", padding: 0 }}
             onMouseEnter={e => { e.currentTarget.style.color = "#ef4444"; e.currentTarget.querySelector('svg').style.stroke = "#ef4444"; }}
-            onMouseLeave={e => { e.currentTarget.style.color = "#374151"; e.currentTarget.querySelector('svg').style.stroke = "#374151"; }}
-          >
+            onMouseLeave={e => { e.currentTarget.style.color = "#374151"; e.currentTarget.querySelector('svg').style.stroke = "#374151"; }}>
             <LogoutIcon color="#374151" /> Sign out →
           </button>
         </div>
 
         <style>{`
-          .sentinel-sidebar {
-            width: 220px;
-            height: 100vh;
-            flex-shrink: 0;
-          }
-          .sidebar-close-btn {
-            display: none;
-            color: #4b5563;
-            background: none;
-            border: none;
-            cursor: pointer;
-            padding: 0;
-          }
+          .sentinel-sidebar { width: 220px; height: 100vh; flex-shrink: 0; }
+          .sidebar-close-btn { display: none; color: #4b5563; background: none; border: none; cursor: pointer; padding: 0; }
           @media (max-width: 1024px) {
-            .sentinel-sidebar {
-              position: fixed;
-              top: 0;
-              left: 0;
-              z-index: 50;
-              height: 100vh;
-              transform: translateX(-100%);
-              transition: transform 0.3s ease;
-              width: 260px;
-              box-shadow: 4px 0 24px rgba(0,0,0,0.5);
-            }
-            .sentinel-sidebar.open {
-              transform: translateX(0);
-            }
-            .sidebar-close-btn {
-              display: flex;
-            }
+            .sentinel-sidebar { position: fixed; top: 0; left: 0; z-index: 50; height: 100vh; transform: translateX(-100%); transition: transform 0.3s ease; width: 260px; box-shadow: 4px 0 24px rgba(0,0,0,0.5); }
+            .sentinel-sidebar.open { transform: translateX(0); }
+            .sidebar-close-btn { display: flex; }
           }
         `}</style>
       </aside>
 
-      {/* LOGOUT CONFIRMATION MODAL */}
       {showLogoutConfirm && (
         <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}>
           <div style={{ width: "100%", maxWidth: "400px", margin: "0 16px", borderRadius: "20px", padding: "28px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a", boxShadow: "0 40px 80px rgba(0,0,0,0.5)" }}>
             <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: "linear-gradient(90deg,transparent,#ef4444,transparent)" }} />
-
             <div style={{ display: "flex", justifyContent: "center", marginBottom: "16px" }}>
               <div style={{ width: "56px", height: "56px", borderRadius: "50%", background: "#ef444415", border: "1px solid #ef444430", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <LogoutIcon color="#ef4444" />
               </div>
             </div>
-
             <div style={{ textAlign: "center", marginBottom: "24px" }}>
-              <div style={{ fontSize: "18px", fontWeight: 700, color: "#fff", marginBottom: "6px" }}>
-                Sign Out?
-              </div>
-              <div style={{ fontSize: "13px", color: "#6b7280", lineHeight: 1.6 }}>
-                You'll be returned to the login screen. Make sure you've saved any work in progress.
-              </div>
+              <div style={{ fontSize: "18px", fontWeight: 700, color: "#fff", marginBottom: "6px" }}>Sign Out?</div>
+              <div style={{ fontSize: "13px", color: "#6b7280", lineHeight: 1.6 }}>You'll be returned to the login screen. Make sure you've saved any work in progress.</div>
             </div>
-
             <div style={{ display: "flex", gap: "10px" }}>
-              <button
-                onClick={() => setShowLogoutConfirm(false)}
-                style={{ flex: 1, padding: "12px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: "#111120", border: "1px solid #1a1a2a", color: "#9ca3af", cursor: "pointer" }}
-              >
+              <button onClick={() => setShowLogoutConfirm(false)}
+                style={{ flex: 1, padding: "12px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: "#111120", border: "1px solid #1a1a2a", color: "#9ca3af", cursor: "pointer" }}>
                 Cancel
               </button>
-              <button
-                onClick={confirmLogout}
-                style={{ flex: 1, padding: "12px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: "#ef4444", border: "none", color: "#fff", cursor: "pointer" }}
-              >
+              <button onClick={confirmLogout}
+                style={{ flex: 1, padding: "12px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: "#ef4444", border: "none", color: "#fff", cursor: "pointer" }}>
                 Yes, Sign Out
               </button>
             </div>

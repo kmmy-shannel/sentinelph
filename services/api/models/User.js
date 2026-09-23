@@ -63,6 +63,30 @@ const userSchema = new Schema(
       type: Date,
       default: null,
     },
+    lastSeenBlacklist: {
+      type: Date,
+      default: null,
+    },
+    lastSeenAllTab: {
+      type: Date,
+      default: null,
+    },
+    lastSeenResolvedTab: {
+      type: Date,
+      default: null,
+    },
+    lastSeenVotedTab: {
+      type: Date,
+      default: null,
+    },
+    lastSeenNotifications: {
+      type: Date,
+      default: null,
+    },
+    readNotificationIds: {
+      type: [String],
+      default: [],
+    },
   },
   {
     timestamps: true,
@@ -81,6 +105,12 @@ userSchema.methods.toSafeJSON = function toSafeJSON() {
     jurisdiction: this.jurisdiction,
     status: this.status,
     lastSeenAuditLog: this.lastSeenAuditLog,
+    lastSeenBlacklist: this.lastSeenBlacklist,
+    lastSeenAllTab: this.lastSeenAllTab,
+    lastSeenResolvedTab: this.lastSeenResolvedTab,
+    lastSeenVotedTab: this.lastSeenVotedTab,
+    lastSeenNotifications: this.lastSeenNotifications,
+    readNotificationIds: this.readNotificationIds,
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,
   };

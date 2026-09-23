@@ -1,134 +1,193 @@
 // services/api/models/BlacklistEntry.js
-'use strict';
-
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 
-const STATUS_VALUES = [
-  'pending',
-  'one_approval',
-  'under_review',
-  'blacklisted',
-  'rejected',
-];
+const { Schema } = mongoose;
 
-const blacklistEntrySchema = new mongoose.Schema(
+const VOTE_DECISIONS = ['approve', 'reject'];
+const STATUSES = ['pending', 'under_review', 'blacklisted', 'rejected'];
+const APPROVALS_REQUIRED = 2;
+const REJECTIONS_REQUIRED = 2;
+
+const VoteSchema = new Schema(
+  {
+    officerId: { type: String, required: true },
+    decision: { type: String, enum: VOTE_DECISIONS, required: true },
+    comment: { type: String, trim: true, maxlength: 2000, default: '' },
+    votedAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+const BlacklistEntrySchema = new Schema(
   {
     phoneNumber: {
       type: String,
-      required: true,
+      required: [true, 'phoneNumber is required.'],
       unique: true,
       trim: true,
+      index: true,
     },
     region: {
       type: String,
+      trim: true,
       default: null,
-      trim: true,
-    },
-    scamType: {
-      type: String,
-      default: 'UNKNOWN',
-      trim: true,
+      index: true,
     },
     status: {
       type: String,
-      enum: STATUS_VALUES,
+      enum: STATUSES,
       default: 'pending',
       index: true,
     },
-    reportCount: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-    approvingOfficers: {
-      type: [String],
-      default: [],
-    },
-    sourceReportIds: {
-      type: [mongoose.Schema.Types.ObjectId],
-      ref: 'Report',
-      default: [],
-    },
-    hash: {
-      type: String,
-      default: null,
-    },
-    notes: {
-      type: String,
-      default: '',
-      maxlength: 2000,
-    },
-    blacklistedAt: {
-      type: Date,
-      default: null,
-    },
+    votes: { type: [VoteSchema], default: [] },
+    approvingOfficers: { type: [String], default: [] },
+    reportCount: { type: Number, default: 0, min: 0 },
+    blacklistedAt: { type: Date, default: null },
+    hash: { type: String, trim: true, default: null },
+    notes: { type: String, trim: true, maxlength: 2000, default: null },
   },
   {
     timestamps: true,
-    collection: 'blacklistentries',
   }
 );
 
-/**
- * Called as BlacklistEntry.upsertFromReport(updated) from
- * reportReviewController.js after a report hits 'blacklisted'.
- * Officer approvals are read from report.votes where decision === 'approve'.
- * Idempotent — safe to call repeatedly for the same report.
- */
-blacklistEntrySchema.statics.upsertFromReport = async function (report) {
-  if (!report || !report.reportedNumber) {
-    throw new Error('upsertFromReport: report.reportedNumber is required');
+BlacklistEntrySchema.methods.registerVote = function registerVote(
+  officerId,
+  decision,
+  comment = ''
+) {
+  if (!officerId || typeof officerId !== 'string') {
+    const err = new Error('A valid officerId is required to vote.');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!VOTE_DECISIONS.includes(decision)) {
+    const err = new Error("decision must be 'approve' or 'reject'.");
+    err.statusCode = 400;
+    throw err;
+  }
+  if (this.status === 'blacklisted' || this.status === 'rejected') {
+    const err = new Error(`This candidate is already finalized as "${this.status}".`);
+    err.statusCode = 409;
+    throw err;
+  }
+  const alreadyVoted = (this.votes || []).some((v) => v.officerId === officerId);
+  if (alreadyVoted) {
+    const err = new Error('You have already voted on this candidate.');
+    err.statusCode = 409;
+    throw err;
   }
 
+  this.votes.push({
+    officerId,
+    decision,
+    comment: String(comment || '').trim().slice(0, 2000),
+    votedAt: new Date(),
+  });
+
+  const approvals = this.votes.filter((v) => v.decision === 'approve').length;
+  const rejections = this.votes.filter((v) => v.decision === 'reject').length;
+
+  if (approvals >= APPROVALS_REQUIRED) {
+    this.status = 'blacklisted';
+    this.blacklistedAt = new Date();
+    this.approvingOfficers = this.votes
+      .filter((v) => v.decision === 'approve')
+      .map((v) => v.officerId);
+  } else if (rejections >= REJECTIONS_REQUIRED) {
+    this.status = 'rejected';
+  } else if (approvals === 1) {
+    this.status = 'under_review';
+  }
+
+  if (this.status === 'blacklisted' || this.status === 'rejected') {
+    const payload = JSON.stringify({
+      phoneNumber: this.phoneNumber,
+      status: this.status,
+      approvingOfficers: this.approvingOfficers,
+      reportCount: this.reportCount,
+      finalizedAt: this.blacklistedAt,
+    });
+    this.hash = crypto.createHash('sha256').update(payload).digest('hex');
+  }
+
+  return this;
+};
+
+BlacklistEntrySchema.statics.upsertFromReport = async function upsertFromReport(report) {
+  if (!report || !report.reportedNumber) return null;
+
   const phoneNumber = String(report.reportedNumber).trim();
+  if (!phoneNumber) return null;
+
+  const finalStatus = report.status === 'blacklisted' ? 'blacklisted' : 'rejected';
 
   const approvingOfficers = Array.isArray(report.votes)
-    ? Array.from(
-        new Set(
-          report.votes
-            .filter((v) => v && v.decision === 'approve' && v.userId)
-            .map((v) => String(v.userId))
-        )
-      )
+    ? report.votes
+        .filter((v) => v.decision === 'approve')
+        .map((v) => v.userId)
+        .filter(Boolean)
     : [];
 
-  const ReportModel = mongoose.models.Report;
-  let reportCount = 1;
-  if (ReportModel) {
-    try {
-      reportCount = await ReportModel.countDocuments({ reportedNumber: phoneNumber });
-    } catch (_) {
-      // Non-fatal — leave reportCount at 1 if the count fails
+  const reportCount = await this.db
+    .model('Report')
+    .countDocuments({ reportedNumber: phoneNumber });
+
+  let entry = await this.findOne({ phoneNumber });
+
+  if (!entry) {
+    entry = new this({
+      phoneNumber,
+      region: report.jurisdiction || null,
+      status: finalStatus,
+      votes: (report.votes || []).map((v) => ({
+        officerId: v.userId,
+        decision: v.decision,
+        comment: v.comment || '',
+        votedAt: v.votedAt || new Date(),
+      })),
+      approvingOfficers,
+      reportCount,
+      blacklistedAt: finalStatus === 'blacklisted' ? new Date() : null,
+    });
+  } else {
+    if (entry.status !== 'blacklisted' && entry.status !== 'rejected') {
+      entry.status = finalStatus;
+      entry.votes = (report.votes || []).map((v) => ({
+        officerId: v.userId,
+        decision: v.decision,
+        comment: v.comment || '',
+        votedAt: v.votedAt || new Date(),
+      }));
+      entry.approvingOfficers = approvingOfficers;
+      entry.reportCount = reportCount;
+      if (finalStatus === 'blacklisted' && !entry.blacklistedAt) {
+        entry.blacklistedAt = new Date();
+      }
+    } else {
+      entry.reportCount = reportCount;
     }
   }
 
-  const now = new Date();
+  const payload = JSON.stringify({
+    phoneNumber: entry.phoneNumber,
+    status: entry.status,
+    approvingOfficers: entry.approvingOfficers,
+    reportCount: entry.reportCount,
+    finalizedAt: entry.blacklistedAt,
+  });
+  entry.hash = crypto.createHash('sha256').update(payload).digest('hex');
 
-  const update = {
-    $setOnInsert: {
-      phoneNumber,
-      region: report.region || null,
-      scamType: report.scamType || 'UNKNOWN',
-    },
-    $set: {
-      status: 'blacklisted',
-      approvingOfficers,
-      reportCount,
-      blacklistedAt: now,
-    },
-  };
-
-  const hash = report.hash || report.contentHash || null;
-  if (hash) update.$set.hash = hash;
-  if (report._id) update.$addToSet = { sourceReportIds: report._id };
-
-  return this.findOneAndUpdate(
-    { phoneNumber },
-    update,
-    { upsert: true, new: true, setDefaultsOnInsert: true }
-  );
+  await entry.save();
+  return entry;
 };
 
-module.exports =
+BlacklistEntrySchema.index({ status: 1, updatedAt: -1 });
+BlacklistEntrySchema.index({ phoneNumber: 1, status: 1 });
+
+const BlacklistEntry =
   mongoose.models.BlacklistEntry ||
-  mongoose.model('BlacklistEntry', blacklistEntrySchema);
+  mongoose.model('BlacklistEntry', BlacklistEntrySchema);
+
+module.exports = BlacklistEntry;

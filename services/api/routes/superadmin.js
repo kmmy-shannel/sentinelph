@@ -1,10 +1,11 @@
-// apps/api/routes/superadmin.js
+// services/api/routes/superadmin.js
 const express = require('express');
 const router = express.Router();
 
 const { verifyFirebaseToken } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
 const { ipAllowlist } = require('../middleware/ipAllowlist');
+const { initFirebase } = require('../config/firebase');
 
 const { verifyChain } = require('../services/chainVerifier');
 
@@ -16,6 +17,8 @@ const Report = require('../models/Report');
 router.use(ipAllowlist);
 router.use(verifyFirebaseToken);
 router.use(requireRole('superadmin'));
+
+const VALID_ROLES = ['officer', 'analyst', 'auditor', 'admin'];
 
 // ─── GET /chain/status ───────────────────────────────────────
 router.get('/chain/status', async (req, res) => {
@@ -123,6 +126,14 @@ router.post('/users/:id/suspend', async (req, res) => {
     const user = await User.findByIdAndUpdate(id, { status: 'suspended' }, { new: true }).lean();
     if (!user) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND', message: `No user with id ${id}.` });
 
+    // Also disable in Firebase so they can't sign in.
+    try {
+      const admin = initFirebase();
+      await admin.auth().updateUser(user.firebaseUid, { disabled: true });
+    } catch (fbErr) {
+      console.warn('[superadmin/suspend] Firebase disable failed (non-fatal):', fbErr.message);
+    }
+
     await AuditLog.record({
       userId: req.user.uid,
       role: 'superadmin',
@@ -145,6 +156,14 @@ router.post('/users/:id/restore', async (req, res) => {
     const user = await User.findByIdAndUpdate(id, { status: 'active' }, { new: true }).lean();
     if (!user) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND', message: `No user with id ${id}.` });
 
+    // Re-enable in Firebase.
+    try {
+      const admin = initFirebase();
+      await admin.auth().updateUser(user.firebaseUid, { disabled: false });
+    } catch (fbErr) {
+      console.warn('[superadmin/restore] Firebase enable failed (non-fatal):', fbErr.message);
+    }
+
     await AuditLog.record({
       userId: req.user.uid,
       role: 'superadmin',
@@ -157,6 +176,82 @@ router.post('/users/:id/restore', async (req, res) => {
   } catch (err) {
     console.error('[superadmin/users/restore]', err);
     return res.status(500).json({ success: false, error: 'RESTORE_FAILED', message: 'Failed to restore account.' });
+  }
+});
+
+// ─── POST /users/:id/role ────────────────────────────────────
+// body: { role: 'officer' | 'analyst' | 'auditor' | 'admin' }
+router.post('/users/:id/role', async (req, res) => {
+  const { id } = req.params;
+  const { role } = req.body || {};
+
+  if (!VALID_ROLES.includes(role)) {
+    return res.status(400).json({
+      success: false,
+      error: 'INVALID_ROLE',
+      message: `Role must be one of: ${VALID_ROLES.join(', ')}.`,
+    });
+  }
+
+  try {
+    const user = await User.findByIdAndUpdate(id, { role }, { new: true }).lean();
+    if (!user) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND', message: `No user with id ${id}.` });
+
+    // Update Firebase custom claims so the new role takes effect at next token refresh.
+    try {
+      const admin = initFirebase();
+      const fbUser = await admin.auth().getUser(user.firebaseUid);
+      const currentClaims = fbUser.customClaims || {};
+      await admin.auth().setCustomUserClaims(user.firebaseUid, {
+        ...currentClaims,
+        role,
+      });
+    } catch (fbErr) {
+      console.error('[superadmin/users/role] Firebase claim update failed:', fbErr.message);
+      return res.status(500).json({
+        success: false,
+        error: 'FIREBASE_CLAIM_FAILED',
+        message: 'Role updated in DB but the Firebase claim could not be set. Contact your engineer.',
+      });
+    }
+
+    await AuditLog.record({
+      userId: req.user.uid,
+      role: 'superadmin',
+      action: `Role reassigned — ${user.fullName || id} → ${role}`,
+      ipAddress: req.ip,
+      metadata: { category: 'RBAC', target: String(user._id), actorEmail: req.user.email, newRole: role },
+    });
+
+    return res.json({ success: true, data: { user } });
+  } catch (err) {
+    console.error('[superadmin/users/role]', err);
+    return res.status(500).json({ success: false, error: 'ROLE_UPDATE_FAILED', message: 'Failed to update role.' });
+  }
+});
+
+// ─── POST /users/:id/kms/rotate ──────────────────────────────
+// Placeholder — no real KMS integration yet. Returns a fake new key ID.
+router.post('/users/:id/kms/rotate', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const user = await User.findById(id).lean();
+    if (!user) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND', message: `No user with id ${id}.` });
+
+    const newKeyId = `kms_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+    await AuditLog.record({
+      userId: req.user.uid,
+      role: 'superadmin',
+      action: `KMS key rotated — ${user.fullName || id}`,
+      ipAddress: req.ip,
+      metadata: { category: 'KMS', target: String(user._id), actorEmail: req.user.email, newKeyId },
+    });
+
+    return res.json({ success: true, data: { kms_key_id: newKeyId } });
+  } catch (err) {
+    console.error('[superadmin/users/kms/rotate]', err);
+    return res.status(500).json({ success: false, error: 'KMS_ROTATE_FAILED', message: 'Failed to rotate KMS key.' });
   }
 });
 

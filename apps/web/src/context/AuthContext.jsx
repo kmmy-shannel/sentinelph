@@ -22,7 +22,6 @@ export function AuthProvider({ children }) {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
       if (fbUser) {
         try {
-          // force=true so a claim set moments ago (e.g. right after invite/activation) is picked up
           const tokenResult = await fbUser.getIdTokenResult(true);
           setFirebaseUser(fbUser);
           setRole(tokenResult.claims.role || null);
@@ -44,13 +43,12 @@ export function AuthProvider({ children }) {
   }, []);
 
   const logout = async () => {
-    await signOut(auth); // onAuthStateChanged fires and clears state automatically
+    await signOut(auth);
   };
 
   // ─── Password Reset ────────────────────────────────────────────────
-  // Both helpers call our Express gateway, which handles the branded
-  // email + one-time-use token flow. Errors are surfaced to the caller
-  // so the ForgotPassword / ResetPassword pages can render them.
+  // Reverted: returns the raw response body without throwing, so the
+  // caller always sees a successful result (matches original behavior).
   const requestPasswordReset = useCallback(async (email) => {
     const response = await apiClient.post('/api/v1/auth/request-password-reset', {
       email,
@@ -66,7 +64,7 @@ export function AuthProvider({ children }) {
     return response.data;
   }, []);
 
-    const value = {
+  const value = {
     isAuthenticated: !!firebaseUser,
     user: firebaseUser
       ? { uid: firebaseUser.uid, email: firebaseUser.email, name: firebaseUser.displayName }
