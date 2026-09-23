@@ -1,25 +1,27 @@
 {
   "model_type": "transformer",
   "model_name": "distilbert-base-uncased",
-  "model_version": "sentinelph-distilbert-2026-09-08-v001",
-  "training_date": "2026-09-08T17:45:15",
-  "test_accuracy": 0.9766,
-  "precision": 0.9301,
-  "recall": 0.9505,
-  "f1": 0.9402,
-  "roc_auc": 0.9884,
-  "training_samples": 7516,
-  "validation_samples": 940,
-  "test_samples": 940,
+  "model_version": "sentinelph-distilbert-3class-2026-09-23-v001",
+  "training_date": "2026-09-23T20:54:32",
+  "num_labels": 3,
+  "label_mapping": {
+    "0": "legitimate",
+    "1": "grey_area",
+    "2": "malicious"
+  },
+  "test_accuracy": 0.9083,
+  "f1_macro": 0.8816,
+  "f1_legitimate": 0.9361,
+  "f1_grey_area": 0.7755,
+  "f1_malicious": 0.9333,
+  "training_samples": 3484,
+  "validation_samples": 435,
+  "test_samples": 436,
   "training_config": {
     "epochs": 4,
     "batch_size": 8,
     "max_length": 256,
     "seed": 42
-  },
-  "label_mapping": {
-    "likely_scam": 1,
-    "likely_legitimate": 0
   },
   "advisory_only": true
 }

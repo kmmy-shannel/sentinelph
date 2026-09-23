@@ -34,7 +34,7 @@ from loguru import logger
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from app.config import classify_score, settings  # noqa: E402
+from app.config import settings  # noqa: E402
 from app.inference import ModelNotLoadedError, get_classifier  # noqa: E402
 from app.schemas import (  # noqa: E402
     HealthResponse,
@@ -182,7 +182,9 @@ def predict(payload: PredictRequest) -> PredictResponse:
         ) from exc
 
     probability = result["probability_score"]
-    label = classify_score(probability)
+    label = result["label"]                          # 3-class label from inference
+    # Normalize risk_level to UPPERCASE to match schemas.RiskLevel Literal
+    risk_level_upper = str(result["risk_level"]).upper()
 
     logger.info(
         "predict report_id={} ocr_used={} chars={} prob={:.4f} "
@@ -198,7 +200,7 @@ def predict(payload: PredictRequest) -> PredictResponse:
         label=label,
         is_scam=result["is_scam"],
         confidence_score=result["confidence_score"],
-        risk_level=result["risk_level"],
+        risk_level=risk_level_upper,                  # ← UPPERCASE
         explanation_reasons=result["explanation_reasons"],
         ocr_used=ocr_used,
         ocr_extracted_chars=ocr_char_count,
@@ -258,7 +260,7 @@ async def ocr_extract(
             result = clf.analyze(raw_text=text, normalized_text=clean_text)
             response.is_scam = result["is_scam"]
             response.confidence_score = result["confidence_score"]
-            response.risk_level = result["risk_level"]
+            response.risk_level = str(result["risk_level"]).upper()
             response.explanation_reasons = result["explanation_reasons"]
         except Exception as exc:  # noqa: BLE001
             logger.warning("Layer-1 classification after OCR failed: {}", exc)
