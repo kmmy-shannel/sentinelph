@@ -48,7 +48,11 @@ const AiFlagSchema = new Schema(
 
     label: {
       type: String,
-      enum: ['likely_scam', 'uncertain', 'likely_legitimate', 'unavailable'],
+     enum: [
+    'legitimate', 'grey_area', 'malicious',
+    'likely_scam', 'uncertain', 'likely_legitimate',
+    'unavailable',
+  ],
       default: 'unavailable',
     },
 
