@@ -16,7 +16,8 @@ const STATUS_ORDER = [
   { key: 'approved',      label: 'Approved',       color: '#22c55e' },
 ];
 
-const COL_WIDTHS = ['14%', '18%', '14%', '8%', '8%', '16%', '10%', '12%'];
+// Column widths widened to fit the new REPORTER column.
+const COL_WIDTHS = ['12%', '14%', '12%', '14%', '7%', '7%', '14%', '9%', '11%'];
 
 const CheckIcon = ({ color }) => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -92,6 +93,11 @@ function mapReportToRow(r, currentUid) {
     nullifierHash: r.nullifierHash || r.nullifier || null,
     zkpHash: r.zkpHash || null,
     jurisdiction: r.jurisdiction || "PH",
+    // ─── REPORTER IDENTITY ────────────────────────────────────────────
+    reporterName: r.reporterName || null,
+    reporterEmail: r.reporterEmail || null,
+    reporterShared: Boolean(r.reporterShared),
+    // ──────────────────────────────────────────────────────────────────
   };
 }
 
@@ -186,6 +192,14 @@ export default function ReviewQueue() {
         ...row,
         evidenceImage: full?.evidenceImage || null,
         evidenceText: full?.evidenceText || full?.content || row.evidenceText,
+        // ─── REPORTER IDENTITY ──────────────────────────────────────
+        // The detail endpoint returns the full reporter fields; the list
+        // endpoint already included them, but we re-pick from `full` so
+        // any updates are reflected if the row was stale.
+        reporterName: full?.reporterName ?? row.reporterName ?? null,
+        reporterEmail: full?.reporterEmail ?? row.reporterEmail ?? null,
+        reporterShared: Boolean(full?.reporterShared ?? row.reporterShared),
+        // ─────────────────────────────────────────────────────────────
         _loadingImage: false,
       });
     } catch (err) {
@@ -210,7 +224,11 @@ export default function ReviewQueue() {
       list = list.filter((r) =>
         r.id.toLowerCase().includes(q) ||
         r.number.toLowerCase().includes(q) ||
-        r.type.toLowerCase().includes(q)
+        r.type.toLowerCase().includes(q) ||
+        // ─── REPORTER IDENTITY ──────────────────────────────────────
+        (r.reporterName || "").toLowerCase().includes(q) ||
+        (r.reporterEmail || "").toLowerCase().includes(q)
+        // ─────────────────────────────────────────────────────────────
       );
     }
     return list;
@@ -338,6 +356,13 @@ export default function ReviewQueue() {
                       <td style={{ padding: "12px 20px", fontSize: "12px", color: "#3b82f6", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.id.slice(0, 12)}</td>
                       <td style={{ padding: "12px 20px", fontSize: "12px", color: "#fff", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.number}</td>
                       <td style={{ padding: "12px 20px", fontSize: "12px", color: "#9ca3af", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.type}</td>
+                      {/* ─── REPORTER IDENTITY ─────────────────────────── */}
+                      <td style={{ padding: "12px 20px", fontSize: "12px", color: "#9ca3af", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {row.reporterShared && row.reporterName
+                          ? row.reporterName
+                          : <span style={{ color: "#4b5563", fontStyle: "italic" }}>Anonymous</span>}
+                      </td>
+                      {/* ──────────────────────────────────────────────── */}
                       <td style={{ padding: "12px 20px", fontSize: "12px", fontWeight: 700, color: "#fff" }}>{row.reports}</td>
                       <td style={{ padding: "12px 20px", fontSize: "12px", color: "#6b7280" }}>{row.channel}</td>
                       <td style={{ padding: "12px 20px", fontSize: "12px", color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.submitted}</td>
@@ -381,6 +406,30 @@ export default function ReviewQueue() {
                 <div style={{ fontSize: "12px", fontWeight: 500, color: "#fff", fontFamily: "'JetBrains Mono',monospace", marginBottom: "4px" }}>{voteModal.number}</div>
                 <div style={{ fontSize: "11px", color: "#4b5563" }}>Prior votes: {voteModal.priorVotes} · Submitted {voteModal.submitted}</div>
               </div>
+
+              {/* ─── REPORTER IDENTITY ──────────────────────────────────── */}
+              <div style={{ padding: "12px 14px", borderRadius: "8px", marginBottom: "16px", background: voteModal.reporterShared ? "rgba(59,130,246,0.06)" : "rgba(148,163,184,0.03)", border: `1px solid ${voteModal.reporterShared ? "rgba(59,130,246,0.25)" : "rgba(148,163,184,0.08)"}` }}>
+                <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px", fontFamily: "'JetBrains Mono',monospace" }}>
+                  REPORTED BY
+                </div>
+                {voteModal.reporterShared && (voteModal.reporterName || voteModal.reporterEmail) ? (
+                  <div>
+                    <div style={{ fontSize: "13px", color: "#e2e8f0", fontWeight: 600 }}>
+                      {voteModal.reporterName || "(no name provided)"}
+                    </div>
+                    {voteModal.reporterEmail && (
+                      <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>
+                        {voteModal.reporterEmail}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic" }}>
+                    Anonymous reporter — citizen did not opt to share their identity.
+                  </div>
+                )}
+              </div>
+              {/* ────────────────────────────────────────────────────────── */}
 
               {voteModal.votes.length > 0 && (
                 <div style={{ marginBottom: "20px" }}>

@@ -16,10 +16,21 @@
 // shape ReportScreen.js already sends on the live/online submission path
 // (a `location` object carrying region, plus a top-level `region` field —
 // reportController.js accepts either).
+//
+// FIX (review lifecycle): after flushing the outbox, syncNow() also calls
+// refreshReportStatuses(), which pulls GET /api/v1/reports/mine and
+// updates each local row's review_status. This is what makes the
+// My Reports / Home four-stage lifecycle (queued → under_review →
+// confirmed | rejected) reflect the latest officer votes.
 
 import NetInfo from '@react-native-community/netinfo';
 import api, { OfflineError } from '../lib/api';
-import { getPendingReports, markReportSynced, markReportSyncFailed } from './sqlite';
+import {
+  getPendingReports,
+  markReportSynced,
+  markReportSyncFailed,
+  updateReportReviewStatusByNullifier,
+} from './sqlite';
 
 const DEFAULT_SCAM_TYPE = 'UNKNOWN';
 const DEFAULT_REGION = 'UNCLASSIFIED';
@@ -153,11 +164,46 @@ export async function syncNow() {
     }
 
     const remaining = (await getPendingReports()).length;
+
+    // After flushing the outbox, pull fresh review statuses for the
+    // citizen's own reports. Non-fatal if it fails (offline, server down).
+    await refreshReportStatuses().catch(() => {});
+
     emitStatus({ phase: 'idle', lastSyncedAt: new Date().toISOString(), synced, failed, remaining });
 
     return { synced, failed, remaining };
   } finally {
     isSyncing = false;
+  }
+}
+
+/**
+ * Pulls the citizen's own reports from GET /api/v1/reports/mine and
+ * updates the local review_status for each matching row. Called on app
+ * open and on pull-to-refresh in My Reports. Safe to call offline —
+ * OfflineError is swallowed.
+ *
+ * Matching key: nullifier. This is the ZKP one-time-reporter proof the
+ * server stores on every Report and returns from /reports/mine. localId
+ * is mobile-only and never reaches the server.
+ */
+export async function refreshReportStatuses() {
+  try {
+    const response = await api.get('/api/v1/reports/mine');
+    const reports = response.data?.reports;
+    if (!Array.isArray(reports) || reports.length === 0) return { updated: 0 };
+
+    let updated = 0;
+    for (const r of reports) {
+      if (!r?.nullifier || !r?.reviewStatus) continue;
+      await updateReportReviewStatusByNullifier(r.nullifier, r.reviewStatus);
+      updated += 1;
+    }
+    return { updated };
+  } catch (err) {
+    if (err instanceof OfflineError) return { updated: 0, offline: true };
+    console.warn('[syncQueue] refreshReportStatuses failed:', err?.message);
+    return { updated: 0, error: err?.message };
   }
 }
 

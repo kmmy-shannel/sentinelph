@@ -184,8 +184,45 @@ const ReportSchema = new Schema(
       select: false,
       default: null,
     },
-
-    // 'pending' → 'under_review' → 'one_approval' → 'two_approvals' → terminal
+    // Human-readable reporter identity for officer transparency.
+    // NON-HASHED: deliberately excluded from getCanonicalPayload() so
+    // adding this field does not invalidate any existing chain record.
+    // select:false by default — must be requested explicitly, so the
+    // public/citizen-facing views never accidentally leak it.
+        // ─── REPORTER IDENTITY (new) ──────────────────────────────────────
+    // Human-readable reporter identity for officer transparency.
+    //
+    // NOT part of getCanonicalPayload() — deliberately excluded from the
+    // hash chain so adding these fields does not invalidate any existing
+    // report. Citizens opt in via the mobile app; if they decline, both
+    // fields are stored as null.
+    //
+    // Visibility is controlled at the query level (see LIST_SELECT /
+    // DETAIL_SELECT in reportReviewController.js). The citizen-facing
+    // createReport() response explicitly deletes these keys before
+    // returning, so the citizen never sees them echoed back.
+    reporterName: {
+      type: String,
+      trim: true,
+      maxlength: 120,
+      default: null,
+    },
+    reporterEmail: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      maxlength: 254,
+      default: null,
+    },
+    reporterShared: {
+      type: Boolean,
+      default: false,
+    },
+    // ──────────────────────────────────────────────────────────────────
+    // ---- Workflow state ----
+    // 'pending' → 'under_review' | 'one_approval' → 'blacklisted' | 'rejected'
+    // 'approved' is retained as an alias for 'blacklisted' so the vote
+    // route can map its decision without loss.
     status: {
       type: String,
       enum: [

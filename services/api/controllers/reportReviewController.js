@@ -29,8 +29,18 @@ const BUCKETS = ['pending', 'resolved', 'all'];
 // The list never carries the base64 screenshot (it can be megabytes per
 // row) nor the pseudonymous citizen identifier. Screenshots are fetched
 // one at a time through GET /:id when an officer opens a case.
+//
+// ─── REPORTER IDENTITY ────────────────────────────────────────────────────
+// The `+reporterName +reporterEmail +reporterShared` prefixes override the
+// schema-level `select: false` on those fields, so officers SEE the
+// reporter identity while every other consumer (public blacklist,
+// citizen's own-report list, exports) continues to hide it.
+// Pure exclusion mode. Reporter identity is included by default (schema
+// no longer marks it select:false); citizenHash is excluded here so no
+// officer response ever leaks the pseudonymous identifier.
 const LIST_SELECT = '-evidenceImage -citizenHash';
 const DETAIL_SELECT = '-citizenHash';
+// ──────────────────────────────────────────────────────────────────────────
 
 const MISSING_JURISDICTION_MESSAGE =
   'Your account is not assigned to a region. Contact the NBI admin.';

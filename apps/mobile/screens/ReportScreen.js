@@ -31,6 +31,13 @@
 // scamType: 'UNKNOWN' — both for the live POST and for the offline
 // SQLite payload — instead of omitting the field and letting it reach
 // SQLite as undefined.
+//
+// NEW (Reporter identity): citizens may now opt-in to sharing their name
+// and email with the reviewing officer. Default is OFF (anonymous). When
+// the toggle is ON, the submit payload carries reporterShared: true plus
+// reporterName/reporterEmail, and the backend stores them as select:false
+// fields visible only to officers. When OFF, the fields are null and the
+// officer sees "Anonymous reporter".
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -61,6 +68,7 @@ import { enqueueReport } from '../db/sqlite';
 import { syncNow } from '../db/syncQueue';
 import { generateNullifier, generateZkpCommitment } from '../lib/zkp/nullifierGenerator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { auth } from '../config/firebase';
 
 // Reads the user's manually-saved region from ProfileScreen. Returns
 // null if the user has never picked one — the caller falls back to
@@ -81,6 +89,12 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 const ANALYZE_DEBOUNCE_MS = 700;
 const MIN_ANALYZE_CHARS = 8;
 const DEFAULT_SCAM_TYPE = 'UNKNOWN'; // scamType picker was removed from citizen UI
+
+// ─── REPORTER IDENTITY ────────────────────────────────────────────────
+// Off by default — the citizen must opt in. The backend stores the name
+// and email only when this flag is true on the submit payload.
+const DEFAULT_SHARE_IDENTITY = false;
+// ──────────────────────────────────────────────────────────────────────
 
 const RISK_STYLES = {
   HIGH: { bg: 'rgba(244,63,94,0.08)', border: 'rgba(244,63,94,0.35)', text: '#fb7185', label: 'Likely Scam', glow: 'rgba(244,63,94,0.12)', accent: '#f43f5e' },
@@ -464,6 +478,34 @@ export default function ReportScreen() {
   const analyzeTimerRef = useRef(null);
   const analyzeReqIdRef = useRef(0);
 
+  // ─── REPORTER IDENTITY ──────────────────────────────────────────────
+  const [shareIdentity, setShareIdentity] = useState(DEFAULT_SHARE_IDENTITY);
+  const [reporterName, setReporterName] = useState('');
+  const [reporterEmail, setReporterEmail] = useState('');
+
+  // Pre-fill from the Firebase user profile so the citizen only has to
+  // confirm (or edit) instead of typing.
+  useEffect(() => {
+    const u = auth.currentUser;
+    if (u) {
+      if (u.displayName && !reporterName) setReporterName(u.displayName);
+      if (u.email && !reporterEmail) setReporterEmail(u.email);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // If the citizen edits the report content or sender after reaching
+  // Step 2, the stored nullifier is stale — clear it so the next submit
+  // regenerates one bound to the current content. Prevents the same
+  // nullifier from being reused across genuinely different reports.
+  useEffect(() => {
+    if (step === 2) {
+      setNullifier(null);
+      setZkpHash(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [content, ocrText, senderNumber]);
+  // ─────────────────────────────────────────────────────────────────────
+
   const hasScreenshot = !!screenshot;
   const hasTypedText = content.trim().length > 0;
   const screenshotDisabled = hasTypedText;
@@ -784,9 +826,14 @@ export default function ReportScreen() {
       zkpHash: finalZkp,
       aiRiskLevel: analysis?.riskLevel,
       aiConfidenceScore: analysis?.confidenceScore,
+      // ─── REPORTER IDENTITY ────────────────────────────────────────
+      reporterShared: shareIdentity,
+      reporterName: shareIdentity ? (reporterName.trim() || null) : null,
+      reporterEmail: shareIdentity ? (reporterEmail.trim().toLowerCase() || null) : null,
+      // ─────────────────────────────────────────────────────────────
     };
 
-    try {
+     try {
       const response = await api.post('/api/v1/reports', {
         scamType: DEFAULT_SCAM_TYPE,
         senderNumber: senderNumber || undefined,
@@ -799,15 +846,70 @@ export default function ReportScreen() {
         zkpHash: finalZkp,
         aiRiskLevel: analysis?.riskLevel,
         aiConfidenceScore: analysis?.confidenceScore,
+        // ─── REPORTER IDENTITY ────────────────────────────────────────
+        reporterShared: shareIdentity,
+        reporterName: shareIdentity ? (reporterName.trim() || null) : null,
+        reporterEmail: shareIdentity ? (reporterEmail.trim().toLowerCase() || null) : null,
+        // ─────────────────────────────────────────────────────────────
       });
-      setReportId(response.data?.reportId || response.data?.id);
+
+      const serverReportId =
+        response.data?.reportId || response.data?.id || null;
+
+      // ─── MIRROR TO LOCAL SQLITE ON 201 SUCCESS ─────────────────────
+      // My Reports and the Profile report count both read from SQLite.
+      // A successful server save must also be mirrored locally, or the
+      // citizen sees nothing in their own history after a Clear Cache.
+      // Passing serverReportId tells enqueueReport to write the row as
+      // synced=1 so syncQueue never re-POSTs it (which would duplicate
+      // the nullifier and fail forever).
+      try {
+        await enqueueReport({
+          ...payload,
+          serverReportId: serverReportId || undefined,
+        });
+        console.log('[ReportScreen] enqueued locally after 201');
+      } catch (enqueueErr) {
+        console.warn(
+          '[ReportScreen] enqueue after 201 failed:',
+          enqueueErr?.message
+        );
+      }
+      // ────────────────────────────────────────────────────────────────
+
+      setReportId(serverReportId);
       setSubmitted(true);
     } catch (err) {
       if (err instanceof OfflineError) {
+        // No network — enqueue for later.
         await enqueueReport(payload);
         setReportId(`LOCAL-${localId.slice(0, 8).toUpperCase()}`);
         setSubmitted(true);
         syncNow().catch(() => {});
+      } else if (err?.response?.status === 409) {
+        // Server says: this exact report already exists. Treat as
+        // success — the citizen did submit it — and enqueue locally so
+        // it shows up in My Reports. Pass existingReportId so the row is
+        // written as synced=1 and syncQueue never re-POSTs it.
+        const existingId =
+          err.response.data?.existingReportId || undefined;
+        try {
+          await enqueueReport({ ...payload, serverReportId: existingId });
+          console.log('[ReportScreen] enqueued locally after 409');
+        } catch (enqueueErr) {
+          console.warn(
+            '[ReportScreen] enqueue after 409 failed:',
+            enqueueErr?.message
+          );
+        }
+        setReportId(
+          existingId || `LOCAL-${localId.slice(0, 8).toUpperCase()}`
+        );
+        setSubmitted(true);
+        Alert.alert(
+          'Report already submitted',
+          'This exact message was already sent to the server. You can view it in My Reports.'
+        );
       } else {
         Alert.alert('Submission failed', err?.message || 'Please try again.');
       }
@@ -1438,6 +1540,114 @@ export default function ReportScreen() {
             {/* AI decision & reasoning */}
             <ScamRiskBanner analyzing={analyzing} analysis={analysis} error={analyzeError} />
 
+            {/* ─── REPORTER IDENTITY ────────────────────────────────── */}
+            <View
+              style={{
+                borderRadius: 16,
+                overflow: 'hidden',
+                backgroundColor: 'rgba(30,41,59,0.5)',
+                borderWidth: 1,
+                borderColor: 'rgba(148,163,184,0.1)',
+              }}
+            >
+              <TouchableOpacity
+                onPress={() => {
+                  LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                  setShareIdentity((v) => !v);
+                }}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  paddingHorizontal: 16,
+                  paddingVertical: 14,
+                }}
+              >
+                <View style={{ flex: 1, minWidth: 0, marginRight: 12 }}>
+                  <Text style={{ color: '#e2e8f0', fontSize: 13, fontWeight: '700', letterSpacing: 0.2 }}>
+                    Share my name with reviewing officers
+                  </Text>
+                  <Text style={{ color: '#64748b', fontSize: 10, marginTop: 2, lineHeight: 14 }}>
+                    Optional. If enabled, only the officer assigned to your region can see your name.
+                  </Text>
+                </View>
+                <View
+                  style={{
+                    width: 42,
+                    height: 24,
+                    borderRadius: 12,
+                    padding: 2,
+                    backgroundColor: shareIdentity ? '#4f46e5' : 'rgba(148,163,184,0.2)',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <View
+                    style={{
+                      width: 20,
+                      height: 20,
+                      borderRadius: 10,
+                      backgroundColor: '#fff',
+                      transform: [{ translateX: shareIdentity ? 18 : 0 }],
+                    }}
+                  />
+                </View>
+              </TouchableOpacity>
+
+              {shareIdentity && (
+                <View
+                  style={{
+                    paddingHorizontal: 16,
+                    paddingBottom: 14,
+                    gap: 10,
+                    borderTopWidth: 1,
+                    borderTopColor: 'rgba(148,163,184,0.08)',
+                    paddingTop: 12,
+                  }}
+                >
+                  <TextInput
+                    value={reporterName}
+                    onChangeText={setReporterName}
+                    placeholder="Your name (as it should appear to officers)"
+                    placeholderTextColor="#334155"
+                    autoCapitalize="words"
+                    style={{
+                      color: '#e2e8f0',
+                      fontSize: 13,
+                      paddingHorizontal: 14,
+                      paddingVertical: 12,
+                      borderRadius: 12,
+                      backgroundColor: 'rgba(0,0,0,0.3)',
+                      borderWidth: 1,
+                      borderColor: 'rgba(148,163,184,0.1)',
+                    }}
+                  />
+                  <TextInput
+                    value={reporterEmail}
+                    onChangeText={setReporterEmail}
+                    placeholder="Your email (optional)"
+                    placeholderTextColor="#334155"
+                    autoCapitalize="none"
+                    keyboardType="email-address"
+                    autoCorrect={false}
+                    style={{
+                      color: '#e2e8f0',
+                      fontSize: 13,
+                      paddingHorizontal: 14,
+                      paddingVertical: 12,
+                      borderRadius: 12,
+                      backgroundColor: 'rgba(0,0,0,0.3)',
+                      borderWidth: 1,
+                      borderColor: 'rgba(148,163,184,0.1)',
+                    }}
+                  />
+                  <Text style={{ color: '#475569', fontSize: 10, lineHeight: 15 }}>
+                    Only officers in your region can see this. It is not shared with the public or other citizens.
+                  </Text>
+                </View>
+              )}
+            </View>
+            {/* ───────────────────────────────────────────────────────── */}
+
             {/* Optional extra evidence (collapsible) */}
             <TouchableOpacity
               onPress={toggleEvidence}
@@ -1753,7 +1963,12 @@ export default function ReportScreen() {
                       ? `${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}`
                       : 'Not shared',
                   },
-                  { label: 'Identity', value: 'Anonymous (ZKP verified)' },
+                  {
+                    label: 'Identity',
+                    value: shareIdentity
+                      ? `Shared with reviewers${reporterName.trim() ? ` (${reporterName.trim()})` : ''}`
+                      : 'Anonymous (ZKP verified)',
+                  },
                 ].map((row) => (
                   <View
                     key={row.label}

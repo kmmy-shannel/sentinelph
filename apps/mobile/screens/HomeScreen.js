@@ -2,6 +2,11 @@
 //
 // Dashboard: threat banner, offline/sync status, quick report CTA, stat
 // counters (Queued/Under Review/Confirmed), and nearby scam activity feed.
+//
+// FIX (review lifecycle): the stat counters now derive from the four-stage
+// review_status stored per report (queued | under_review | confirmed |
+// rejected) instead of the old `synced` flag, which conflated "server
+// received it" with "officers confirmed it as a scam".
 
 import React, { useCallback, useState } from 'react';
 import {
@@ -19,7 +24,8 @@ import OfflineSyncIndicator from '../components/OfflineSyncIndicator';
 import QuickReportCard from '../components/QuickReportCard';
 import NearbyAlertsWidget from '../components/NearbyAlertsWidget';
 import api, { OfflineError } from '../lib/api';
-import { getPendingReports, getAllReports } from '../db/sqlite';
+import { getAllReports } from '../db/sqlite';
+import { refreshReportStatuses } from '../db/syncQueue';
 
 function StatCounter({ label, value, color, bg }) {
   return (
@@ -77,9 +83,27 @@ export default function HomeScreen() {
 
   const loadDashboard = useCallback(async () => {
     try {
-      const [pending, all] = await Promise.all([getPendingReports(), getAllReports()]);
-      const confirmed = all.filter((r) => r.synced).length;
-      setStats((prev) => ({ ...prev, queued: pending.length, confirmed }));
+      // Pull fresh review statuses from the server first so the counters
+      // reflect the latest officer votes.
+      await refreshReportStatuses().catch(() => {});
+
+      const all = await getAllReports();
+      const queued = all.filter(
+        (r) => (r.reviewStatus || 'queued') === 'queued'
+      ).length;
+      const underReview = all.filter(
+        (r) => r.reviewStatus === 'under_review'
+      ).length;
+      const confirmed = all.filter(
+        (r) => r.reviewStatus === 'confirmed'
+      ).length;
+
+      setStats((prev) => ({
+        ...prev,
+        queued,
+        underReview,
+        confirmed,
+      }));
     } catch (err) {
       console.warn('[HomeScreen] failed to read local reports:', err?.message);
     }
@@ -91,12 +115,12 @@ export default function HomeScreen() {
       ]);
 
       setThreatLevel(statusRes.data?.threatLevel || 'safe');
-      setStats((prev) => ({
-        ...prev,
-        underReview: statusRes.data?.underReviewCount ?? prev.underReview,
-      }));
+      // NOTE: underReview is now derived from local review_status, not
+      // from the server's status/summary endpoint. The server's count is
+      // global (all reports across all citizens); the home screen shows
+      // the citizen's own counts, matching My Reports.
       setNearbyIncidents(alertsRes.data?.incidents || []);
-        } catch (err) {
+    } catch (err) {
       if (err instanceof OfflineError) {
         // Silent — expected when device has no internet
       } else if (err?.status === 404) {
@@ -142,12 +166,12 @@ export default function HomeScreen() {
       >
         <OfflineSyncIndicator />
 
-       <QuickReportCard
-  onQuickReport={() => navigation.navigate('ReportWizard')}
-  onCameraShortcut={() =>
-    navigation.navigate('ReportWizard', { openStep: 2, focus: 'camera' })
-  }
-/>
+        <QuickReportCard
+          onQuickReport={() => navigation.navigate('ReportWizard')}
+          onCameraShortcut={() =>
+            navigation.navigate('ReportWizard', { openStep: 2, focus: 'camera' })
+          }
+        />
 
         <View
           style={{
@@ -177,7 +201,7 @@ export default function HomeScreen() {
         </View>
 
         <NearbyAlertsWidget incidents={nearbyIncidents} />
-      </ScrollView> 
+      </ScrollView>
     </SafeAreaView>
   );
 }

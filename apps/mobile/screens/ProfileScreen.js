@@ -1,7 +1,12 @@
 // apps/mobile/screens/ProfileScreen.js
 //
-// Anonymous profile: reputation stats, ZKP wallet identifier, offline
-// storage controls, alert radius, and sign-out.
+// Anonymous profile: name/email if the citizen signed in with them,
+// report counts, ZKP-safe wallet preview, and sign-out.
+//
+// Removed (per requirement): Reputation Score, ZKP Wallet, Offline
+// Storage count, Alert Radius selector, and Your Region (Manual Override).
+// The "Your Region" row is kept because it reflects the region stored by
+// the report flow's region resolver.
 
 import React, { useCallback, useState } from 'react';
 import {
@@ -16,14 +21,12 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { signOut } from 'firebase/auth';
+import Svg, { Circle, Path } from 'react-native-svg';
 import { auth } from '../config/firebase';
 
-import api, { OfflineError } from '../lib/api';
 import { getAllReports, clearAllReports } from '../db/sqlite';
 import { getOrCreateDeviceSecret } from '../lib/zkp/nullifierGenerator';
-import { PH_REGIONS, UNCLASSIFIED_REGION } from '../lib/regionResolver';
-
-const RADIUS_OPTIONS = [1, 2, 5, 10];
+import { UNCLASSIFIED_REGION } from '../lib/regionResolver';
 
 function Badge({ label, color }) {
   const palette = {
@@ -92,6 +95,7 @@ function Row({ icon, label, value, mono }) {
           fontFamily: mono ? 'JetBrainsMono_400Regular' : undefined,
           flexShrink: 0,
           textAlign: 'right',
+          maxWidth: '55%',
         }}
         numberOfLines={1}
       >
@@ -101,6 +105,47 @@ function Row({ icon, label, value, mono }) {
   );
 }
 
+// Minimal line-art profile silhouette used in the avatar circle.
+// Drawn with SVG so it scales cleanly and matches the UI's stroke
+// language (same 1.6 stroke weight as the icons in ReportScreen).
+function ProfileIcon({ size = 34, color = '#e0e7ff' }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      {/* Head */}
+      <Circle
+        cx={12}
+        cy={9}
+        r={3.5}
+        stroke={color}
+        strokeWidth={1.6}
+        strokeLinejoin="round"
+      />
+      {/* Shoulders / torso */}
+      <Path
+        d="M5 20c0-3.5 3.1-6 7-6s7 2.5 7 6"
+        stroke={color}
+        strokeWidth={1.6}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
+// Derives a human-readable display name from the Firebase user object.
+// Falls back through displayName → email local-part → literal "Citizen".
+function resolveDisplayName(user) {
+  if (!user) return 'Citizen';
+  if (user.displayName && user.displayName.trim()) return user.displayName.trim();
+  if (user.email && user.email.includes('@')) return user.email.split('@')[0];
+  return 'Citizen';
+}
+
+function resolveEmail(user) {
+  if (!user) return null;
+  return user.email || null;
+}
+
 export default function ProfileScreen() {
   const navigation = useNavigation();
   const { width } = useWindowDimensions();
@@ -108,21 +153,28 @@ export default function ProfileScreen() {
 
   const [profile, setProfile] = useState({
     totalReports: 0,
-    reputationScore: 0,
     confirmedCount: 0,
   });
   const [queuedCount, setQueuedCount] = useState(0);
-  const [walletId, setWalletId] = useState('');
-  const [radiusKm, setRadiusKm] = useState(2);
-  const [clearing, setClearing] = useState(false);
   const [region, setRegion] = useState(UNCLASSIFIED_REGION);
+  const [clearing, setClearing] = useState(false);
+
+  // Firebase user fields for the name / email rows
+  const currentUser = auth.currentUser;
+  const displayName = resolveDisplayName(currentUser);
+  const userEmail = resolveEmail(currentUser);
 
   const load = useCallback(async () => {
     const all = await getAllReports();
     setQueuedCount(all.filter((r) => !r.synced).length);
 
-    const secret = await getOrCreateDeviceSecret();
-    setWalletId(`0x${secret.slice(0, 4)}…${secret.slice(-4)}`);
+    // Touch the device secret so a first-open initialises it, but we do
+    // not display it anywhere on this screen anymore.
+    try {
+      await getOrCreateDeviceSecret();
+    } catch {
+      // non-fatal
+    }
 
     try {
       const AsyncStorage = require('@react-native-async-storage/async-storage').default;
@@ -131,26 +183,14 @@ export default function ProfileScreen() {
     } catch (err) {
       console.warn('[ProfileScreen] failed to read region:', err?.message);
     }
-
-    try {
-      const response = await api.get('/api/v1/profile/summary');
-      setProfile({
-        totalReports: response.data?.totalReports ?? all.length,
-        reputationScore: response.data?.reputationScore ?? 0,
-        confirmedCount:
-          response.data?.confirmedCount ??
-          all.filter((r) => r.synced).length,
-      });
-      if (response.data?.alertRadiusKm) setRadiusKm(response.data.alertRadiusKm);
-    } catch (err) {
-      if (!(err instanceof OfflineError))
-        console.warn('[ProfileScreen] failed to load summary:', err?.message);
-      setProfile((prev) => ({
-        ...prev,
-        totalReports: all.length,
-        confirmedCount: all.filter((r) => r.synced).length,
-      }));
-    }
+    // Profile counts come from the local SQLite outbox — the citizen's
+    // own reports are the authoritative source. The server has no
+    // /profile/summary route, so we skip the wasted network call.
+    setProfile((prev) => ({
+      ...prev,
+      totalReports: all.length,
+      confirmedCount: all.filter((r) => r.synced).length,
+    }));
   }, []);
 
   useFocusEffect(
@@ -158,25 +198,6 @@ export default function ProfileScreen() {
       load();
     }, [load])
   );
-
-  const setUserRegion = async (value) => {
-    setRegion(value);
-    try {
-      const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      await AsyncStorage.setItem('@sentinelph_user_region', value);
-    } catch (err) {
-      console.warn('[ProfileScreen] failed to persist region:', err?.message);
-    }
-  };
-
-  const updateRadius = async (km) => {
-    setRadiusKm(km);
-    try {
-      await api.patch('/api/v1/profile/settings', { alertRadiusKm: km });
-    } catch {
-      // Offline-safe.
-    }
-  };
 
   const handleClearCache = () => {
     Alert.alert(
@@ -234,6 +255,7 @@ export default function ProfileScreen() {
         }}
         showsVerticalScrollIndicator={false}
       >
+        {/* Avatar + name + email */}
         <View
           style={{
             alignItems: 'center',
@@ -254,16 +276,18 @@ export default function ProfileScreen() {
               marginBottom: 6,
             }}
           >
-            <Text style={{ color: 'white', fontSize: 20, fontWeight: '700' }}>
-              SR
-            </Text>
+            <ProfileIcon size={34} color="#e0e7ff" />
           </View>
-          <Text style={{ color: '#e2e8f0', fontSize: 15, fontWeight: '600' }}>
-            Sentinel Reporter
+          <Text style={{ color: '#e2e8f0', fontSize: 16, fontWeight: '600' }}>
+            {displayName}
           </Text>
-          <Text style={{ color: '#475569', fontSize: 11 }}>
-            Anonymous · Verified contributor
-          </Text>
+          {userEmail ? (
+            <Text style={{ color: '#64748b', fontSize: 11 }}>{userEmail}</Text>
+          ) : (
+            <Text style={{ color: '#475569', fontSize: 11 }}>
+              Anonymous · Verified contributor
+            </Text>
+          )}
           <View
             style={{
               flexDirection: 'row',
@@ -274,13 +298,7 @@ export default function ProfileScreen() {
               justifyContent: 'center',
             }}
           >
-            <Badge
-              label={`Level ${Math.max(
-                1,
-                Math.floor(profile.reputationScore / 25)
-              )} Reporter`}
-              color="indigo"
-            />
+            <Badge label="Citizen Reporter" color="indigo" />
             <Badge
               label={`${profile.confirmedCount} confirmed`}
               color="emerald"
@@ -288,6 +306,7 @@ export default function ProfileScreen() {
           </View>
         </View>
 
+        {/* Identity + status rows */}
         <View style={{ gap: 8 }}>
           <Row
             icon="◈"
@@ -309,69 +328,18 @@ export default function ProfileScreen() {
             </Text>
           </TouchableOpacity>
           <Row
-            icon="⬡"
-            label="Reputation Score"
-            value={`${profile.reputationScore} / 100`}
+            icon="◎"
+            label="Your Region"
+            value={region}
           />
-          <Row icon="◇" label="ZKP Wallet" value={walletId} mono />
           <Row
-            icon="◫"
-            label="Offline Storage"
-            value={`${queuedCount} queued`}
+            icon="◉"
+            label="Data Sharing"
+            value="Anonymous only"
           />
-          <Row icon="◎" label="Your Region" value={region} />
-          <Row icon="◉" label="Data Sharing" value="Anonymous only" />
-          <Row icon="◻" label="Notifications" value="Enabled" />
         </View>
 
-        <View>
-          <Text
-            style={{
-              color: '#475569',
-              fontSize: 11,
-              fontWeight: '600',
-              letterSpacing: 1,
-              marginBottom: 10,
-            }}
-          >
-            ALERT RADIUS
-          </Text>
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            {RADIUS_OPTIONS.map((km) => {
-              const active = radiusKm === km;
-              return (
-                <TouchableOpacity
-                  key={km}
-                  onPress={() => updateRadius(km)}
-                  style={{
-                    flex: 1,
-                    paddingVertical: 12,
-                    borderRadius: 12,
-                    alignItems: 'center',
-                    backgroundColor: active
-                      ? 'rgba(79,70,229,0.2)'
-                      : '#1e293b',
-                    borderWidth: 1,
-                    borderColor: active
-                      ? 'rgba(79,70,229,0.5)'
-                      : 'rgba(148,163,184,0.1)',
-                  }}
-                >
-                  <Text
-                    style={{
-                      color: active ? '#818cf8' : '#94a3b8',
-                      fontSize: 12,
-                      fontWeight: '500',
-                    }}
-                  >
-                    {km} km
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
-
+        {/* Clear cache */}
         <TouchableOpacity
           onPress={handleClearCache}
           disabled={clearing}
@@ -395,6 +363,7 @@ export default function ProfileScreen() {
           )}
         </TouchableOpacity>
 
+        {/* Sign out */}
         <TouchableOpacity
           onPress={handleSignOut}
           style={{
@@ -410,85 +379,6 @@ export default function ProfileScreen() {
             Sign Out
           </Text>
         </TouchableOpacity>
-
-        <View>
-          <Text
-            style={{
-              color: '#475569',
-              fontSize: 11,
-              fontWeight: '600',
-              letterSpacing: 1,
-              marginBottom: 10,
-            }}
-          >
-            YOUR REGION (MANUAL OVERRIDE)
-          </Text>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 8, paddingRight: 16 }}
-          >
-            {PH_REGIONS.map((r) => {
-              const active = region === r;
-              return (
-                <TouchableOpacity
-                  key={r}
-                  onPress={() => setUserRegion(r)}
-                  style={{
-                    paddingHorizontal: 14,
-                    paddingVertical: 10,
-                    borderRadius: 12,
-                    backgroundColor: active
-                      ? 'rgba(79,70,229,0.2)'
-                      : '#1e293b',
-                    borderWidth: 1,
-                    borderColor: active
-                      ? 'rgba(79,70,229,0.5)'
-                      : 'rgba(148,163,184,0.1)',
-                  }}
-                >
-                  <Text
-                    style={{
-                      color: active ? '#818cf8' : '#94a3b8',
-                      fontSize: 12,
-                      fontWeight: '500',
-                    }}
-                  >
-                    {r}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-            <TouchableOpacity
-              onPress={() => setUserRegion(UNCLASSIFIED_REGION)}
-              style={{
-                paddingHorizontal: 14,
-                paddingVertical: 10,
-                borderRadius: 12,
-                backgroundColor:
-                  region === UNCLASSIFIED_REGION
-                    ? 'rgba(148,163,184,0.15)'
-                    : '#1e293b',
-                borderWidth: 1,
-                borderColor:
-                  region === UNCLASSIFIED_REGION
-                    ? 'rgba(148,163,184,0.4)'
-                    : 'rgba(148,163,184,0.1)',
-              }}
-            >
-              <Text
-                style={{
-                  color:
-                    region === UNCLASSIFIED_REGION ? '#cbd5e1' : '#94a3b8',
-                  fontSize: 12,
-                  fontWeight: '500',
-                }}
-              >
-                {UNCLASSIFIED_REGION}
-              </Text>
-            </TouchableOpacity>
-          </ScrollView>
-        </View>
       </ScrollView>
     </SafeAreaView>
   );
