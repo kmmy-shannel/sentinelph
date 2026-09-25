@@ -83,7 +83,7 @@ export default function AuditLogs() {
   return (
     <div>
       <div style={{ padding: "12px 16px", borderRadius: "10px", marginBottom: "16px", background: "#0a0a12", border: "1px solid #1a1a2a", display: "flex", gap: "10px", alignItems: "flex-start" }}>
-        <span style={{ color: A, flexShrink: 0 }}>🔒</span>
+        <span style={{ color: A, flexShrink: 0 }}></span>
         <p style={{ fontSize: "12px", color: "#4b5563", margin: 0, lineHeight: 1.6 }}>
           This log is structurally immutable and append-only. No entry can be edited, deleted, or archived — not even by the Superadmin.
         </p>

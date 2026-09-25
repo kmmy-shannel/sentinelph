@@ -12,15 +12,17 @@ const { initFirebase } = require('./config/firebase');
 const { globalLimiter } = require('./middleware/rateLimiter');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 
-const healthRoutes       = require('./routes/health');
-const reportRoutes       = require('./routes/reports');
-const blacklistRoutes    = require('./routes/blacklist');
-const auditorRoutes      = require('./routes/auditor');
-const adminRoutes        = require('./routes/admin');
-const authRoutes         = require('./routes/auth');
-const superadminRoutes   = require('./routes/superadmin');
-const statsRoutes        = require('./routes/stats');
-const officerRoutes      = require('./routes/officer');
+const healthRoutes        = require('./routes/health');
+const reportRoutes        = require('./routes/reports');
+const blacklistRoutes     = require('./routes/blacklist');
+const auditorRoutes       = require('./routes/auditor');
+const adminRoutes         = require('./routes/admin');
+const authRoutes          = require('./routes/auth');
+const superadminRoutes    = require('./routes/superadmin');
+const statsRoutes         = require('./routes/stats');
+const officerRoutes       = require('./routes/officer');
+const notificationsRoutes = require('./routes/notifications');
+const accountRoutes       = require('./routes/account');
 
 const statusRoutes = require('./routes/status');
 const alertsRoutes = require('./routes/alerts');
@@ -44,7 +46,6 @@ const localPattern = /^http:\/\/localhost:\d+$/;
 
 const corsOptions = {
   origin(origin, callback) {
-    // No origin = server-to-server or curl.
     if (!origin) return callback(null, true);
 
     if (
@@ -56,7 +57,7 @@ const corsOptions = {
     }
 
     console.warn(`[CORS] Blocked origin: ${origin}`);
-    return callback(null, false); // reject without throwing a 500
+    return callback(null, false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -67,11 +68,7 @@ const corsOptions = {
 // Security & parsing middleware
 // ------------------------------------------------------------------
 app.set('trust proxy', 1);
-
-// CORS must come first so every response (including preflights,
-// rate-limit rejections, and errors) carries the CORS headers.
 app.use(cors(corsOptions));
-
 app.use(helmet());
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
@@ -96,9 +93,12 @@ app.use('/api/v1/auth', require('./routes/activation'));
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/superadmin', superadminRoutes);
 app.use('/api/v1/stats', statsRoutes);
+app.use('/api/v1/notifications', notificationsRoutes);
+app.use('/api/v1/account', accountRoutes);
 
 app.use('/api/v1/status', statusRoutes);
 app.use('/api/v1/alerts', alertsRoutes);
+
 app.get('/', (req, res) => {
   res.status(200).json({
     success: true,
@@ -108,7 +108,7 @@ app.get('/', (req, res) => {
 });
 
 // ------------------------------------------------------------------
-// 404 + centralized error handler (must be registered last)
+// 404 + centralized error handler
 // ------------------------------------------------------------------
 app.use(notFoundHandler);
 app.use(errorHandler);
@@ -120,10 +120,6 @@ async function start() {
   try {
     await connectDB();
 
-    // Validate Firebase Admin credentials at startup so a bad key shows
-    // up in the logs immediately instead of on the first request.
-    // Non-fatal by default so the rest of the API stays up.
-    // Set FIREBASE_STRICT=true to make a bad key fail the deploy.
     try {
       initFirebase();
       console.log('[Firebase] Admin SDK initialized.');

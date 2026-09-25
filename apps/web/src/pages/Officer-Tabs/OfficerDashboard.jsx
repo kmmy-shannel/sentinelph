@@ -1,5 +1,5 @@
 // apps/web/src/pages/Officer-Tabs/OfficerDashboard.jsx
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, Cell } from "recharts";
 import apiClient from "../../lib/api";
 
@@ -13,6 +13,10 @@ export default function OfficerDashboard() {
   const [error, setError]               = useState(null);
   const [showSuccess, setShowSuccess]   = useState(false);
   const [resolvedIds, setResolvedIds]   = useState([]);
+  const [dataVersion, setDataVersion]   = useState(0);
+
+  // Survives StrictMode's double-mount so the initial fetch only fires once.
+  const initialFetchDoneRef = useRef(false);
 
   const loadDashboard = useCallback(async () => {
     setLoading(true);
@@ -20,6 +24,7 @@ export default function OfficerDashboard() {
     try {
       const { data: res } = await apiClient.get('/api/v1/officer/dashboard');
       setData(res.data);
+      setDataVersion(v => v + 1);
     } catch (err) {
       console.error('[OfficerDashboard] load failed:', err);
       setError(err?.response?.data?.message || 'Failed to load dashboard.');
@@ -28,7 +33,11 @@ export default function OfficerDashboard() {
     }
   }, []);
 
-  useEffect(() => { loadDashboard(); }, [loadDashboard]);
+  useEffect(() => {
+    if (initialFetchDoneRef.current) return;   // skip the StrictMode re-run
+    initialFetchDoneRef.current = true;
+    loadDashboard();
+  }, [loadDashboard]);
 
   const kpis      = data?.kpis ?? { pendingVote: 0, consensusNeeded: 0, resolvedThisWeek: 0 };
   const trend     = data?.trend ?? [];
@@ -48,9 +57,9 @@ export default function OfficerDashboard() {
       {/* KPI strip */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "16px" }}>
         {[
-          { l: "PENDING YOUR VOTE",      v: kpis.pendingVote,       sub: "Awaiting your review",         sc: "#ef4444" },
-          { l: "CONSENSUS NEEDED (1/2)", v: kpis.consensusNeeded,   sub: "Second vote to finalize block",sc: "#f59e0b" },
-          { l: "RESOLVED THIS WEEK",     v: kpis.resolvedThisWeek,  sub: "Last 7 days",                  sc: "#22c55e" },
+          { l: "PENDING YOUR VOTE",       v: kpis.pendingVote,       sub: "Awaiting your review",            sc: "#ef4444" },
+          { l: "CONSENSUS NEEDED (2/3)",  v: kpis.consensusNeeded,   sub: "3rd officer finalizes the block", sc: "#f59e0b" },
+          { l: "RESOLVED THIS WEEK",      v: kpis.resolvedThisWeek,  sub: "Last 7 days",                     sc: "#22c55e" },
         ].map(s => (
           <div key={s.l} style={card}>
             <div style={{ fontSize: "10px", marginBottom: "8px", color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.08em" }}>{s.l}</div>
@@ -71,35 +80,70 @@ export default function OfficerDashboard() {
 
       {/* Charts */}
       <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: "16px" }}>
-        <div style={card}>
+        <div style={{ ...card, animation: "cardFade 0.25s ease-out" }}>
           <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff", marginBottom: "4px" }}>7-Day Report Trend</div>
           <div style={{ fontSize: "11px", color: "#4b5563", marginBottom: "16px" }}>Daily incoming reports, your jurisdiction</div>
           <ResponsiveContainer width="100%" height={180}>
-            <AreaChart data={trend} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+            <AreaChart
+              key={`trend-${dataVersion}`}
+              data={trend}
+              margin={{ top: 4, right: 4, left: -20, bottom: 0 }}
+            >
               <defs>
                 <linearGradient id="blueGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.25} />
+                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.35} />
                   <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                 </linearGradient>
               </defs>
               <XAxis dataKey="day" tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
-              <Tooltip contentStyle={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: "8px", color: "#e2e8f0", fontSize: 12 }} />
-              <Area type="monotone" dataKey="v" stroke="#3b82f6" strokeWidth={2} fill="url(#blueGrad)" />
+              <Tooltip
+                contentStyle={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: "8px", color: "#e2e8f0", fontSize: 12 }}
+                cursor={{ stroke: "#3b82f6", strokeWidth: 1, strokeDasharray: "3 3" }}
+              />
+              <Area
+                type="monotone"
+                dataKey="v"
+                stroke="#3b82f6"
+                strokeWidth={2}
+                fill="url(#blueGrad)"
+                isAnimationActive={true}
+                animationBegin={0}
+                animationDuration={900}
+                animationEasing="ease-out"
+                activeDot={{ r: 5, fill: "#3b82f6", stroke: "#0e0e18", strokeWidth: 2 }}
+              />
             </AreaChart>
           </ResponsiveContainer>
         </div>
 
-        <div style={card}>
+        <div style={{ ...card, animation: "cardFade 0.25s ease-out" }}>
           <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff", marginBottom: "4px" }}>Regional Heatmap</div>
           <div style={{ fontSize: "11px", color: "#4b5563", marginBottom: "16px" }}>Cumulative reports by jurisdiction</div>
           <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={heatmap} layout="vertical" margin={{ top: 0, right: 16, left: 0, bottom: 0 }}>
+            <BarChart
+              key={`heatmap-${dataVersion}`}
+              data={heatmap}
+              layout="vertical"
+              margin={{ top: 0, right: 16, left: 0, bottom: 0 }}
+            >
               <XAxis type="number" tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
               <YAxis dataKey="region" type="category" tick={{ fill: "#6b7280", fontSize: 10 }} axisLine={false} tickLine={false} width={100} />
-              <Tooltip contentStyle={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: "8px", color: "#e2e8f0", fontSize: 12 }} />
-              <Bar dataKey="v" radius={[0, 4, 4, 0]}>
-                {heatmap.map((_, i) => <Cell key={i} fill={`rgba(59,130,246,${Math.max(0.3, 0.9 - i * 0.15)})`} />)}
+              <Tooltip
+                contentStyle={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: "8px", color: "#e2e8f0", fontSize: 12 }}
+                cursor={{ fill: "rgba(59,130,246,0.06)" }}
+              />
+              <Bar
+                dataKey="v"
+                radius={[0, 4, 4, 0]}
+                isAnimationActive={true}
+                animationBegin={0}
+                animationDuration={800}
+                animationEasing="ease-out"
+              >
+                {heatmap.map((_, i) => (
+                  <Cell key={i} fill={`rgba(59,130,246,${Math.max(0.3, 0.9 - i * 0.15)})`} />
+                ))}
               </Bar>
             </BarChart>
           </ResponsiveContainer>
@@ -109,15 +153,15 @@ export default function OfficerDashboard() {
       {/* Tables */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
         <div style={card}>
-          <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff", marginBottom: "4px" }}>Consensus Status — Awaiting 2nd Vote</div>
+          <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff", marginBottom: "4px" }}>Consensus Status — Awaiting 3rd Vote</div>
           <div style={{ fontSize: "11px", color: "#4b5563", marginBottom: "16px" }}>
-            {loading ? "Loading…" : `${consensus.length} case${consensus.length === 1 ? '' : 's'} need a second independent approval`}
+            {loading ? "Loading…" : `${consensus.length} case${consensus.length === 1 ? '' : 's'} need additional votes before final decision`}
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead><tr>{["ID","NUMBER","TYPE","VOTES","SINCE"].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
             <tbody>
               {loading && <tr><td colSpan={5} style={{ ...tdS, textAlign: "center", color: "#4b5563" }}>Loading…</td></tr>}
-              {!loading && consensus.length === 0 && <tr><td colSpan={5} style={{ ...tdS, textAlign: "center", color: "#4b5563" }}>No cases awaiting a second vote.</td></tr>}
+              {!loading && consensus.length === 0 && <tr><td colSpan={5} style={{ ...tdS, textAlign: "center", color: "#4b5563" }}>No cases awaiting more votes.</td></tr>}
               {!loading && consensus.map(row => (
                 <tr key={row.id}>
                   <td style={{ ...tdS, color: "#3b82f6", fontFamily: "'JetBrains Mono',monospace" }}>{row.id.slice(0, 12)}</td>
@@ -156,6 +200,13 @@ export default function OfficerDashboard() {
           </table>
         </div>
       </div>
+
+      <style>{`
+        @keyframes cardFade {
+          from { opacity: 0; transform: translateY(4px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
     </div>
   );
 }

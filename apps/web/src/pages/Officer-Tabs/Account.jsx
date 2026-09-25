@@ -1,23 +1,53 @@
 // apps/web/src/pages/Officer-Tabs/Account.jsx
-import { useState } from "react";
-import { ShieldCheck, KeyRound, UserCircle } from 'lucide-react';
+import { useState, useEffect, useCallback } from "react";
+import { KeyRound, UserCircle } from 'lucide-react';
+import apiClient from "../../lib/api";
 
-export default function Account({ user }) {
+export default function Account() {
+  const [profile, setProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw]         = useState("");
   const [confirmPw, setConfirmPw] = useState("");
-  const [showOtp, setShowOtp] = useState(false);
-  const [otp, setOtp] = useState("");
-  const [otpError, setOtpError] = useState(null);
+  const [pwError, setPwError] = useState(null);
   const [showSuccess, setShowSuccess] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const loadProfile = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { data } = await apiClient.get('/api/v1/auth/me');
+      setProfile(data.data);
+    } catch (err) {
+      console.error('[Account] load failed:', err);
+      setError(err?.response?.data?.message || 'Failed to load profile.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadProfile(); }, [loadProfile]);
+
+  const initials = (() => {
+    if (!profile?.fullName) return 'U';
+    return profile.fullName
+      .split(/[\s@._-]+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map(s => s[0].toUpperCase())
+      .join('');
+  })();
 
   const fields = [
-    { l: "BADGE / ID",             v: user?.badge ?? "NBI-CCRU-0041" },
-    { l: "ORGANIZATION",           v: "NBI Cybercrime Research Unit" },
-    { l: "ASSIGNED JURISDICTION",  v: "NCR" },
-    { l: "ROLE",                   v: "Cybercrime Officer" },
-    { l: "ACCOUNT STATUS",         v: "Active — MFA Verified" },
-    { l: "LAST LOGIN",             v: "Aug 28 09:05 PST" },
+    { l: "BADGE / ID",             v: profile?.badgeId || "—" },
+    { l: "ORGANIZATION",           v: profile?.agency || "—" },
+    { l: "ASSIGNED JURISDICTION",  v: profile?.jurisdiction || "—" },
+    { l: "ROLE",                   v: profile?.role ? profile.role.charAt(0).toUpperCase() + profile.role.slice(1) : "—" },
+    { l: "ACCOUNT STATUS",         v: profile?.status === 'active' ? 'Active' : (profile?.status || '—') },
+    { l: "LAST UPDATED",           v: profile?.updatedAt ? new Date(profile.updatedAt).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—" },
   ];
 
   const card = { borderRadius: "12px", padding: "24px", marginBottom: "20px", background: "#0e0e18", border: "1px solid #1a1a2a" };
@@ -35,54 +65,85 @@ export default function Account({ user }) {
     return null;
   }
 
-  function handleUpdatePassword() {
+  async function handleUpdatePassword() {
     if (!currentPw || !newPw || !confirmPw) {
-      setOtpError("Please fill in all fields.");
+      setPwError("Please fill in all fields.");
       return;
     }
     const validation = validatePassword(newPw);
-    if (validation) {
-      setOtpError(validation);
-      return;
+    if (validation) { setPwError(validation); return; }
+    if (newPw !== confirmPw) { setPwError("New passwords do not match."); return; }
+
+    setPwError(null);
+    setSubmitting(true);
+    try {
+      await apiClient.post('/api/v1/account/change-password', {
+        currentPassword: currentPw,
+        newPassword: newPw,
+        confirmPassword: confirmPw,
+      });
+      setCurrentPw("");
+      setNewPw("");
+      setConfirmPw("");
+      setShowSuccess(true);
+      setTimeout(() => setShowSuccess(false), 4000);
+    } catch (err) {
+      setPwError(
+        err?.response?.data?.message || 'Could not update the password.'
+      );
+    } finally {
+      setSubmitting(false);
     }
-    if (newPw !== confirmPw) {
-      setOtpError("New passwords do not match.");
-      return;
-    }
-    setOtpError(null);
-    setShowOtp(true);
   }
 
-  function handleOtpSubmit() {
-    if (otp.length !== 6 || !/^\d{6}$/.test(otp)) {
-      setOtpError("Please enter a valid 6-digit OTP.");
-      return;
-    }
-    setOtpError(null);
-    setShowOtp(false);
-    setOtp("");
-    setCurrentPw("");
-    setNewPw("");
-    setConfirmPw("");
-    setShowSuccess(true);
-    setTimeout(() => setShowSuccess(false), 3000);
+  if (loading) {
+    return <div style={{ padding: "40px", textAlign: "center", color: "#4b5563", fontSize: "13px" }}>Loading profile…</div>;
   }
 
   return (
     <div style={{ maxWidth: "640px" }}>
 
-      {/* Profile */}
+      {error && (
+        <div style={{ padding: "10px 14px", borderRadius: "8px", marginBottom: "16px", background: "#1a0606", border: "1px solid #ef444440", color: "#ef4444", fontSize: "12px" }}>
+          {error}
+        </div>
+      )}
+
+      {/* Suspension banner */}
+      {profile?.status === 'suspended' && (
+        <div style={{ padding: "14px 16px", borderRadius: "10px", marginBottom: "16px", background: "#1a0f06", border: "1px solid #f59e0b40", color: "#f59e0b", fontSize: "13px", lineHeight: 1.6 }}>
+          <div style={{ fontWeight: 700, marginBottom: "4px" }}>⚠️ Account Suspended</div>
+          Your account is suspended
+          {profile?.suspendedUntil
+            ? ` until ${new Date(profile.suspendedUntil).toLocaleString("en-PH", {
+                month: "short", day: "numeric", year: "numeric",
+                hour: "2-digit", minute: "2-digit",
+              })}`
+            : ''}.
+          {profile?.suspendReason ? ` Reason: ${profile.suspendReason}` : ''}
+        </div>
+      )}
+
+      {/* Disabled banner */}
+      {profile?.status === 'disabled' && (
+        <div style={{ padding: "14px 16px", borderRadius: "10px", marginBottom: "16px", background: "#1a0606", border: "1px solid #ef444440", color: "#ef4444", fontSize: "13px", lineHeight: 1.6 }}>
+          <div style={{ fontWeight: 700, marginBottom: "4px" }}>🚫 Account Disabled</div>
+          Your account has been disabled. Contact your NBI supervisor to restore access.
+          {profile?.suspendReason ? ` Reason: ${profile.suspendReason}` : ''}
+        </div>
+      )}
+
       <div style={card}>
         <div style={{ ...label, marginBottom: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
           <UserCircle size={14} color="#4b5563" /> PROFILE
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "24px" }}>
           <div style={{ width: "48px", height: "48px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "14px", fontWeight: 700, flexShrink: 0, background: "#1e3a5f", color: "#60a5fa", border: "1.5px solid #3b82f640" }}>
-            {user?.initials ?? "RC"}
+            {initials}
           </div>
           <div>
-            <div style={{ fontWeight: 700, color: "#fff" }}>{user?.name ?? "Insp. R. Cruz"}</div>
-            <div style={{ fontSize: "12px", marginTop: "2px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace" }}>{user?.email ?? "r.cruz@nbi-ccru.gov.ph"}</div>
+            <div style={{ fontWeight: 700, color: "#fff" }}>{profile?.fullName || "—"}</div>
+            <div style={{ fontSize: "12px", marginTop: "2px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace" }}>{profile?.email || "—"}</div>
           </div>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px 32px" }}>
@@ -98,26 +159,6 @@ export default function Account({ user }) {
         </div>
       </div>
 
-      {/* MFA */}
-      <div style={card}>
-        <div style={{ ...label, marginBottom: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
-          <ShieldCheck size={14} color="#4b5563" /> MULTI-FACTOR AUTHENTICATION
-        </div>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
-          <div>
-            <div style={{ fontWeight: 600, color: "#fff", fontSize: "14px" }}>Email OTP</div>
-            <div style={{ fontSize: "12px", marginTop: "4px", color: "#4b5563" }}>A 6-digit code is sent to your registered email on each login.</div>
-          </div>
-          <div style={{ width: "40px", height: "24px", borderRadius: "999px", background: "#22c55e", display: "flex", alignItems: "center", padding: "0 2px", flexShrink: 0 }}>
-            <div style={{ width: "20px", height: "20px", borderRadius: "50%", background: "#fff", marginLeft: "auto" }} />
-          </div>
-        </div>
-        <div style={{ padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#0a1a12", border: "1px solid #22c55e30", color: "#22c55e" }}>
-          ✓ Email OTP active — Last verified Aug 15, 2026
-        </div>
-      </div>
-
-      {/* Change password */}
       <div style={card}>
         <div style={{ ...label, marginBottom: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
           <KeyRound size={14} color="#4b5563" /> CHANGE PASSWORD
@@ -125,133 +166,42 @@ export default function Account({ user }) {
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           <div>
             <div style={label}>CURRENT PASSWORD</div>
-            <input 
-              type="password" 
-              value={currentPw} 
-              onChange={(e) => setCurrentPw(sanitizePw(e.target.value))}
-              autoComplete="new-password"
-              style={inputS} 
-            />
+            <input type="password" value={currentPw} onChange={(e) => setCurrentPw(sanitizePw(e.target.value))} autoComplete="new-password" style={inputS} />
           </div>
           <div>
             <div style={label}>NEW PASSWORD</div>
-            <input 
-              type="password" 
-              value={newPw} 
-              onChange={(e) => setNewPw(sanitizePw(e.target.value))}
-              autoComplete="new-password"
-              style={inputS} 
-            />
+            <input type="password" value={newPw} onChange={(e) => setNewPw(sanitizePw(e.target.value))} autoComplete="new-password" style={inputS} />
             <div style={{ fontSize: "10px", color: "#4b5563", marginTop: "4px", fontFamily: "'JetBrains Mono',monospace" }}>
               8–20 characters · Letters + Numbers + Special (!@#$%^&*) · No spaces
             </div>
           </div>
           <div>
             <div style={label}>CONFIRM NEW PASSWORD</div>
-            <input 
-              type="password" 
-              value={confirmPw} 
-              onChange={(e) => setConfirmPw(sanitizePw(e.target.value))}
-              autoComplete="new-password"
-              style={inputS} 
-            />
+            <input type="password" value={confirmPw} onChange={(e) => setConfirmPw(sanitizePw(e.target.value))} autoComplete="new-password" style={inputS} />
           </div>
 
-          {otpError && !showOtp && (
+          {pwError && (
             <div style={{ padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#ef444420", border: "1px solid #ef444430", color: "#ef4444" }}>
-              {otpError}
+              {pwError}
             </div>
           )}
 
           {showSuccess && (
-            <div style={{ 
-              padding: "12px 16px", borderRadius: "10px", fontSize: "13px", fontWeight: 500,
-              background: "#0a1a12", border: "1px solid #22c55e40", color: "#22c55e",
-              display: "flex", alignItems: "center", gap: "10px", animation: "fadeIn 0.3s ease"
-            }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M20 6L9 17l-5-5" />
-              </svg>
+            <div style={{ padding: "12px 16px", borderRadius: "10px", fontSize: "13px", fontWeight: 500, background: "#0a1a12", border: "1px solid #22c55e40", color: "#22c55e", display: "flex", alignItems: "center", gap: "10px" }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
               Password updated successfully.
             </div>
           )}
 
-          <button onClick={handleUpdatePassword}
-            style={{ alignSelf: "flex-start", padding: "10px 20px", borderRadius: "10px", fontSize: "12px", fontWeight: 600, background: "#3b82f6", color: "#fff", border: "none", cursor: "pointer", marginTop: "4px" }}>
-            Update Password
+          <button onClick={handleUpdatePassword} disabled={submitting}
+            style={{ alignSelf: "flex-start", padding: "10px 20px", borderRadius: "10px", fontSize: "12px", fontWeight: 600, background: submitting ? "#2a2a3a" : "#3b82f6", color: "#fff", border: "none", cursor: submitting ? "not-allowed" : "pointer", marginTop: "4px", display: "flex", alignItems: "center", gap: "8px" }}>
+            {submitting && <span style={{ width: "12px", height: "12px", borderRadius: "50%", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", animation: "spin 0.7s linear infinite", display: "inline-block" }} />}
+            {submitting ? "Updating…" : "Update Password"}
           </button>
         </div>
       </div>
 
-      {/* OTP MODAL */}
-      {showOtp && (
-        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}
-          onClick={() => setShowOtp(false)}>
-          <div style={{ width: "100%", maxWidth: "440px", margin: "0 16px", borderRadius: "20px", padding: "32px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a", boxShadow: "0 40px 80px rgba(0,0,0,0.5)" }}
-            onClick={(e) => e.stopPropagation()}>
-            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: "linear-gradient(90deg,transparent,#3b82f6,transparent)" }} />
-
-            <div style={{ marginBottom: "20px" }}>
-              <div style={{ fontWeight: 700, color: "#fff", fontSize: "18px" }}>OTP Verification</div>
-              <div style={{ fontSize: "12px", marginTop: "6px", color: "#4b5563", lineHeight: 1.6 }}>
-                A 6-digit code has been sent to <span style={{ color: "#3b82f6", fontWeight: 600 }}>{user?.email ?? "r.cruz@nbi-ccru.gov.ph"}</span>. Enter it below to confirm the password change.
-              </div>
-            </div>
-
-            <div style={{ marginBottom: "20px" }}>
-              <div style={{ fontSize: "10px", marginBottom: "8px", color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>6-DIGIT OTP</div>
-              <input
-                type="text"
-                value={otp}
-                onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                placeholder="000000"
-                maxLength={6}
-                autoFocus
-                autoComplete="off"
-                style={{
-                  width: "100%", padding: "14px", borderRadius: "12px",
-                  fontSize: "24px", textAlign: "center", letterSpacing: "8px",
-                  background: "#080810", border: "1.5px solid #1a1a2a",
-                  color: "#fff", outline: "none", fontFamily: "'JetBrains Mono',monospace",
-                  boxSizing: "border-box"
-                }}
-              />
-            </div>
-
-            {otpError && (
-              <div style={{ marginBottom: "16px", padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#ef444420", border: "1px solid #ef444430", color: "#ef4444" }}>
-                {otpError}
-              </div>
-            )}
-
-            <div style={{ display: "flex", gap: "10px" }}>
-              <button onClick={() => { setShowOtp(false); setOtp(""); setOtpError(null); }}
-                style={{ flex: 1, padding: "12px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: "#111120", border: "1px solid #1a1a2a", color: "#9ca3af", cursor: "pointer" }}>
-                Cancel
-              </button>
-              <button onClick={handleOtpSubmit}
-                style={{ flex: 1, padding: "12px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: "#3b82f6", border: "none", color: "#fff", cursor: "pointer" }}>
-                Verify & Update
-              </button>
-            </div>
-
-            <div style={{ textAlign: "center", fontSize: "11px", marginTop: "16px", color: "#4b5563" }}>
-              Didn't receive the code? <span style={{ color: "#3b82f6", cursor: "pointer", fontWeight: 600 }}>Resend OTP</span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <style>{`
-        input:-webkit-autofill,
-        input:-webkit-autofill:hover, 
-        input:-webkit-autofill:focus, 
-        input:-webkit-autofill:active {
-          -webkit-box-shadow: 0 0 0 1000px #080810 inset !important;
-          -webkit-text-fill-color: #e2e8f0 !important;
-          transition: background-color 5000s ease-in-out 0s;
-        }
-      `}</style>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }

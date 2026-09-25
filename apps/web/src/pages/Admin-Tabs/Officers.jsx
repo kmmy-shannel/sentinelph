@@ -77,7 +77,7 @@ export default function Officers() {
           className="inline-flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-[#080810]"
         >
           <span className="text-base leading-none">+</span>
-          Invite Officer
+          Add Officer
         </button>
       </div>
 

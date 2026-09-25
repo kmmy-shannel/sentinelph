@@ -1,7 +1,8 @@
+// services/api/routes/auth.js
 const express = require('express');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
-const { body } = require('express-validator');                                    // ← NEW
+const { body } = require('express-validator');
 const { verifyFirebaseToken, verifyFirebaseTokenWithoutRole } = require('../middleware/auth');
 const { initFirebase } = require('../config/firebase');
 const User = require('../models/User');
@@ -14,33 +15,54 @@ const router = express.Router();
 
 /**
  * GET /api/v1/auth/me
- * (unchanged — your existing route)
  */
 router.get('/me', verifyFirebaseToken, async (req, res) => {
-  // ...your existing handler, unchanged...
+  try {
+    const user = await User.findOne({ firebaseUid: req.user.uid }).lean();
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'USER_NOT_FOUND',
+        message: 'No profile found for this account.',
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        firebaseUid: user.firebaseUid,
+        email: user.email,
+        fullName: user.fullName,
+        role: user.role,
+        badgeId: user.badgeId,
+        agency: user.agency,
+        jurisdiction: user.jurisdiction,
+        status: user.status,
+        suspendedUntil: user.suspendedUntil,
+        suspendReason: user.suspendReason,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+      },
+    });
+  } catch (err) {
+    console.error('[auth/me]', err);
+    return res.status(500).json({
+      success: false,
+      error: 'PROFILE_FETCH_FAILED',
+      message: 'Could not load profile.',
+    });
+  }
 });
 
 /**
  * POST /api/v1/auth/bootstrap-citizen
- *
- * Called by the mobile app immediately after Firebase signup. Assigns
- * `role: 'citizen'` as a Firebase custom claim on the authenticated user.
- *
- * Idempotent:
- *   - If the user already has role: 'citizen', returns 200 success.
- *   - If the user has a DIFFERENT role already set (officer, admin, ...),
- *     returns 409 to prevent accidental privilege downgrade.
- *   - If no role is set, assigns 'citizen'.
- *
- * Uses verifyFirebaseTokenWithoutRole so first-time signups (who by
- * definition have no role yet) can reach this endpoint.
  */
 router.post('/bootstrap-citizen', verifyFirebaseTokenWithoutRole, async (req, res) => {
   try {
     const admin = initFirebase();
     const uid = req.user.uid;
 
-    // Read current claims so we never clobber a role that already exists.
     const firebaseUser = await admin.auth().getUser(uid);
     const currentClaims = firebaseUser.customClaims || {};
 
@@ -52,15 +74,11 @@ router.post('/bootstrap-citizen', verifyFirebaseTokenWithoutRole, async (req, re
       });
     }
 
-    // Assign the citizen claim. Preserve any other existing claims.
     await admin.auth().setCustomUserClaims(uid, {
       ...currentClaims,
       role: 'citizen',
     });
 
-    // Best-effort mirror into MongoDB so admin/officer dashboards can
-    // query roles without a Firebase round trip. Non-fatal if the
-    // profile schema doesn't yet have these fields.
     try {
       await User.updateOne(
         { firebaseUid: uid },
@@ -90,13 +108,103 @@ router.post('/bootstrap-citizen', verifyFirebaseTokenWithoutRole, async (req, re
 });
 
 // ────────────────────────────────────────────────────────────────────
+// EMAIL EXISTENCE CHECK — also returns suspension/disable info
+// ────────────────────────────────────────────────────────────────────
+
+const checkEmailLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'RATE_LIMITED',
+    message: 'Too many checks. Please try again later.',
+  },
+});
+
+router.post('/check-email', checkEmailLimiter, async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    if (!email || !email.includes('@')) {
+      return res.status(400).json({
+        success: false,
+        error: 'INVALID_EMAIL',
+        message: 'Please enter a valid email address.',
+      });
+    }
+
+    const user = await User.findOne({ email })
+      .select('email role status suspendedUntil suspendReason firebaseUid')
+      .lean();
+
+    if (!user) {
+      return res.status(200).json({
+        success: true,
+        exists: false,
+        message: "This email isn't registered in SentinelPH. Contact your administrator.",
+      });
+    }
+
+    // Auto-lift expired suspensions
+    let status = user.status;
+    if (status === 'suspended' && user.suspendedUntil && new Date(user.suspendedUntil) < new Date()) {
+      await User.updateOne(
+        { _id: user._id },
+        { status: 'active', suspendedUntil: null, suspendReason: null }
+      );
+      try {
+        const admin = initFirebase();
+        await admin.auth().updateUser(user.firebaseUid, { disabled: false });
+      } catch {}
+      status = 'active';
+    }
+
+    if (status === 'disabled') {
+      return res.status(200).json({
+        success: true,
+        exists: true,
+        status: 'disabled',
+        suspendedUntil: null,
+        suspendReason: user.suspendReason || null,
+        message: 'Your account has been disabled. Contact your NBI supervisor to restore access.',
+      });
+    }
+
+    if (status === 'suspended') {
+      return res.status(200).json({
+        success: true,
+        exists: true,
+        status: 'suspended',
+        suspendedUntil: user.suspendedUntil || null,
+        suspendReason: user.suspendReason || null,
+        message: `Your account is suspended until ${new Date(user.suspendedUntil).toLocaleString('en-PH')}.`,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      exists: true,
+      role: user.role,
+      status,
+    });
+  } catch (err) {
+    console.error('[auth/check-email]', err);
+    return res.status(500).json({
+      success: false,
+      error: 'CHECK_FAILED',
+      message: 'Could not verify the email. Please try again.',
+    });
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────
 // PASSWORD RESET — request
 // ────────────────────────────────────────────────────────────────────
 
-// Stricter limiter than the global one to prevent reset-email spam.
 const passwordResetLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 min
-  max: 5,                    // 5 requests per IP per window
+  windowMs: 15 * 60 * 1000,
+  max: 5,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -119,7 +227,6 @@ router.post(
   try {
     const email = String(req.body?.email || '').trim().toLowerCase();
 
-    // Always return the same response shape to prevent email enumeration.
     const okResponse = {
       success: true,
       message:
@@ -149,7 +256,6 @@ router.post(
       throw err;
     }
 
-    // Generate a cryptographically random token.
     const rawToken = crypto.randomBytes(32).toString('hex');
     const tokenHash = crypto
       .createHash('sha256')
@@ -160,7 +266,6 @@ router.post(
       Date.now() + RESET_TOKEN_TTL_MINUTES * 60 * 1000
     );
 
-    // Invalidate any prior unused tokens for this user (one live token max).
     await PasswordResetToken.updateMany(
       { firebaseUid: firebaseUser.uid, usedAt: null },
       { $set: { usedAt: new Date() } }
@@ -175,7 +280,6 @@ router.post(
       userAgent: (req.headers['user-agent'] || '').slice(0, 200),
     });
 
-    // Build the reset URL pointing at the web app.
     const webOrigin =
       process.env.PASSWORD_RESET_WEB_ORIGIN ||
       process.env.CLIENT_ORIGIN_WEB ||
@@ -191,7 +295,6 @@ router.post(
       );
     } catch (mailErr) {
       console.error('[auth.request-password-reset] Email send failed:', mailErr);
-      // Non-fatal from the user's perspective — we still respond OK.
     }
 
     await AuditLog.record({
@@ -316,21 +419,17 @@ router.post(
     });
   }
 });
+
 // ────────────────────────────────────────────────────────────────────
 // OTP-BASED PASSWORD RESET
 // ────────────────────────────────────────────────────────────────────
 
-// ============ TUNABLE CONSTANTS ============
-// Change OTP_LENGTH to 4 if you truly want 4 digits instead of 6.
-// 6 is strongly recommended (1,000,000 combinations vs 10,000).
 const OTP_LENGTH = 6;
 const OTP_TTL_MINUTES = 10;
 const MAX_OTP_ATTEMPTS = 5;
 const RESET_SESSION_TTL_MINUTES = 10;
 
-// ============ HELPERS ============
 function generateNumericOtp(length) {
-  // Uses crypto.randomInt — cryptographically secure, no modulo bias.
   let code = '';
   for (let i = 0; i < length; i += 1) {
     code += crypto.randomInt(0, 10).toString();
@@ -342,7 +441,6 @@ function sha256(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex');
 }
 
-// Rate limiter: 5 OTP requests per IP per 15 min.
 const passwordOtpRequestLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
@@ -355,7 +453,6 @@ const passwordOtpRequestLimiter = rateLimit({
   },
 });
 
-// Stricter limiter for OTP verification: 10 attempts per IP per 15 min.
 const passwordOtpVerifyLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -368,7 +465,6 @@ const passwordOtpVerifyLimiter = rateLimit({
   },
 });
 
-// ============ ENDPOINT 1: REQUEST OTP ============
 router.post(
   '/request-password-otp',
   passwordOtpRequestLimiter,
@@ -386,7 +482,6 @@ router.post(
     const email = String(req.body?.email || '').trim().toLowerCase();
 
     if (!email || !email.includes('@')) {
-      // Still return generic success — never leak validation state.
       return res.status(200).json(genericResponse);
     }
 
@@ -409,12 +504,10 @@ router.post(
       throw err;
     }
 
-    // Generate OTP + hash.
     const otp = generateNumericOtp(OTP_LENGTH);
     const otpHash = sha256(otp);
     const otpExpiresAt = new Date(Date.now() + OTP_TTL_MINUTES * 60 * 1000);
 
-    // Invalidate any prior unused OTPs for this user (one live record per user).
     await PasswordResetToken.deleteMany({ firebaseUid: firebaseUser.uid });
 
     await PasswordResetToken.create({
@@ -436,7 +529,6 @@ router.post(
       );
     } catch (mailErr) {
       console.error('[auth.request-password-otp] Email send failed:', mailErr);
-      // Non-fatal: user still gets the same generic success response.
     }
 
     await AuditLog.record({
@@ -454,7 +546,6 @@ router.post(
   }
 });
 
-// ============ ENDPOINT 2: VERIFY OTP ============
 router.post(
   '/verify-password-otp',
   passwordOtpVerifyLimiter,
@@ -533,7 +624,6 @@ router.post(
       });
     }
 
-    // OTP matches — issue a short-lived reset session token.
     const resetSessionToken = crypto.randomBytes(32).toString('hex');
     record.resetSessionTokenHash = sha256(resetSessionToken);
     record.resetSessionExpiresAt = new Date(
@@ -564,13 +654,6 @@ router.post(
     });
   }
 });
-
-// ============ ENDPOINT 3: RESET PASSWORD WITH OTP SESSION ============
-function isStrongPassword(pw) {
-  if (typeof pw !== 'string') return false;
-  if (pw.length < 8) return false;
-  return /[A-Za-z]/.test(pw) && /[0-9]/.test(pw);
-}
 
 router.post(
   '/reset-password-with-otp',
@@ -671,6 +754,5 @@ router.post(
     });
   }
 });
-
 
 module.exports = router;

@@ -15,7 +15,7 @@ const flagged = [
   { id: "FL-04397", number: "+63 917 882 1104", label: "Parcel/Delivery",     conf: "91.8%", confC: "#22c55e", status: "Approved" },
 ];
 
-// ✅ SINGLE combined array (This fixes the double dates!)
+//  SINGLE combined array (This fixes the double dates!)
 const trendData = [
   { day: "Aug 22", sms: 90, calls: 60 },
   { day: "Aug 23", sms: 100, calls: 75 },

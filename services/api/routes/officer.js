@@ -10,6 +10,9 @@ router.use(verifyFirebaseToken);
 router.use(requireRole('officer'));
 
 const RESOLVED = ['blacklisted', 'approved', 'rejected'];
+const OPEN_FOR_ME = ['pending', 'under_review', 'one_approval', 'two_approvals'];
+const AWAITING_FINAL = ['one_approval', 'two_approvals'];
+const CONSENSUS_REQUIRED = Report.CONSENSUS_REQUIRED || 3;
 
 function timeAgo(date) {
   if (!date) return '—';
@@ -23,23 +26,40 @@ function timeAgo(date) {
   return `${days}d ago`;
 }
 
+function ymd(date) {
+  const d = new Date(date);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function prettyDay(date) {
+  return new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
 router.get('/dashboard', async (req, res) => {
   const uid = req.user.uid;
-  // NOTE: jurisdiction filter intentionally NOT applied — matches
-  // the Review Queue's behaviour. Re-enable when reports have
-  // real jurisdiction values assigned.
 
   try {
     const since7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     // ── KPIs ────────────────────────────────────────────────
     const [pendingVote, consensusNeeded, resolvedThisWeek] = await Promise.all([
-      // pending + one_approval = "waiting for your vote"
-      Report.countDocuments({ status: { $in: ['pending', 'one_approval'] } }),
-      Report.countDocuments({ status: 'one_approval' }),
+      // "Pending your vote" = OPEN reports this officer hasn't voted on.
+      Report.countDocuments({
+        status: { $in: OPEN_FOR_ME },
+        'votes.userId': { $ne: uid },
+      }),
+      // "Consensus needed" = anything waiting on a final 3rd vote.
+      Report.countDocuments({ status: { $in: AWAITING_FINAL } }),
+      // "Resolved this week" = resolved in last 7 days (uses resolvedAt when set).
       Report.countDocuments({
         status: { $in: RESOLVED },
-        createdAt: { $gte: since7d },
+        $or: [
+          { resolvedAt: { $gte: since7d } },
+          { resolvedAt: null, createdAt: { $gte: since7d } },
+        ],
       }),
     ]);
 
@@ -48,24 +68,42 @@ router.get('/dashboard', async (req, res) => {
       { $match: { createdAt: { $gte: since7d } } },
       {
         $group: {
-          _id: { $dateToString: { format: '%b %d', date: '$createdAt' } },
+          _id: {
+            $dateToString: {
+              format: '%Y-%m-%d',
+              date: '$createdAt',
+              timezone: 'Asia/Manila',
+            },
+          },
           v: { $sum: 1 },
         },
       },
-      { $sort: { _id: 1 } },
     ]);
 
+    const trendLookup = new Map(trendAgg.map((t) => [t._id, t.v]));
     const trend = [];
     for (let i = 6; i >= 0; i--) {
       const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
-      const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      const found = trendAgg.find((t) => t._id === label);
-      trend.push({ day: label, v: found?.v ?? 0 });
+      const key = ymd(d);
+      trend.push({
+        day: prettyDay(d),
+        v: trendLookup.get(key) ?? 0,
+      });
     }
 
-    // ── Heatmap (by jurisdiction) ───────────────────────────
+    // ── Heatmap (by region) ─────────────────────────────────
     const heatmapAgg = await Report.aggregate([
-      { $group: { _id: '$jurisdiction', v: { $sum: 1 } } },
+      {
+        $group: {
+          _id: {
+            $ifNull: [
+              '$location.region',
+              { $ifNull: ['$jurisdiction', 'Unknown'] },
+            ],
+          },
+          v: { $sum: 1 },
+        },
+      },
       { $sort: { v: -1 } },
       { $limit: 6 },
     ]);
@@ -76,7 +114,12 @@ router.get('/dashboard', async (req, res) => {
     }));
 
     // ── Consensus queue ─────────────────────────────────────
-    const consensusDocs = await Report.find({ status: 'one_approval' })
+    // All cases still awaiting the final 3rd vote (1 or 2 approvals so far),
+    // regardless of whether this officer has voted. The table is monitoring,
+    // not task assignment — "Pending Your Vote" KPI handles that.
+    const consensusDocs = await Report.find({
+      status: { $in: AWAITING_FINAL },
+    })
       .sort({ createdAt: 1 })
       .limit(10)
       .lean();
@@ -85,7 +128,7 @@ router.get('/dashboard', async (req, res) => {
       id: r.reportId,
       number: r.reportedNumber || r.scammerNumber || r.sender || '—',
       type: r.scamType || r.category || 'UNKNOWN',
-      votes: `${r.consensusState?.approvals ?? 0}/2`,
+      votes: `${r.consensusState?.approvals ?? 0}/${CONSENSUS_REQUIRED}`,
       since: timeAgo(r.createdAt),
       createdAt: r.createdAt,
     }));
