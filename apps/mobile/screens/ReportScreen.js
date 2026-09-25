@@ -317,7 +317,7 @@ function ScamRiskBanner({ analyzing, analysis, error }) {
           }}
         >
           <Text style={{ fontSize: 16 }}>
-            {analysis.isScam ? '⚠️' : analysis.riskLevel === 'LOW' ? '✓' : 'ℹ️'}
+            {analysis.isScam ? '' : analysis.riskLevel === 'LOW' ? '' : ''}
           </Text>
         </View>
         <View style={{ flex: 1, minWidth: 0 }}>
@@ -841,7 +841,7 @@ export default function ReportScreen() {
               borderColor: 'rgba(16,185,129,0.25)',
             }}
           >
-            <Text style={{ fontSize: 32, color: '#10b981' }}>✓</Text>
+            <Text style={{ fontSize: 32, color: '#10b981' }}></Text>
           </View>
           <Text
             style={{
@@ -1552,7 +1552,7 @@ export default function ReportScreen() {
                           onPress={() => removeFile(i)}
                           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                         >
-                          <Text style={{ color: '#64748b', fontSize: 12 }}>✕</Text>
+                          <Text style={{ color: '#64748b', fontSize: 12 }}></Text>
                         </TouchableOpacity>
                       </View>
                     ))}
