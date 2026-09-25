@@ -53,10 +53,20 @@ class ModelNotLoadedError(Exception):
 # --- Explainability: heuristic pattern extractor ---
 _SHORTENER_DOMAINS = ("bit.ly", "tinyurl.com", "is.gd", "t.co", "goo.gl", "cutt.ly", "rb.gy")
 _IP_URL_PATTERN = re.compile(r"\bhttps?://(?:\d{1,3}\.){3}\d{1,3}\b")
+# Matches patterns like bpi-secure.com, gcash-verify.net, phlpost-delivery.info
 _SPOOFED_DOMAIN_PATTERN = re.compile(
-    r"\b(gcash|paymaya|maya|bdo|unionbank|bpi|metrobank)[\-_][a-z0-9\-]*\.[a-z]{1,}",
+    r"\b(gcash|paymaya|maya|bdo|unionbank|bpi|metrobank|landbank|phlpost|phpost|lbc|dhl|jnt|j&t|ninjavan|sss|pag-?ibig|bir|nbi|lto|philhealth)"
+    r"[\-_][a-z0-9\-]*\.(com|net|info|life|xyz|top|club|online|site|website|icu|tv|bid|buzz|cfd|digital|pw|cn|shop|store)",
     re.IGNORECASE,
 )
+
+# Any URL in the message
+_ANY_URL_PATTERN = re.compile(r"https?://([a-z0-9\-\.]+\.[a-z]{2,})", re.IGNORECASE)
+
+# Suspicious TLDs commonly used in phishing
+_SUSPICIOUS_TLDS = (".life", ".xyz", ".top", ".icu", ".tv", ".bid", ".buzz", ".cfd",
+                    ".website", ".digital", ".pw", ".cn", ".online", ".site", ".club",
+                    ".shop", ".store", ".info", ".click", ".link")
 _URL_PATTERN = re.compile(r"https?://\S+|\bwww\.\S+", re.IGNORECASE)
 _URGENCY_PHRASES = (
     "suspended", "unauthorized login", "unauthorized access", "locked",
@@ -64,7 +74,46 @@ _URGENCY_PHRASES = (
     "act now", "immediate action", "limited time", "your account has been",
     "unusual activity", "restore access", "permanent deactivation",
 )
-_BRAND_NAMES = ("gcash", "maya", "paymaya", "bdo", "unionbank", "lazada", "shopee", "bpi", "metrobank")
+_BRAND_NAMES = (
+    # Banks and e-wallets
+    "gcash", "maya", "paymaya", "bdo", "unionbank", "bpi", "metrobank",
+    "landbank", "rcbc", "security bank", "chinabank", "cimb", "gotyme",
+    "palawanpay", "coins.ph",
+    # Couriers and logistics
+    "phlpost", "phpost", "lbc", "dhl", "fedex", "j&t", "jnt", "ninjavan",
+    "2go", "flash express", "grab express",
+    # Government agencies
+    "sss", "pag-ibig", "pagibig", "bir", "nbi", "dti", "dict", "dfa",
+    "lto", "philhealth", "gsis", "psa", "comelec",
+    # Telcos and e-commerce
+    "globe", "smart", "tnt", "dito", "lazada", "shopee", "grab", "foodpanda",
+)
+
+# Real domains for high-risk brands — used to detect brand impersonation
+_KNOWN_BRAND_DOMAINS = {
+    "gcash": ("gcash.com",),
+    "maya": ("maya.ph",),
+    "paymaya": ("maya.ph",),
+    "bdo": ("bdo.com.ph",),
+    "bpi": ("bpi.com.ph",),
+    "unionbank": ("unionbankph.com", "unionbank.com.ph"),
+    "metrobank": ("metrobank.com.ph",),
+    "landbank": ("landbank.com",),
+    "phlpost": ("phlpost.gov.ph",),
+    "phpost": ("phlpost.gov.ph",),
+    "lbc": ("lbcexpress.com",),
+    "dhl": ("dhl.com",),
+    "j&t": ("jtexpress.ph",),
+    "jnt": ("jtexpress.ph",),
+    "ninjavan": ("ninjavan.co",),
+    "sss": ("sss.gov.ph",),
+    "pag-ibig": ("pagibigfund.gov.ph",),
+    "pagibig": ("pagibigfund.gov.ph",),
+    "bir": ("bir.gov.ph",),
+    "nbi": ("nbi.gov.ph",),
+    "lto": ("lto.gov.ph",),
+    "philhealth": ("philhealth.gov.ph",),
+}
 _JOB_SCAM_PATTERNS = (
     re.compile(r"earn\s*(?:₱|php|p)\s*[\d,]+\s*/?\s*day", re.IGNORECASE),
     re.compile(r"part[\s\-]?time\s+job", re.IGNORECASE),
@@ -125,6 +174,31 @@ def extract_scam_explanations(text: str) -> List[Dict[str, str]]:
             "description": f"Contains a domain ('{spoofed_match.group(0)}') that "
                             "impersonates a known financial brand.",
         })
+    # Brand-impersonation check: brand mentioned + URL that doesn't match the real domain
+    urls_in_text = _ANY_URL_PATTERN.findall(lower)
+    for brand in _BRAND_NAMES:
+        if brand in lower and urls_in_text:
+            real_domains = _KNOWN_BRAND_DOMAINS.get(brand, ())
+            for url_domain in urls_in_text:
+                # If the URL doesn't contain any of the brand's real domains -> impersonation
+                if real_domains and not any(real in url_domain for real in real_domains):
+                    reasons.append({
+                        "category": "Brand Impersonation",
+                        "description": f"Message mentions '{brand.upper()}' but link goes to "
+                                        f"'{url_domain}' — the official domain is {real_domains[0]}.",
+                    })
+                    break
+
+    # Suspicious TLD check
+    for url_domain in urls_in_text:
+        for tld in _SUSPICIOUS_TLDS:
+            if url_domain.endswith(tld):
+                reasons.append({
+                    "category": "Malicious Link",
+                    "description": f"Link uses a suspicious top-level domain ({tld}) "
+                                    "commonly used in phishing campaigns.",
+                })
+                break
 
     matched_urgency = [p for p in _URGENCY_PHRASES if p in lower]
     if matched_urgency:
@@ -154,9 +228,19 @@ def extract_scam_explanations(text: str) -> List[Dict[str, str]]:
 
 
 def compute_risk_level(probs: List[float], reasons: List[Dict[str, str]]) -> str:
-    """Argmax class -> risk bucket. Legit->low, grey->medium, malicious->high."""
+    """Argmax class -> risk bucket, but strong heuristics can promote the risk level."""
     idx = max(range(3), key=lambda i: probs[i])
-    return RISK_LEVELS[idx]
+    base = RISK_LEVELS[idx]
+    categories = {r["category"] for r in reasons}
+
+    # If two or more strong heuristic signals fire, force HIGH
+    strong_signals = categories & {"Malicious Link", "Brand Impersonation"}
+    if len(strong_signals) >= 2:
+        return "HIGH"
+    if strong_signals and base == "LOW":
+        return "MEDIUM"
+
+    return base
 
 
 class ScamClassifier:
@@ -262,7 +346,6 @@ class ScamClassifier:
         if self.backend == "classical":
             return self._predict_classical_probs(text)
         raise RuntimeError("No model backend loaded.")
-
     def analyze(self, raw_text: str, normalized_text: str) -> dict:
         probs = self.predict_probs(normalized_text)
         reasons = extract_scam_explanations(raw_text)
@@ -270,8 +353,13 @@ class ScamClassifier:
 
         idx = max(range(3), key=lambda i: probs[i])
         label = ID2LABEL[idx]
-        risk_level = RISK_LEVELS[idx]
+        risk_level = compute_risk_level(probs, reasons)
         p_malicious = probs[2]
+
+        # If heuristics forced HIGH risk, ensure the label reflects it
+        if risk_level == "HIGH" and label != "malicious":
+            label = "malicious"
+            p_malicious = max(p_malicious, 0.90)
 
         return {
             "label": label,
