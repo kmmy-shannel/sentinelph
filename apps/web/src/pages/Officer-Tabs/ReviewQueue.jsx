@@ -109,6 +109,7 @@ export default function ReviewQueue() {
   const [search, setSearch] = useState("");
 
   const [voteModal, setVoteModal] = useState(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
   const [decision, setDecision] = useState(null);
   const [comment, setComment] = useState("");
   const [showSuccess, setShowSuccess] = useState(false);
@@ -170,6 +171,28 @@ export default function ReviewQueue() {
           loadTabCounts();
           window.dispatchEvent(new CustomEvent('badges:refresh'));
         });
+    }
+  }
+
+  // ── Open vote modal with full report (incl. evidence image) ──
+  async function openVoteModal(row) {
+    setLoadingDetail(true);
+    // Immediately open with row data (no image), then swap in the full detail.
+    setVoteModal({ ...row, evidenceImage: null, _loadingImage: true });
+    try {
+      const { data } = await apiClient.get(`/api/v1/reports/${row.id}`);
+      const full = data?.data || data?.report || data;
+      setVoteModal({
+        ...row,
+        evidenceImage: full?.evidenceImage || null,
+        evidenceText: full?.evidenceText || full?.content || row.evidenceText,
+        _loadingImage: false,
+      });
+    } catch (err) {
+      console.error('[ReviewQueue] detail fetch failed:', err);
+      setVoteModal({ ...row, _loadingImage: false });
+    } finally {
+      setLoadingDetail(false);
     }
   }
 
@@ -323,7 +346,7 @@ export default function ReviewQueue() {
                         {row.hasVoted ? (
                           <span style={{ fontSize: "11px", color: "#22c55e", fontWeight: 600 }}>✓ Voted</span>
                         ) : row.isUnresolved ? (
-                          <button onClick={() => setVoteModal(row)}
+                          <button onClick={() => openVoteModal(row)}
                             style={{ fontSize: "11px", fontWeight: 600, color: "#3b82f6", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
                             Vote →
                           </button>
@@ -386,12 +409,26 @@ export default function ReviewQueue() {
                 </div>
               )}
 
-              {voteModal.evidenceImage && (
+              {/* Evidence image — shows spinner while loading, then the image */}
+              {voteModal._loadingImage && (
+                <div style={{ marginBottom: "16px", padding: "24px", borderRadius: "8px", background: "#080810", border: "1px solid #13131e", display: "flex", alignItems: "center", justifyContent: "center", gap: "10px" }}>
+                  <span style={{ width: "14px", height: "14px", borderRadius: "50%", border: "2px solid rgba(59,130,246,0.3)", borderTopColor: "#3b82f6", animation: "spin 0.7s linear infinite", display: "inline-block" }} />
+                  <span style={{ fontSize: "12px", color: "#4b5563" }}>Loading evidence…</span>
+                </div>
+              )}
+
+              {!voteModal._loadingImage && voteModal.evidenceImage && (
                 <div style={{ marginBottom: "16px" }}>
                   <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>SCREENSHOT EVIDENCE</div>
-                  <div style={{ borderRadius: "8px", overflow: "hidden", background: "#080810", border: "1px solid #13131e", maxHeight: "260px", display: "flex", justifyContent: "center" }}>
-                    <img src={voteModal.evidenceImage} alt="Screenshot" style={{ maxWidth: "100%", maxHeight: "260px", objectFit: "contain" }} />
+                  <div style={{ borderRadius: "8px", overflow: "hidden", background: "#080810", border: "1px solid #13131e", maxHeight: "320px", display: "flex", justifyContent: "center" }}>
+                    <img src={voteModal.evidenceImage} alt="Screenshot evidence" style={{ maxWidth: "100%", maxHeight: "320px", objectFit: "contain" }} />
                   </div>
+                </div>
+              )}
+
+              {!voteModal._loadingImage && !voteModal.evidenceImage && (
+                <div style={{ marginBottom: "16px", padding: "14px 16px", borderRadius: "8px", background: "#080810", border: "1px solid #13131e", fontSize: "11px", color: "#4b5563", textAlign: "center" }}>
+                  No screenshot attached to this report.
                 </div>
               )}
 
@@ -426,6 +463,8 @@ export default function ReviewQueue() {
           </div>
         </div>
       )}
+
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }

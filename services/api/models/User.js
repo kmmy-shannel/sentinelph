@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
 const USER_ROLES = ['citizen', 'officer', 'admin', 'superadmin'];
-const USER_STATUSES = ['active', 'pending_activation', 'suspended'];
+const USER_STATUSES = ['active', 'pending_activation', 'suspended', 'disabled'];
 
 const userSchema = new Schema(
   {
@@ -59,34 +59,27 @@ const userSchema = new Schema(
       default: 'pending_activation',
       index: true,
     },
-    lastSeenAuditLog: {
+
+    // ─── Suspension fields ──────────────────────────────────────────
+    suspendedUntil: {
       type: Date,
       default: null,
     },
-    lastSeenBlacklist: {
-      type: Date,
+    suspendReason: {
+      type: String,
+      trim: true,
+      maxlength: 500,
       default: null,
     },
-    lastSeenAllTab: {
-      type: Date,
-      default: null,
-    },
-    lastSeenResolvedTab: {
-      type: Date,
-      default: null,
-    },
-    lastSeenVotedTab: {
-      type: Date,
-      default: null,
-    },
-    lastSeenNotifications: {
-      type: Date,
-      default: null,
-    },
-    readNotificationIds: {
-      type: [String],
-      default: [],
-    },
+
+    // ─── Seen-tracking fields ───────────────────────────────────────
+    lastSeenAuditLog: { type: Date, default: null },
+    lastSeenBlacklist: { type: Date, default: null },
+    lastSeenAllTab: { type: Date, default: null },
+    lastSeenResolvedTab: { type: Date, default: null },
+    lastSeenVotedTab: { type: Date, default: null },
+    lastSeenNotifications: { type: Date, default: null },
+    readNotificationIds: { type: [String], default: [] },
   },
   {
     timestamps: true,
@@ -104,6 +97,8 @@ userSchema.methods.toSafeJSON = function toSafeJSON() {
     agency: this.agency,
     jurisdiction: this.jurisdiction,
     status: this.status,
+    suspendedUntil: this.suspendedUntil,
+    suspendReason: this.suspendReason,
     lastSeenAuditLog: this.lastSeenAuditLog,
     lastSeenBlacklist: this.lastSeenBlacklist,
     lastSeenAllTab: this.lastSeenAllTab,

@@ -1,7 +1,8 @@
+// services/api/routes/auth.js
 const express = require('express');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
-const { body } = require('express-validator');                                    // ← NEW
+const { body } = require('express-validator');
 const { verifyFirebaseToken, verifyFirebaseTokenWithoutRole } = require('../middleware/auth');
 const { initFirebase } = require('../config/firebase');
 const User = require('../models/User');
@@ -38,6 +39,8 @@ router.get('/me', verifyFirebaseToken, async (req, res) => {
         agency: user.agency,
         jurisdiction: user.jurisdiction,
         status: user.status,
+        suspendedUntil: user.suspendedUntil,
+        suspendReason: user.suspendReason,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       },
@@ -105,7 +108,7 @@ router.post('/bootstrap-citizen', verifyFirebaseTokenWithoutRole, async (req, re
 });
 
 // ────────────────────────────────────────────────────────────────────
-// EMAIL EXISTENCE CHECK (used by the Login page)
+// EMAIL EXISTENCE CHECK — also returns suspension/disable info
 // ────────────────────────────────────────────────────────────────────
 
 const checkEmailLimiter = rateLimit({
@@ -131,7 +134,9 @@ router.post('/check-email', checkEmailLimiter, async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ email }).select('email role status').lean();
+    const user = await User.findOne({ email })
+      .select('email role status suspendedUntil suspendReason firebaseUid')
+      .lean();
 
     if (!user) {
       return res.status(200).json({
@@ -141,11 +146,47 @@ router.post('/check-email', checkEmailLimiter, async (req, res) => {
       });
     }
 
+    // Auto-lift expired suspensions
+    let status = user.status;
+    if (status === 'suspended' && user.suspendedUntil && new Date(user.suspendedUntil) < new Date()) {
+      await User.updateOne(
+        { _id: user._id },
+        { status: 'active', suspendedUntil: null, suspendReason: null }
+      );
+      try {
+        const admin = initFirebase();
+        await admin.auth().updateUser(user.firebaseUid, { disabled: false });
+      } catch {}
+      status = 'active';
+    }
+
+    if (status === 'disabled') {
+      return res.status(200).json({
+        success: true,
+        exists: true,
+        status: 'disabled',
+        suspendedUntil: null,
+        suspendReason: user.suspendReason || null,
+        message: 'Your account has been disabled. Contact your NBI supervisor to restore access.',
+      });
+    }
+
+    if (status === 'suspended') {
+      return res.status(200).json({
+        success: true,
+        exists: true,
+        status: 'suspended',
+        suspendedUntil: user.suspendedUntil || null,
+        suspendReason: user.suspendReason || null,
+        message: `Your account is suspended until ${new Date(user.suspendedUntil).toLocaleString('en-PH')}.`,
+      });
+    }
+
     return res.status(200).json({
       success: true,
       exists: true,
       role: user.role,
-      status: user.status,
+      status,
     });
   } catch (err) {
     console.error('[auth/check-email]', err);
@@ -424,7 +465,6 @@ const passwordOtpVerifyLimiter = rateLimit({
   },
 });
 
-// ============ ENDPOINT 1: REQUEST OTP ============
 router.post(
   '/request-password-otp',
   passwordOtpRequestLimiter,
@@ -506,7 +546,6 @@ router.post(
   }
 });
 
-// ============ ENDPOINT 2: VERIFY OTP ============
 router.post(
   '/verify-password-otp',
   passwordOtpVerifyLimiter,
@@ -616,7 +655,6 @@ router.post(
   }
 });
 
-// ============ ENDPOINT 3: RESET PASSWORD WITH OTP SESSION ============
 router.post(
   '/reset-password-with-otp',
   [

@@ -107,8 +107,13 @@ router.get('/users', async (req, res) => {
       agency: u.agency,
       scope: u.jurisdiction,
       badge_id: u.badgeId,
-      status: u.status === 'suspended' ? 'Suspended' : u.status === 'active' ? 'Active' : 'Pending',
-      kms_key_id: null,
+      status:
+        u.status === 'suspended' ? 'Suspended' :
+        u.status === 'disabled'  ? 'Disabled'  :
+        u.status === 'active'    ? 'Active'    : 'Pending',
+      raw_status: u.status,
+      suspendedUntil: u.suspendedUntil || null,
+      suspendReason: u.suspendReason || null,
       last_login_at: u.updatedAt,
     }));
 
@@ -120,13 +125,38 @@ router.get('/users', async (req, res) => {
 });
 
 // ─── POST /users/:id/suspend ─────────────────────────────────
+// body: { days?: number, until?: ISO date string, reason?: string }
+// Either `days` (from now) or `until` (explicit date) is required.
 router.post('/users/:id/suspend', async (req, res) => {
   const { id } = req.params;
+  const { days, until, reason } = req.body || {};
+
+  let suspendedUntil;
+  if (until) {
+    suspendedUntil = new Date(until);
+    if (Number.isNaN(suspendedUntil.getTime())) {
+      return res.status(400).json({ success: false, error: 'INVALID_DATE', message: '`until` must be a valid ISO date.' });
+    }
+  } else if (typeof days === 'number' && days > 0) {
+    suspendedUntil = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+  } else {
+    return res.status(400).json({ success: false, error: 'MISSING_DURATION', message: 'Provide either `days` or `until`.' });
+  }
+
   try {
-    const user = await User.findByIdAndUpdate(id, { status: 'suspended' }, { new: true }).lean();
+    const user = await User.findByIdAndUpdate(
+      id,
+      {
+        status: 'suspended',
+        suspendedUntil,
+        suspendReason: reason ? String(reason).trim().slice(0, 500) : null,
+      },
+      { new: true }
+    ).lean();
+
     if (!user) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND', message: `No user with id ${id}.` });
 
-    // Also disable in Firebase so they can't sign in.
+    // Disable in Firebase so they can't sign in.
     try {
       const admin = initFirebase();
       await admin.auth().updateUser(user.firebaseUid, { disabled: true });
@@ -137,9 +167,15 @@ router.post('/users/:id/suspend', async (req, res) => {
     await AuditLog.record({
       userId: req.user.uid,
       role: 'superadmin',
-      action: `Account suspended — ${user.fullName || id}`,
+      action: `Account suspended until ${suspendedUntil.toISOString()} — ${user.fullName || id}`,
       ipAddress: req.ip,
-      metadata: { category: 'RBAC', target: String(user._id), actorEmail: req.user.email },
+      metadata: {
+        category: 'RBAC',
+        target: String(user._id),
+        actorEmail: req.user.email,
+        suspendedUntil,
+        reason: reason || null,
+      },
     });
 
     return res.json({ success: true, data: { user } });
@@ -149,38 +185,234 @@ router.post('/users/:id/suspend', async (req, res) => {
   }
 });
 
-// ─── POST /users/:id/restore ─────────────────────────────────
-router.post('/users/:id/restore', async (req, res) => {
+// ─── POST /users/:id/unsuspend ───────────────────────────────
+router.post('/users/:id/unsuspend', async (req, res) => {
   const { id } = req.params;
   try {
-    const user = await User.findByIdAndUpdate(id, { status: 'active' }, { new: true }).lean();
+    const user = await User.findByIdAndUpdate(
+      id,
+      { status: 'active', suspendedUntil: null, suspendReason: null },
+      { new: true }
+    ).lean();
+
     if (!user) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND', message: `No user with id ${id}.` });
 
-    // Re-enable in Firebase.
     try {
       const admin = initFirebase();
       await admin.auth().updateUser(user.firebaseUid, { disabled: false });
     } catch (fbErr) {
-      console.warn('[superadmin/restore] Firebase enable failed (non-fatal):', fbErr.message);
+      console.warn('[superadmin/unsuspend] Firebase enable failed (non-fatal):', fbErr.message);
     }
 
     await AuditLog.record({
       userId: req.user.uid,
       role: 'superadmin',
-      action: `Account restored — ${user.fullName || id}`,
+      action: `Suspension lifted — ${user.fullName || id}`,
       ipAddress: req.ip,
       metadata: { category: 'RBAC', target: String(user._id), actorEmail: req.user.email },
     });
 
     return res.json({ success: true, data: { user } });
   } catch (err) {
-    console.error('[superadmin/users/restore]', err);
-    return res.status(500).json({ success: false, error: 'RESTORE_FAILED', message: 'Failed to restore account.' });
+    console.error('[superadmin/users/unsuspend]', err);
+    return res.status(500).json({ success: false, error: 'UNSUSPEND_FAILED', message: 'Failed to lift suspension.' });
+  }
+});
+
+// ─── POST /users/:id/disable ─────────────────────────────────
+router.post('/users/:id/disable', async (req, res) => {
+  const { id } = req.params;
+  const { reason } = req.body || {};
+
+  try {
+    const user = await User.findByIdAndUpdate(
+      id,
+      {
+        status: 'disabled',
+        suspendedUntil: null,
+        suspendReason: reason ? String(reason).trim().slice(0, 500) : null,
+      },
+      { new: true }
+    ).lean();
+
+    if (!user) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND', message: `No user with id ${id}.` });
+
+    try {
+      const admin = initFirebase();
+      await admin.auth().updateUser(user.firebaseUid, { disabled: true });
+    } catch (fbErr) {
+      console.warn('[superadmin/disable] Firebase disable failed (non-fatal):', fbErr.message);
+    }
+
+    await AuditLog.record({
+      userId: req.user.uid,
+      role: 'superadmin',
+      action: `Account disabled — ${user.fullName || id}`,
+      ipAddress: req.ip,
+      metadata: { category: 'RBAC', target: String(user._id), actorEmail: req.user.email, reason: reason || null },
+    });
+
+    return res.json({ success: true, data: { user } });
+  } catch (err) {
+    console.error('[superadmin/users/disable]', err);
+    return res.status(500).json({ success: false, error: 'DISABLE_FAILED', message: 'Failed to disable account.' });
+  }
+});
+
+// ─── POST /users/:id/enable ──────────────────────────────────
+router.post('/users/:id/enable', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const user = await User.findByIdAndUpdate(
+      id,
+      { status: 'active', suspendedUntil: null, suspendReason: null },
+      { new: true }
+    ).lean();
+
+    if (!user) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND', message: `No user with id ${id}.` });
+
+    try {
+      const admin = initFirebase();
+      await admin.auth().updateUser(user.firebaseUid, { disabled: false });
+    } catch (fbErr) {
+      console.warn('[superadmin/enable] Firebase enable failed (non-fatal):', fbErr.message);
+    }
+
+    await AuditLog.record({
+      userId: req.user.uid,
+      role: 'superadmin',
+      action: `Account enabled — ${user.fullName || id}`,
+      ipAddress: req.ip,
+      metadata: { category: 'RBAC', target: String(user._id), actorEmail: req.user.email },
+    });
+
+    return res.json({ success: true, data: { user } });
+  } catch (err) {
+    console.error('[superadmin/users/enable]', err);
+    return res.status(500).json({ success: false, error: 'ENABLE_FAILED', message: 'Failed to enable account.' });
+  }
+});
+
+// ─── POST /users/provision ───────────────────────────────────
+router.post('/users/provision', async (req, res) => {
+  const { fullName, email, badgeId, agency, role, jurisdiction, tempPassword } = req.body || {};
+
+  const missing = [];
+  if (!fullName || !String(fullName).trim())  missing.push('fullName');
+  if (!email || !String(email).trim())        missing.push('email');
+  if (!badgeId || !String(badgeId).trim())    missing.push('badgeId');
+  if (!agency || !String(agency).trim())      missing.push('agency');
+  if (!tempPassword || String(tempPassword).length < 8) missing.push('tempPassword');
+
+  if (missing.length > 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'MISSING_FIELDS',
+      message: `Missing or invalid: ${missing.join(', ')}`,
+    });
+  }
+
+  if (!VALID_ROLES.includes(role)) {
+    return res.status(400).json({
+      success: false,
+      error: 'INVALID_ROLE',
+      message: `Role must be one of: ${VALID_ROLES.join(', ')}.`,
+    });
+  }
+
+  const cleanEmail = String(email).trim().toLowerCase();
+
+  try {
+    const existing = await User.findOne({ email: cleanEmail }).lean();
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        error: 'EMAIL_EXISTS',
+        message: `An account already exists for ${cleanEmail}.`,
+      });
+    }
+
+    const admin = initFirebase();
+
+    let fbUser;
+    try {
+      fbUser = await admin.auth().createUser({
+        email: cleanEmail,
+        emailVerified: false,
+        password: tempPassword,
+        displayName: String(fullName).trim(),
+        disabled: false,
+      });
+    } catch (fbErr) {
+      if (fbErr.code === 'auth/email-already-exists') {
+        return res.status(409).json({
+          success: false,
+          error: 'FIREBASE_EMAIL_EXISTS',
+          message: `Firebase already has an account for ${cleanEmail}.`,
+        });
+      }
+      throw fbErr;
+    }
+
+    await admin.auth().setCustomUserClaims(fbUser.uid, {
+      role,
+      jurisdiction: jurisdiction || 'National / Regional',
+    });
+
+    const user = await User.create({
+      firebaseUid: fbUser.uid,
+      email: cleanEmail,
+      fullName: String(fullName).trim(),
+      role,
+      badgeId: String(badgeId).trim(),
+      agency: String(agency).trim(),
+      jurisdiction: jurisdiction || 'National / Regional',
+      status: 'active',
+    });
+
+    await AuditLog.record({
+      userId: req.user.uid,
+      role: 'superadmin',
+      action: `Account provisioned — ${fullName} (${role})`,
+      ipAddress: req.ip,
+      metadata: {
+        category: 'RBAC',
+        target: String(user._id),
+        actorEmail: req.user.email,
+        newRole: role,
+      },
+    }).catch(() => {});
+
+    return res.status(201).json({
+      success: true,
+      message: `Account created. Share the temporary password securely with ${fullName}.`,
+      data: {
+        user: {
+          id: String(user._id),
+          uid: fbUser.uid,
+          name: user.fullName,
+          email: user.email,
+          role: user.role,
+          agency: user.agency,
+          scope: user.jurisdiction,
+          badge_id: user.badgeId,
+          status: 'Active',
+          raw_status: 'active',
+          last_login_at: user.updatedAt,
+        },
+      },
+    });
+  } catch (err) {
+    console.error('[superadmin/users/provision]', err);
+    return res.status(500).json({
+      success: false,
+      error: 'PROVISION_FAILED',
+      message: err.message || 'Failed to provision account.',
+    });
   }
 });
 
 // ─── POST /users/:id/role ────────────────────────────────────
-// body: { role: 'officer' | 'analyst' | 'auditor' | 'admin' }
 router.post('/users/:id/role', async (req, res) => {
   const { id } = req.params;
   const { role } = req.body || {};
@@ -197,15 +429,11 @@ router.post('/users/:id/role', async (req, res) => {
     const user = await User.findByIdAndUpdate(id, { role }, { new: true }).lean();
     if (!user) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND', message: `No user with id ${id}.` });
 
-    // Update Firebase custom claims so the new role takes effect at next token refresh.
     try {
       const admin = initFirebase();
       const fbUser = await admin.auth().getUser(user.firebaseUid);
       const currentClaims = fbUser.customClaims || {};
-      await admin.auth().setCustomUserClaims(user.firebaseUid, {
-        ...currentClaims,
-        role,
-      });
+      await admin.auth().setCustomUserClaims(user.firebaseUid, { ...currentClaims, role });
     } catch (fbErr) {
       console.error('[superadmin/users/role] Firebase claim update failed:', fbErr.message);
       return res.status(500).json({
@@ -227,31 +455,6 @@ router.post('/users/:id/role', async (req, res) => {
   } catch (err) {
     console.error('[superadmin/users/role]', err);
     return res.status(500).json({ success: false, error: 'ROLE_UPDATE_FAILED', message: 'Failed to update role.' });
-  }
-});
-
-// ─── POST /users/:id/kms/rotate ──────────────────────────────
-// Placeholder — no real KMS integration yet. Returns a fake new key ID.
-router.post('/users/:id/kms/rotate', async (req, res) => {
-  const { id } = req.params;
-  try {
-    const user = await User.findById(id).lean();
-    if (!user) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND', message: `No user with id ${id}.` });
-
-    const newKeyId = `kms_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-
-    await AuditLog.record({
-      userId: req.user.uid,
-      role: 'superadmin',
-      action: `KMS key rotated — ${user.fullName || id}`,
-      ipAddress: req.ip,
-      metadata: { category: 'KMS', target: String(user._id), actorEmail: req.user.email, newKeyId },
-    });
-
-    return res.json({ success: true, data: { kms_key_id: newKeyId } });
-  } catch (err) {
-    console.error('[superadmin/users/kms/rotate]', err);
-    return res.status(500).json({ success: false, error: 'KMS_ROTATE_FAILED', message: 'Failed to rotate KMS key.' });
   }
 });
 

@@ -133,10 +133,10 @@ router.get('/badges', verifyFirebaseToken, async (req, res) => {
     }
 
     if (role === 'superadmin') {
-      badges.usersRbac = await User.countDocuments({
-        role: { $in: ['admin', 'officer', 'analyst', 'auditor'] },
-        status: { $in: ['pending_activation', 'suspended'] },
-      });
+  badges.usersRbac = await User.countDocuments({
+    role: { $in: ['admin', 'officer', 'analyst', 'auditor'] },
+    status: 'pending_activation',   // ← only pending, not suspended
+  });
 
       const me = await User.findOne({ firebaseUid: req.user.uid })
         .select('lastSeenAuditLog')

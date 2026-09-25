@@ -1,6 +1,6 @@
 // apps/web/src/pages/Officer-Tabs/Account.jsx
 import { useState, useEffect, useCallback } from "react";
-import { ShieldCheck, KeyRound, UserCircle } from 'lucide-react';
+import { KeyRound, UserCircle } from 'lucide-react';
 import apiClient from "../../lib/api";
 
 export default function Account() {
@@ -11,9 +11,7 @@ export default function Account() {
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw]         = useState("");
   const [confirmPw, setConfirmPw] = useState("");
-  const [showOtp, setShowOtp] = useState(false);
-  const [otp, setOtp] = useState("");
-  const [otpError, setOtpError] = useState(null);
+  const [pwError, setPwError] = useState(null);
   const [showSuccess, setShowSuccess] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -48,7 +46,7 @@ export default function Account() {
     { l: "ORGANIZATION",           v: profile?.agency || "—" },
     { l: "ASSIGNED JURISDICTION",  v: profile?.jurisdiction || "—" },
     { l: "ROLE",                   v: profile?.role ? profile.role.charAt(0).toUpperCase() + profile.role.slice(1) : "—" },
-    { l: "ACCOUNT STATUS",         v: profile?.status === 'active' ? 'Active — MFA Verified' : (profile?.status || '—') },
+    { l: "ACCOUNT STATUS",         v: profile?.status === 'active' ? 'Active' : (profile?.status || '—') },
     { l: "LAST UPDATED",           v: profile?.updatedAt ? new Date(profile.updatedAt).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—" },
   ];
 
@@ -69,53 +67,29 @@ export default function Account() {
 
   async function handleUpdatePassword() {
     if (!currentPw || !newPw || !confirmPw) {
-      setOtpError("Please fill in all fields.");
+      setPwError("Please fill in all fields.");
       return;
     }
     const validation = validatePassword(newPw);
-    if (validation) { setOtpError(validation); return; }
-    if (newPw !== confirmPw) { setOtpError("New passwords do not match."); return; }
+    if (validation) { setPwError(validation); return; }
+    if (newPw !== confirmPw) { setPwError("New passwords do not match."); return; }
 
-    setOtpError(null);
+    setPwError(null);
     setSubmitting(true);
     try {
-      await apiClient.post('/api/v1/account/change-password/request-otp', {
+      await apiClient.post('/api/v1/account/change-password', {
         currentPassword: currentPw,
         newPassword: newPw,
         confirmPassword: confirmPw,
       });
-      setShowOtp(true);
-    } catch (err) {
-      setOtpError(
-        err?.response?.data?.message || 'Could not start the password change.'
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleOtpSubmit() {
-    if (otp.length !== 6 || !/^\d{6}$/.test(otp)) {
-      setOtpError("Please enter a valid 6-digit OTP.");
-      return;
-    }
-    setOtpError(null);
-    setSubmitting(true);
-    try {
-      await apiClient.post('/api/v1/account/change-password/verify', {
-        otp,
-        newPassword: newPw,
-      });
-      setShowOtp(false);
-      setOtp("");
       setCurrentPw("");
       setNewPw("");
       setConfirmPw("");
       setShowSuccess(true);
-      setTimeout(() => setShowSuccess(false), 3000);
+      setTimeout(() => setShowSuccess(false), 4000);
     } catch (err) {
-      setOtpError(
-        err?.response?.data?.message || 'Could not verify the code.'
+      setPwError(
+        err?.response?.data?.message || 'Could not update the password.'
       );
     } finally {
       setSubmitting(false);
@@ -132,6 +106,30 @@ export default function Account() {
       {error && (
         <div style={{ padding: "10px 14px", borderRadius: "8px", marginBottom: "16px", background: "#1a0606", border: "1px solid #ef444440", color: "#ef4444", fontSize: "12px" }}>
           {error}
+        </div>
+      )}
+
+      {/* Suspension banner */}
+      {profile?.status === 'suspended' && (
+        <div style={{ padding: "14px 16px", borderRadius: "10px", marginBottom: "16px", background: "#1a0f06", border: "1px solid #f59e0b40", color: "#f59e0b", fontSize: "13px", lineHeight: 1.6 }}>
+          <div style={{ fontWeight: 700, marginBottom: "4px" }}>⚠️ Account Suspended</div>
+          Your account is suspended
+          {profile?.suspendedUntil
+            ? ` until ${new Date(profile.suspendedUntil).toLocaleString("en-PH", {
+                month: "short", day: "numeric", year: "numeric",
+                hour: "2-digit", minute: "2-digit",
+              })}`
+            : ''}.
+          {profile?.suspendReason ? ` Reason: ${profile.suspendReason}` : ''}
+        </div>
+      )}
+
+      {/* Disabled banner */}
+      {profile?.status === 'disabled' && (
+        <div style={{ padding: "14px 16px", borderRadius: "10px", marginBottom: "16px", background: "#1a0606", border: "1px solid #ef444440", color: "#ef4444", fontSize: "13px", lineHeight: 1.6 }}>
+          <div style={{ fontWeight: 700, marginBottom: "4px" }}>🚫 Account Disabled</div>
+          Your account has been disabled. Contact your NBI supervisor to restore access.
+          {profile?.suspendReason ? ` Reason: ${profile.suspendReason}` : ''}
         </div>
       )}
 
@@ -163,24 +161,6 @@ export default function Account() {
 
       <div style={card}>
         <div style={{ ...label, marginBottom: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
-          <ShieldCheck size={14} color="#4b5563" /> MULTI-FACTOR AUTHENTICATION
-        </div>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
-          <div>
-            <div style={{ fontWeight: 600, color: "#fff", fontSize: "14px" }}>Email OTP</div>
-            <div style={{ fontSize: "12px", marginTop: "4px", color: "#4b5563" }}>A 6-digit code is sent to your registered email on each login.</div>
-          </div>
-          <div style={{ width: "40px", height: "24px", borderRadius: "999px", background: "#22c55e", display: "flex", alignItems: "center", padding: "0 2px", flexShrink: 0 }}>
-            <div style={{ width: "20px", height: "20px", borderRadius: "50%", background: "#fff", marginLeft: "auto" }} />
-          </div>
-        </div>
-        <div style={{ padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#0a1a12", border: "1px solid #22c55e30", color: "#22c55e" }}>
-          ✓ Email OTP active
-        </div>
-      </div>
-
-      <div style={card}>
-        <div style={{ ...label, marginBottom: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
           <KeyRound size={14} color="#4b5563" /> CHANGE PASSWORD
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
@@ -200,9 +180,9 @@ export default function Account() {
             <input type="password" value={confirmPw} onChange={(e) => setConfirmPw(sanitizePw(e.target.value))} autoComplete="new-password" style={inputS} />
           </div>
 
-          {otpError && !showOtp && (
+          {pwError && (
             <div style={{ padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#ef444420", border: "1px solid #ef444430", color: "#ef4444" }}>
-              {otpError}
+              {pwError}
             </div>
           )}
 
@@ -216,39 +196,10 @@ export default function Account() {
           <button onClick={handleUpdatePassword} disabled={submitting}
             style={{ alignSelf: "flex-start", padding: "10px 20px", borderRadius: "10px", fontSize: "12px", fontWeight: 600, background: submitting ? "#2a2a3a" : "#3b82f6", color: "#fff", border: "none", cursor: submitting ? "not-allowed" : "pointer", marginTop: "4px", display: "flex", alignItems: "center", gap: "8px" }}>
             {submitting && <span style={{ width: "12px", height: "12px", borderRadius: "50%", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", animation: "spin 0.7s linear infinite", display: "inline-block" }} />}
-            {submitting ? "Sending code…" : "Update Password"}
+            {submitting ? "Updating…" : "Update Password"}
           </button>
         </div>
       </div>
-
-      {showOtp && (
-        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }} onClick={() => !submitting && setShowOtp(false)}>
-          <div style={{ width: "100%", maxWidth: "440px", margin: "0 16px", borderRadius: "20px", padding: "32px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a" }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ marginBottom: "20px" }}>
-              <div style={{ fontWeight: 700, color: "#fff", fontSize: "18px" }}>OTP Verification</div>
-              <div style={{ fontSize: "12px", marginTop: "6px", color: "#4b5563", lineHeight: 1.6 }}>
-                A 6-digit code has been sent to <span style={{ color: "#3b82f6", fontWeight: 600 }}>{profile?.email}</span>.
-              </div>
-            </div>
-            <input type="text" value={otp} onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="000000" maxLength={6} autoFocus
-              style={{ width: "100%", padding: "14px", borderRadius: "12px", fontSize: "24px", textAlign: "center", letterSpacing: "8px", background: "#080810", border: "1.5px solid #1a1a2a", color: "#fff", outline: "none", fontFamily: "'JetBrains Mono',monospace", boxSizing: "border-box", marginBottom: "16px" }} />
-            {otpError && (
-              <div style={{ marginBottom: "16px", padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#ef444420", border: "1px solid #ef444430", color: "#ef4444" }}>{otpError}</div>
-            )}
-            <div style={{ display: "flex", gap: "10px" }}>
-              <button onClick={() => { setShowOtp(false); setOtp(""); setOtpError(null); }} disabled={submitting}
-                style={{ flex: 1, padding: "12px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: "#111120", border: "1px solid #1a1a2a", color: "#9ca3af", cursor: submitting ? "not-allowed" : "pointer" }}>
-                Cancel
-              </button>
-              <button onClick={handleOtpSubmit} disabled={submitting}
-                style={{ flex: 1, padding: "12px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: submitting ? "#2a2a3a" : "#3b82f6", border: "none", color: "#fff", cursor: submitting ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}>
-                {submitting && <span style={{ width: "12px", height: "12px", borderRadius: "50%", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", animation: "spin 0.7s linear infinite", display: "inline-block" }} />}
-                {submitting ? "Verifying…" : "Verify & Update"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>

@@ -46,21 +46,13 @@ export function AuthProvider({ children }) {
     await signOut(auth);
   };
 
-  // ─── Password Reset ────────────────────────────────────────────────
-  // Reverted: returns the raw response body without throwing, so the
-  // caller always sees a successful result (matches original behavior).
   const requestPasswordReset = useCallback(async (email) => {
-    const response = await apiClient.post('/api/v1/auth/request-password-reset', {
-      email,
-    });
+    const response = await apiClient.post('/api/v1/auth/request-password-reset', { email });
     return response.data;
   }, []);
 
   const confirmPasswordReset = useCallback(async (token, newPassword) => {
-    const response = await apiClient.post('/api/v1/auth/confirm-password-reset', {
-      token,
-      newPassword,
-    });
+    const response = await apiClient.post('/api/v1/auth/confirm-password-reset', { token, newPassword });
     return response.data;
   }, []);
 

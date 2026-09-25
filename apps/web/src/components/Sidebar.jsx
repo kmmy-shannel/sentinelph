@@ -74,10 +74,6 @@ export default function Sidebar({ isOpen, onClose }) {
     return () => clearInterval(interval);
   }, [loadBadges, location.pathname]);
 
-  // ── Optimistic badge clearing ─────────────────────────────────────────
-  // Any page can call window.__clearSidebarBadge('registry') to zero out a
-  // badge locally (instant UI feedback). The server request confirms it in
-  // the background; if it fails, 'badges:refresh' restores the true count.
   const clearBadgeLocally = useCallback((key) => {
     setBadges(prev => ({ ...prev, [key]: 0 }));
   }, []);
@@ -87,7 +83,6 @@ export default function Sidebar({ isOpen, onClose }) {
     return () => { delete window.__clearSidebarBadge; };
   }, [clearBadgeLocally]);
 
-  // Refresh badges when any page dispatches 'badges:refresh'.
   useEffect(() => {
     const handler = () => loadBadges();
     window.addEventListener('badges:refresh', handler);
@@ -120,7 +115,7 @@ export default function Sidebar({ isOpen, onClose }) {
         { id: "dashboard",     label: "Dashboard",          Icon: DashboardIcon,     to: "/officer/dashboard" },
         { id: "queue",         label: "Review Queue",       Icon: QueueIcon,         badge: badges.reviewQueue, to: "/officer/queue" },
         { id: "registry",      label: "Blacklist Registry", Icon: RegistryIcon,      badge: badges.registry,    to: "/officer/registry" },
-        { id: "notifications", label: "Notifications", Icon: NotificationsIcon, badge: badges.notifications, to: "/officer/notifications" },
+        { id: "notifications", label: "Notifications",      Icon: NotificationsIcon, badge: badges.notifications, to: "/officer/notifications" },
         { id: "account",       label: "Account",            Icon: AccountIcon,       to: "/officer/account" },
       ];
     } else if (role === ROLES.ADMIN) {
@@ -157,12 +152,17 @@ export default function Sidebar({ isOpen, onClose }) {
           flexDirection: "column",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", padding: "16px", borderBottom: "1px solid #0f0f1a" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <div style={{ width: "28px", height: "28px", borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: "12px", color: "#fff", background: "linear-gradient(135deg,#4f46e5,#7c3aed)", flexShrink: 0 }}>S</div>
+        {/* Logo header — bigger, no violet box */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", padding: "18px 16px", borderBottom: "1px solid #0f0f1a" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <img
+              src="/logo.png"
+              alt="SentinelPH"
+              style={{ width: "44px", height: "44px", objectFit: "contain", flexShrink: 0 }}
+            />
             <div>
-              <div style={{ fontWeight: 800, color: "#fff", fontSize: "12px" }}>SentinelPH</div>
-              <div style={{ fontSize: "9px", color: "#374151", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>CONTROL CENTER</div>
+              <div style={{ fontWeight: 800, color: "#fff", fontSize: "17px", letterSpacing: "-0.01em" }}>SentinelPH</div>
+              <div style={{ fontSize: "9px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.1em", marginTop: "2px" }}>CONTROL CENTER</div>
             </div>
           </div>
           <button className="sidebar-close-btn" onClick={onClose} aria-label="Close menu">
@@ -223,7 +223,7 @@ export default function Sidebar({ isOpen, onClose }) {
         </div>
 
         <style>{`
-          .sentinel-sidebar { width: 220px; height: 100vh; flex-shrink: 0; }
+          .sentinel-sidebar { width: 240px; height: 100vh; flex-shrink: 0; }
           .sidebar-close-btn { display: none; color: #4b5563; background: none; border: none; cursor: pointer; padding: 0; }
           @media (max-width: 1024px) {
             .sentinel-sidebar { position: fixed; top: 0; left: 0; z-index: 50; height: 100vh; transform: translateX(-100%); transition: transform 0.3s ease; width: 260px; box-shadow: 4px 0 24px rgba(0,0,0,0.5); }
