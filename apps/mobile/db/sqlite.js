@@ -35,6 +35,16 @@
 // GET /api/v1/reports/mine; refreshReportStatuses() in syncQueue.js
 // updates it. Two helpers below update a single row by local_id or by
 // nullifier (the identifier both sides share).
+//
+// NEW (blacklist cache): blacklist_cache caches blacklist lookups so the
+// SearchScreen works offline and serves repeat queries instantly. Four
+// helpers:
+//   cacheBlacklistEntry       — write a single lookup result
+//   cacheBlacklistBulk        — write the full public registry list
+//   searchBlacklistCache      — read filtered results (LIKE query)
+//   getAllBlacklistCache      — read the whole cache (browse mode)
+//   pruneBlacklistCache       — age out rows >30 days
+// Called from SearchScreen.js and App.js.
 
 import * as SQLite from 'expo-sqlite';
 
@@ -68,18 +78,18 @@ export async function initDB() {
       sender_number TEXT NOT NULL DEFAULT '',
       region TEXT NOT NULL DEFAULT '${DEFAULT_REGION}',
       content TEXT NOT NULL,
-      evidence_files TEXT,               -- JSON-stringified array of local file URIs
-      evidence_image TEXT,               -- screenshot data-URI, for officer Review Queue
+      evidence_files TEXT,
+      evidence_image TEXT,
       voice_note_uri TEXT,
       latitude REAL,
       longitude REAL,
       nullifier TEXT NOT NULL,
       zkp_hash TEXT,
-      ai_risk_level TEXT,                -- FIX: AI verdict label (LOW/MEDIUM/HIGH)
-      ai_confidence_score REAL,          -- FIX: AI confidence 0..1
-      review_status TEXT NOT NULL DEFAULT 'queued', -- FIX: queued|under_review|confirmed|rejected
+      ai_risk_level TEXT,
+      ai_confidence_score REAL,
+      review_status TEXT NOT NULL DEFAULT 'queued',
       created_at TEXT NOT NULL,
-      synced INTEGER NOT NULL DEFAULT 0, -- 0 = pending, 1 = synced
+      synced INTEGER NOT NULL DEFAULT 0,
       sync_attempts INTEGER NOT NULL DEFAULT 0,
       last_error TEXT,
       server_report_id TEXT
@@ -87,18 +97,30 @@ export async function initDB() {
 
     CREATE INDEX IF NOT EXISTS idx_reports_outbox_synced
       ON reports_outbox (synced);
+
+    CREATE TABLE IF NOT EXISTS blacklist_cache (
+      identifier TEXT PRIMARY KEY NOT NULL,
+      type TEXT NOT NULL DEFAULT 'number',
+      risk_level TEXT NOT NULL DEFAULT 'unknown',
+      status TEXT NOT NULL DEFAULT 'not_found',
+      report_count INTEGER NOT NULL DEFAULT 0,
+      scam_type TEXT,
+      region TEXT,
+      blacklisted_at TEXT,
+      cached_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_blacklist_cache_identifier
+      ON blacklist_cache (identifier);
   `);
 
-  // Migration for older installs whose schema lacked the DEFAULT clause:
-  // existing rows cannot violate NOT NULL, but new INSERTs without
-  // scam_type would still hit constraint 19. Guard each migration in its
-  // own try/catch — SQLite throws if the column already exists.
+  // Migration for older installs whose schema lacked the DEFAULT clause.
   try {
     await db.execAsync(
       `ALTER TABLE reports_outbox ADD COLUMN scam_type_default TEXT`
     );
   } catch {
-    // Column already exists or ALTER unsupported — safe to ignore.
+    // Column already exists — safe to ignore.
   }
 
   // Migration for installs created before evidence_image existed.
@@ -106,107 +128,62 @@ export async function initDB() {
     await db.execAsync(
       `ALTER TABLE reports_outbox ADD COLUMN evidence_image TEXT`
     );
-  } catch {
-    // Column already exists on this install — safe to ignore.
-  }
+  } catch {}
 
-  // FIX: migration for installs created before sender_number existed.
-  // Existing rows get '' (empty string) rather than NULL so deserializeRow()
-  // consumers can always rely on the field being a string, never
-  // null/undefined — same convention scam_type already uses.
+  // Migration for installs created before sender_number existed.
   try {
     await db.execAsync(
       `ALTER TABLE reports_outbox ADD COLUMN sender_number TEXT NOT NULL DEFAULT ''`
     );
-  } catch {
-    // Column already exists on this install — safe to ignore.
-  }
+  } catch {}
 
-  // FIX: migration for installs created before region existed.
+  // Migration for installs created before region existed.
   try {
     await db.execAsync(
       `ALTER TABLE reports_outbox ADD COLUMN region TEXT NOT NULL DEFAULT '${DEFAULT_REGION}'`
     );
-  } catch {
-    // Column already exists on this install — safe to ignore.
-  }
+  } catch {}
 
-  // FIX: migration for installs created before the AI verdict columns
-  // existed. Without these ALTERs, any install that already had a
-  // reports_outbox table (i.e. every existing install) will not have
-  // ai_risk_level / ai_confidence_score, and enqueueReport()'s INSERT
-  // will fail with "no such column" — caught by ReportScreen.js's try/
-  // catch and silently dropped.
+  // Migration for installs created before the AI verdict columns existed.
   try {
     await db.execAsync(
       `ALTER TABLE reports_outbox ADD COLUMN ai_risk_level TEXT`
     );
-  } catch {
-    // Column already exists on this install — safe to ignore.
-  }
+  } catch {}
 
   try {
     await db.execAsync(
       `ALTER TABLE reports_outbox ADD COLUMN ai_confidence_score REAL`
     );
-  } catch {
-    // Column already exists on this install — safe to ignore.
-  }
+  } catch {}
 
-  // FIX: migration for installs created before review_status existed.
-  // Every existing report defaults to 'queued' — correct, because the
-  // server has not yet been asked for its vote count on those rows.
-  // refreshReportStatuses() updates them on next app open.
+  // Migration for installs created before review_status existed.
   try {
     await db.execAsync(
       `ALTER TABLE reports_outbox ADD COLUMN review_status TEXT NOT NULL DEFAULT 'queued'`
     );
-  } catch {
-    // Column already exists on this install — safe to ignore.
-  }
+  } catch {}
 
   return db;
 }
 
-/**
- * Normalizes any incoming report object to a value SQLite can safely
- * persist without violating `scam_type TEXT NOT NULL`.
- */
 function normalizeScamType(value) {
   if (typeof value !== 'string') return DEFAULT_SCAM_TYPE;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : DEFAULT_SCAM_TYPE;
 }
 
-/**
- * FIX: mirrors normalizeScamType()'s defensive pattern for sender_number.
- * The citizen UI already requires a sender before Step 1 can be completed
- * (see ReportScreen.js's `canProceedStep1`), so this should always receive
- * a real value — but we normalize defensively rather than trust every
- * caller, exactly like scamType already does.
- */
 function normalizeSenderNumber(value) {
   if (typeof value !== 'string') return '';
   return value.trim();
 }
 
-/**
- * FIX: mirrors normalizeScamType()'s defensive pattern for region.
- * Falls back to the same 'UNCLASSIFIED' sentinel reportController.js uses
- * server-side, so an offline report with no resolvable region still lands
- * in the officer queue instead of being invisible.
- */
 function normalizeRegion(value) {
   if (typeof value !== 'string') return DEFAULT_REGION;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : DEFAULT_REGION;
 }
 
-/**
- * Normalizes the AI confidence score to a finite number in [0, 1] or null.
- * Anything else (undefined, NaN, out-of-range) becomes null so SQLite
- * stores NULL rather than a corrupt value.
- */
 function normalizeConfidence(value) {
   if (typeof value !== 'number') return null;
   if (!Number.isFinite(value)) return null;
@@ -214,28 +191,6 @@ function normalizeConfidence(value) {
   return value;
 }
 
-/**
- * Adds a new report to the local outbox with synced = 0.
- * @param {object} report
- * @param {string} report.localId - client-generated UUID
- * @param {string} [report.scamType]
- * @param {string} [report.senderNumber]
- * @param {string} [report.region] - resolved PH region, or the sentinel
- *   'UNCLASSIFIED' value; may also be read from report.location.region
- *   if the caller only set the nested location object.
- * @param {object} [report.location] - optional { region } fallback source
- * @param {string} report.content
- * @param {string[]} [report.evidenceFiles]
- * @param {string} [report.evidenceImage] - screenshot as a data-URI
- * @param {string} [report.voiceNoteUri]
- * @param {number} [report.latitude]
- * @param {number} [report.longitude]
- * @param {string} report.nullifier
- * @param {string} [report.zkpHash]
- * @param {string} [report.aiRiskLevel]
- * @param {number} [report.aiConfidenceScore]
- * @param {string} [report.serverReportId]
- */
 export async function enqueueReport(report) {
   const db = await getDb();
   const createdAt = new Date().toISOString();
@@ -249,10 +204,6 @@ export async function enqueueReport(report) {
       : null;
   const aiConfidenceScore = normalizeConfidence(report.aiConfidenceScore);
 
-  // If a serverReportId is provided, the report already lives on the
-  // server — write it as synced so syncQueue never re-POSTs it (which
-  // would duplicate the nullifier and fail with E11000 forever).
-  // When serverReportId is absent, behave exactly as before: synced = 0.
   const alreadySynced = Boolean(report.serverReportId);
   const syncedFlag = alreadySynced ? 1 : 0;
 
@@ -275,8 +226,6 @@ export async function enqueueReport(report) {
       report.zkpHash || null,
       aiRiskLevel,
       aiConfidenceScore,
-      // Every freshly-submitted report starts Queued. refreshReportStatuses()
-      // flips this to under_review / confirmed / rejected once officers vote.
       'queued',
       createdAt,
       syncedFlag,
@@ -297,9 +246,6 @@ export async function enqueueReport(report) {
   };
 }
 
-/**
- * Returns all reports not yet synced to the server, oldest first.
- */
 export async function getPendingReports() {
   const db = await getDb();
   const rows = await db.getAllAsync(
@@ -308,10 +254,6 @@ export async function getPendingReports() {
   return rows.map(deserializeRow);
 }
 
-/**
- * Returns every report in the outbox (pending + synced), newest first.
- * Used by MyReportsScreen to show full local history.
- */
 export async function getAllReports() {
   const db = await getDb();
   const rows = await db.getAllAsync(
@@ -320,9 +262,6 @@ export async function getAllReports() {
   return rows.map(deserializeRow);
 }
 
-/**
- * Marks a report as synced and stores the server-assigned report ID.
- */
 export async function markReportSynced(localId, serverReportId) {
   const db = await getDb();
   await db.runAsync(
@@ -331,10 +270,6 @@ export async function markReportSynced(localId, serverReportId) {
   );
 }
 
-/**
- * Records a failed sync attempt (increments counter, stores last error)
- * without removing the report — it stays queued for the next sync pass.
- */
 export async function markReportSyncFailed(localId, errorMessage) {
   const db = await getDb();
   await db.runAsync(
@@ -345,31 +280,16 @@ export async function markReportSyncFailed(localId, errorMessage) {
   );
 }
 
-/**
- * Permanently deletes a synced report from the local outbox.
- */
 export async function deleteSyncedReport(localId) {
   const db = await getDb();
   await db.runAsync(`DELETE FROM reports_outbox WHERE local_id = ? AND synced = 1`, [localId]);
 }
 
-/**
- * Wipes the entire outbox. Used by ProfileScreen's "Clear offline cache".
- */
 export async function clearAllReports() {
   const db = await getDb();
   await db.runAsync(`DELETE FROM reports_outbox`);
 }
 
-/**
- * Updates the review_status of a single local report from the server's
- * authoritative value. Called by db/syncQueue.js's refreshReportStatuses()
- * once per app-open (or on manual pull-to-refresh in My Reports).
- *
- * Matching is by local_id. Prefer updateReportReviewStatusByNullifier()
- * when reconciling against GET /api/v1/reports/mine, since the server
- * has no knowledge of local_id.
- */
 export async function updateReportReviewStatus(localId, reviewStatus) {
   if (typeof localId !== 'string' || localId.length === 0) return;
   const allowed = ['queued', 'under_review', 'confirmed', 'rejected'];
@@ -382,12 +302,6 @@ export async function updateReportReviewStatus(localId, reviewStatus) {
   );
 }
 
-/**
- * Updates review_status by nullifier. The server's /reports/mine endpoint
- * returns the citizen's reports keyed by nullifier (the ZKP one-time
- * proof), which is the only identifier both sides share. localId is
- * mobile-only and never leaves the device.
- */
 export async function updateReportReviewStatusByNullifier(nullifier, reviewStatus) {
   if (typeof nullifier !== 'string' || nullifier.length === 0) return;
   const allowed = ['queued', 'under_review', 'confirmed', 'rejected'];
@@ -398,6 +312,172 @@ export async function updateReportReviewStatusByNullifier(nullifier, reviewStatu
     `UPDATE reports_outbox SET review_status = ? WHERE nullifier = ?`,
     [reviewStatus, nullifier]
   );
+}
+
+/**
+ * Caches a single blacklist lookup result. Called by the SearchScreen
+ * after a live GET /api/v1/blacklist/:id/status. The server returns a
+ * citizen-safe shape (no officer details).
+ */
+export async function cacheBlacklistEntry(entry) {
+  if (!entry || typeof entry !== 'object') return;
+  const identifier = String(entry.phoneNumber || entry.identifier || '').trim();
+  if (!identifier) return;
+
+  const status = String(entry.status || 'not_found');
+  const riskLevel =
+    status === 'blacklisted' || status === 'approved'
+      ? 'high'
+      : status === 'under_review' || status === 'pending'
+      ? 'medium'
+      : 'low';
+  const scamType =
+    typeof entry.scamType === 'string' ? entry.scamType.trim() : null;
+  const reportCount =
+    typeof entry.reportCount === 'number' ? entry.reportCount : 0;
+  const region = typeof entry.region === 'string' ? entry.region.trim() : null;
+  const blacklistedAt = entry.blacklistedAt || null;
+
+  const db = await getDb();
+  await db.runAsync(
+    `INSERT OR REPLACE INTO blacklist_cache
+       (identifier, type, risk_level, status, report_count, scam_type, region, blacklisted_at, cached_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      identifier,
+      'number',
+      riskLevel,
+      status,
+      reportCount,
+      scamType,
+      region,
+      blacklistedAt,
+      new Date().toISOString(),
+    ]
+  );
+}
+
+/**
+ * Bulk-caches a list of public blacklist entries fetched from
+ * GET /api/v1/blacklist/public. Called once per app-open by the
+ * SearchScreen so browse mode works offline.
+ */
+export async function cacheBlacklistBulk(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) return 0;
+
+  const db = await getDb();
+  const now = new Date().toISOString();
+  let written = 0;
+
+  for (const entry of entries) {
+    const identifier = String(entry?.phoneNumber || '').trim();
+    if (!identifier) continue;
+
+    const status = String(entry.status || 'blacklisted');
+    const riskLevel =
+      status === 'blacklisted' || status === 'approved'
+        ? 'high'
+        : status === 'under_review' || status === 'pending'
+        ? 'medium'
+        : 'low';
+
+    try {
+      await db.runAsync(
+        `INSERT OR REPLACE INTO blacklist_cache
+           (identifier, type, risk_level, status, report_count, scam_type, region, blacklisted_at, cached_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          identifier,
+          'number',
+          riskLevel,
+          status,
+          typeof entry.reportCount === 'number' ? entry.reportCount : 0,
+          typeof entry.scamType === 'string' ? entry.scamType.trim() : null,
+          typeof entry.region === 'string' ? entry.region.trim() : null,
+          entry.blacklistedAt || null,
+          now,
+        ]
+      );
+      written += 1;
+    } catch (err) {
+      console.warn('[sqlite] cacheBlacklistBulk row failed:', identifier, err?.message);
+    }
+  }
+
+  return written;
+}
+
+/**
+ * Returns every cached blacklist row, newest first. Used by the
+ * SearchScreen's browse mode (no query). searchBlacklistCache() requires
+ * a 2-char minimum; this helper has no filter.
+ */
+export async function getAllBlacklistCache(limit = 200) {
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT identifier, type, risk_level, status, report_count, scam_type, region, blacklisted_at
+       FROM blacklist_cache
+      ORDER BY cached_at DESC
+      LIMIT ?`,
+    [limit]
+  );
+
+  return rows.map((r) => ({
+    value: r.identifier,
+    type: r.type || 'number',
+    risk: r.risk_level || 'unknown',
+    status: r.status || 'not_found',
+    reportCount: r.report_count || 0,
+    scamType: r.scam_type || null,
+    region: r.region || null,
+    blacklistedAt: r.blacklisted_at || null,
+    source: 'cache',
+  }));
+}
+
+/**
+ * Reads every cached blacklist entry whose identifier contains the query.
+ * Used as a live-filter helper inside SearchScreen while typing.
+ */
+export async function searchBlacklistCache(query) {
+  const q = typeof query === 'string' ? query.trim() : '';
+  if (q.length < 2) return [];
+
+  const db = await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT identifier, type, risk_level, status, report_count, scam_type, region, blacklisted_at
+       FROM blacklist_cache
+      WHERE identifier LIKE ?
+      ORDER BY cached_at DESC
+      LIMIT 50`,
+    [`%${q}%`]
+  );
+
+  return rows.map((r) => ({
+    value: r.identifier,
+    type: r.type || 'number',
+    risk: r.risk_level || 'unknown',
+    status: r.status || 'not_found',
+    reportCount: r.report_count || 0,
+    scamType: r.scam_type || null,
+    region: r.region || null,
+    blacklistedAt: r.blacklisted_at || null,
+    source: 'cache',
+  }));
+}
+
+/**
+ * Deletes cache rows older than 30 days. Called on app boot so the cache
+ * doesn't grow forever. Best-effort — errors are swallowed.
+ */
+export async function pruneBlacklistCache() {
+  try {
+    const db = await getDb();
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    await db.runAsync(`DELETE FROM blacklist_cache WHERE cached_at < ?`, [cutoff]);
+  } catch (err) {
+    console.warn('[sqlite] pruneBlacklistCache failed:', err?.message);
+  }
 }
 
 function deserializeRow(row) {

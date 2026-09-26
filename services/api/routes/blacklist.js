@@ -97,6 +97,78 @@ router.post(
 );
 
 // =====================================================================
+// GET /api/v1/blacklist/public — Citizen-safe public registry
+//
+// Returns ONLY confirmed blacklisted entries, projected to the fields
+// citizens may see:
+//   { phoneNumber, status, scamType, reportCount, region, blacklistedAt }
+//
+// NEVER returns: officer identities, votes, comments, hashes, notes.
+//
+// Registered BEFORE /:phoneNumber/status so "public" is never treated
+// as a phone number.
+//
+// Query params (all optional):
+//   ?q=<text>       filter by phoneNumber or scamType (case-insensitive)
+//   ?region=<r>     filter by region (UNCLASSIFIED entries not filtered out)
+//   ?limit=100      max rows (default 100, cap 500)
+// =====================================================================
+router.get(
+  '/public',
+  verifyFirebaseToken,
+  enforceAuditorReadOnly,
+  requireRole('citizen', 'officer', 'analyst', 'auditor'),
+  asyncHandler(async (req, res) => {
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 100, 1),
+      500
+    );
+
+    // Only confirmed scam entries are exposed to citizens. Statuses the
+    // officer flow uses once a report reaches two approvals:
+    //   'blacklisted' (canonical)   'approved' (legacy alias)
+    const query = { status: { $in: ['blacklisted', 'approved'] } };
+
+    if (req.query.region) {
+      query.region = String(req.query.region);
+    }
+
+    if (req.query.q) {
+      const pattern = escapeRegex(String(req.query.q).trim().slice(0, 60));
+      if (pattern) {
+        query.$or = [
+          { phoneNumber: { $regex: pattern, $options: 'i' } },
+          { scamType: { $regex: pattern, $options: 'i' } },
+        ];
+      }
+    }
+
+    const items = await BlacklistEntry.find(query)
+      .sort({ blacklistedAt: -1, updatedAt: -1 })
+      .limit(limit)
+      .select('phoneNumber status scamType reportCount region blacklistedAt')
+      .lean();
+
+    // Belt-and-braces projection: even if select() is bypassed, the
+    // response only ever carries the public fields.
+    const publicItems = items.map((e) => ({
+      phoneNumber: e.phoneNumber,
+      status: e.status,
+      scamType: e.scamType || 'UNKNOWN',
+      reportCount: e.reportCount ?? 0,
+      region: e.region || UNCLASSIFIED,
+      blacklistedAt: e.blacklistedAt || null,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      count: publicItems.length,
+      data: publicItems,
+    });
+  })
+);
+
+// =====================================================================
 // GET /api/v1/blacklist/:phoneNumber/status — Public-safe status check
 // (any authenticated role, including Citizen for the mobile Search flow)
 // =====================================================================
@@ -124,6 +196,9 @@ router.get(
         data: {
           phoneNumber: entry.phoneNumber,
           status: entry.status,
+          scamType: entry.scamType || null,
+          reportCount: entry.reportCount ?? 0,
+          region: entry.region || null,
           blacklistedAt: entry.blacklistedAt,
         },
       });
