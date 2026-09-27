@@ -15,13 +15,45 @@ function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * For each blacklist entry, attach `evidenceImage` from the most recent
+ * report filed against the same number. Only includes the screenshot if
+ * it exists — keeps response size reasonable by requesting the field
+ * explicitly and only for the entries we're returning.
+ *
+ * This is a separate step (not a Mongo $lookup) because the screenshot
+ * is a base64 data-URI (potentially MBs each) and we don't want to
+ * always pay the cost — only when listing.
+ */
+async function attachEvidenceImages(entries) {
+  if (!entries.length) return entries;
+
+  const phoneNumbers = entries.map((e) => e.phoneNumber).filter(Boolean);
+  if (!phoneNumbers.length) return entries;
+
+  // One query for all reports matching the numbers we're returning.
+  // Sort so the most recent report per number wins.
+  const reports = await Report.find({ reportedNumber: { $in: phoneNumbers } })
+    .select('reportedNumber evidenceImage createdAt')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  // Build a map: phoneNumber -> most recent evidenceImage
+  const imageByNumber = new Map();
+  for (const r of reports) {
+    if (!imageByNumber.has(r.reportedNumber) && r.evidenceImage) {
+      imageByNumber.set(r.reportedNumber, r.evidenceImage);
+    }
+  }
+
+  return entries.map((e) => ({
+    ...e,
+    evidenceImage: imageByNumber.get(e.phoneNumber) || null,
+  }));
+}
+
 // =====================================================================
-// POST /api/v1/blacklist/candidates — Open (or fetch) a candidate for
-// review (Officer, Analyst)
-//
-// NOTE: a candidate can no longer be voted on directly. It becomes
-// 'blacklisted' only when a report filed against the same number reaches
-// Two-Officer consensus (POST /api/v1/reports/:reportId/vote).
+// POST /api/v1/blacklist/candidates — Open (or fetch) a candidate
 // =====================================================================
 router.post(
   '/candidates',
@@ -72,15 +104,6 @@ router.post(
 
 // =====================================================================
 // POST /api/v1/blacklist/:phoneNumber/vote — RETIRED (410 Gone)
-//
-// Report-level consensus is the single source of truth. Voting directly on
-// a phone number ran a second, independent state machine that could
-// disagree with the report votes, and it also force-mirrored its result
-// onto every Report for the number, bypassing per-report consensus.
-// Officers now vote on the underlying report:
-//   POST /api/v1/reports/:reportId/vote
-// The route is kept (behind auth) so stale clients get an explicit
-// message instead of a bare 404.
 // =====================================================================
 router.post(
   '/:phoneNumber/vote',
@@ -97,8 +120,60 @@ router.post(
 );
 
 // =====================================================================
+// GET /api/v1/blacklist/public — Citizen-safe public registry
+// =====================================================================
+router.get(
+  '/public',
+  verifyFirebaseToken,
+  enforceAuditorReadOnly,
+  requireRole('citizen', 'officer', 'analyst', 'auditor'),
+  asyncHandler(async (req, res) => {
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 100, 1),
+      500
+    );
+
+    const query = { status: { $in: ['blacklisted', 'approved'] } };
+
+    if (req.query.region) {
+      query.region = String(req.query.region);
+    }
+
+    if (req.query.q) {
+      const pattern = escapeRegex(String(req.query.q).trim().slice(0, 60));
+      if (pattern) {
+        query.$or = [
+          { phoneNumber: { $regex: pattern, $options: 'i' } },
+          { scamType: { $regex: pattern, $options: 'i' } },
+        ];
+      }
+    }
+
+    const items = await BlacklistEntry.find(query)
+      .sort({ blacklistedAt: -1, updatedAt: -1 })
+      .limit(limit)
+      .select('phoneNumber status scamType reportCount region blacklistedAt')
+      .lean();
+
+    const publicItems = items.map((e) => ({
+      phoneNumber: e.phoneNumber,
+      status: e.status,
+      scamType: e.scamType || 'UNKNOWN',
+      reportCount: e.reportCount ?? 0,
+      region: e.region || UNCLASSIFIED,
+      blacklistedAt: e.blacklistedAt || null,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      count: publicItems.length,
+      data: publicItems,
+    });
+  })
+);
+
+// =====================================================================
 // GET /api/v1/blacklist/:phoneNumber/status — Public-safe status check
-// (any authenticated role, including Citizen for the mobile Search flow)
 // =====================================================================
 router.get(
   '/:phoneNumber/status',
@@ -116,14 +191,15 @@ router.get(
       });
     }
 
-    // Citizens only ever see the public-safe shape — no vote details,
-    // no officer identities, no comments.
     if (req.user.role === 'citizen') {
       return res.status(200).json({
         success: true,
         data: {
           phoneNumber: entry.phoneNumber,
           status: entry.status,
+          scamType: entry.scamType || null,
+          reportCount: entry.reportCount ?? 0,
+          region: entry.region || null,
           blacklistedAt: entry.blacklistedAt,
         },
       });
@@ -135,12 +211,11 @@ router.get(
 
 // =====================================================================
 // GET /api/v1/blacklist — List candidates/entries with filters
-// (Officer, Analyst, Auditor)
+//   (Officer, Analyst, Auditor)
 //
-//   ?page=1&limit=20
-//   &status=blacklisted            (or a comma list: pending,under_review)
-//   &q=<text>                      (matches number or scam type)
-//   &region=<r>                    (analyst/auditor only; officers are scoped)
+// Response entries now include:
+//   - votes:  [ { officerId, decision, comment, votedAt }, ... ]
+//   - evidenceImage: base64 data-URI from the linked Report (or null)
 // =====================================================================
 router.get(
   '/',
@@ -153,8 +228,6 @@ router.get(
 
     const query = {};
 
-    // Every query-string value is coerced to a string so an operator object
-    // (e.g. ?status[$ne]=x) can never reach the Mongo filter.
     if (req.query.status) {
       const statuses = String(req.query.status)
         .split(',')
@@ -164,9 +237,6 @@ router.get(
       else if (statuses.length > 1) query.status = { $in: statuses };
     }
 
-    // Officers see their own region plus entries with no region / the
-    // UNCLASSIFIED sentinel (same visibility rule as the review queue, so a
-    // number blacklisted from a non-geolocated report is not hidden).
     if (req.user.role === 'officer' && req.user.jurisdiction) {
       query.region = { $in: [req.user.jurisdiction, UNCLASSIFIED, null] };
     } else if (req.query.region) {
@@ -192,9 +262,12 @@ router.get(
       BlacklistEntry.countDocuments(query),
     ]);
 
+    // Attach the evidence screenshot from the linked report(s).
+    const itemsWithEvidence = await attachEvidenceImages(items);
+
     return res.status(200).json({
       success: true,
-      data: items,
+      data: itemsWithEvidence,
       pagination: {
         page,
         limit,

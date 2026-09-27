@@ -16,14 +16,23 @@ const CloseIcon = ({ color }) => (
   </svg>
 );
 
+function formatTimestamp(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("en-PH", {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+
 function mapEntryToRow(e) {
-  const votes = e.votes || [];
+  const votes = Array.isArray(e.votes) ? e.votes : [];
   const approvingOfficers = votes
     .filter(v => v.decision === 'approve')
     .map(v => (v.officerId || v.userId || '').slice(-6) || '—')
     .join(' · ') || '—';
-  const decisionDate = e.resolvedAt || e.updatedAt
-    ? new Date(e.resolvedAt || e.updatedAt).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+  const decisionDate = e.blacklistedAt || e.updatedAt
+    ? formatTimestamp(e.blacklistedAt || e.updatedAt)
     : "—";
   return {
     id: e._id ? String(e._id).slice(-6).toUpperCase() : "—",
@@ -35,7 +44,9 @@ function mapEntryToRow(e) {
     officers: approvingOfficers,
     date: decisionDate,
     hash: e.hash || '—',
-    notes: e.notes || 'No officer notes recorded.',
+    notes: e.notes || null,
+    votes,
+    evidenceImage: e.evidenceImage || null,
   };
 }
 
@@ -63,15 +74,12 @@ export default function BlacklistRegistry() {
   }, []);
 
   useEffect(() => {
-    // ── Optimistic UI: hide the sidebar badge INSTANTLY ────────────────
     if (window.__clearSidebarBadge) {
       window.__clearSidebarBadge('registry');
     }
 
     loadEntries();
 
-    // Fire the "seen" POST. On success or failure, sync the true count
-    // from the server in the background (no visible delay either way).
     apiClient.post('/api/v1/stats/seen/blacklist')
       .then(() => window.dispatchEvent(new CustomEvent('badges:refresh')))
       .catch(() => window.dispatchEvent(new CustomEvent('badges:refresh')));
@@ -179,46 +187,109 @@ export default function BlacklistRegistry() {
       </div>
 
       {selectedCase && (
-        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}>
-          <div style={{ width: "100%", maxWidth: "520px", margin: "0 16px", borderRadius: "20px", padding: "28px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a" }}>
+        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", padding: "20px" }}>
+          <div style={{ width: "100%", maxWidth: "560px", maxHeight: "90vh", borderRadius: "20px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a", display: "flex", flexDirection: "column", overflow: "hidden" }}>
             <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: `linear-gradient(90deg,transparent,#ef4444,transparent)` }} />
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "20px" }}>
-              <div>
-                <div style={{ fontWeight: 700, color: "#fff", fontSize: "18px" }}>{selectedCase.id}</div>
-                <div style={{ fontSize: "12px", marginTop: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace" }}>{selectedCase.number}</div>
+
+            {/* Header */}
+            <div style={{ padding: "24px 28px 16px", borderBottom: "1px solid #13131e" }}>
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "16px" }}>
+                <div>
+                  <div style={{ fontWeight: 700, color: "#fff", fontSize: "18px" }}>{selectedCase.id}</div>
+                  <div style={{ fontSize: "12px", marginTop: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace" }}>{selectedCase.number}</div>
+                </div>
+                <button onClick={() => setSelectedCase(null)} style={{ color: "#4b5563", background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
+                  <CloseIcon color="#4b5563" />
+                </button>
               </div>
-              <button onClick={() => setSelectedCase(null)} style={{ color: "#4b5563", background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
-                <CloseIcon color="#4b5563" />
+              <div style={{ display: "inline-block", padding: "4px 12px", borderRadius: "999px", fontSize: "11px", fontWeight: 600, background: "#ef444420", color: "#ef4444" }}>
+                Blocked
+              </div>
+            </div>
+
+            {/* Scrollable body */}
+            <div style={{ padding: "20px 28px 24px", overflowY: "auto" }}>
+              {/* Summary fields */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px 24px", marginBottom: "20px" }}>
+                {[
+                  { l: "SCAM TYPE", v: selectedCase.type },
+                  { l: "TOTAL REPORTS", v: selectedCase.reports },
+                  { l: "APPROVING OFFICERS", v: selectedCase.officers },
+                  { l: "DECISION DATE", v: selectedCase.date, mono: true },
+                ].map(f => (
+                  <div key={f.l}>
+                    <div style={{ fontSize: "9px", fontWeight: 500, marginBottom: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>{f.l}</div>
+                    <div style={{ fontSize: "13px", color: "#fff", fontFamily: f.mono ? "'JetBrains Mono',monospace" : "inherit" }}>{f.v}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Block hash */}
+              <div style={{ padding: "12px 16px", borderRadius: "10px", marginBottom: "16px", background: "#080810", border: "1px solid #13131e" }}>
+                <div style={{ fontSize: "9px", fontWeight: 500, marginBottom: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>BLOCK HASH</div>
+                <div style={{ fontSize: "12px", color: "#3b82f6", fontFamily: "'JetBrains Mono',monospace", wordBreak: "break-all" }}>{selectedCase.hash}</div>
+              </div>
+
+              {/* Screenshot evidence */}
+              {selectedCase.evidenceImage && (
+                <div style={{ marginBottom: "20px" }}>
+                  <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.06em", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", marginBottom: "8px" }}>SCREENSHOT EVIDENCE</div>
+                  <div style={{ borderRadius: "10px", overflow: "hidden", background: "#080810", border: "1px solid #13131e", display: "flex", justifyContent: "center", maxHeight: "320px" }}>
+                    <img
+                      src={selectedCase.evidenceImage}
+                      alt="Scam evidence"
+                      style={{ maxWidth: "100%", maxHeight: "320px", objectFit: "contain" }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Officer reasoning — per officer */}
+              {selectedCase.votes.length > 0 && (
+                <div style={{ marginBottom: "16px" }}>
+                  <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.06em", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", marginBottom: "8px" }}>
+                    OFFICER REASONING ({selectedCase.votes.length})
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    {selectedCase.votes.map((v, i) => (
+                      <div key={i} style={{ padding: "10px 14px", borderRadius: "8px", background: "#080810", border: `1px solid ${v.decision === 'approve' ? '#22c55e30' : '#ef444430'}` }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                          <span style={{ fontSize: "11px", color: "#6b7280", fontFamily: "'JetBrains Mono',monospace" }}>
+                            Officer #{i + 1} · {(v.officerId || v.userId || '').slice(-6) || '—'}
+                          </span>
+                          <span style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "11px", fontWeight: 600, color: v.decision === 'approve' ? '#22c55e' : '#ef4444' }}>
+                            <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: v.decision === 'approve' ? '#22c55e' : '#ef4444' }} />
+                            {v.decision === 'approve' ? 'Approved' : 'Rejected'}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: "12px", color: "#cbd5e1", lineHeight: 1.6 }}>
+                          "{v.comment || 'No comment'}"
+                        </div>
+                        <div style={{ fontSize: "10px", color: "#4b5563", marginTop: "6px", fontFamily: "'JetBrains Mono',monospace" }}>
+                          {formatTimestamp(v.votedAt)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Fallback if no votes exist */}
+              {selectedCase.votes.length === 0 && (
+                <div style={{ padding: "14px 16px", borderRadius: "10px", marginBottom: "16px", background: "#080810", border: "1px solid #13131e" }}>
+                  <div style={{ fontSize: "9px", fontWeight: 500, marginBottom: "6px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>OFFICER NOTES</div>
+                  <div style={{ fontSize: "13px", color: "#9ca3af", lineHeight: 1.7 }}>No officer notes recorded.</div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div style={{ padding: "16px 28px 24px", borderTop: "1px solid #13131e" }}>
+              <button onClick={() => setSelectedCase(null)}
+                style={{ width: "100%", padding: "12px", borderRadius: "12px", fontSize: "13px", fontWeight: 700, border: "none", background: "#1a1a2a", color: "#fff", cursor: "pointer" }}>
+                Close
               </button>
             </div>
-            <div style={{ display: "inline-block", marginBottom: "20px", padding: "4px 12px", borderRadius: "999px", fontSize: "11px", fontWeight: 600, background: "#ef444420", color: "#ef4444" }}>
-              Blocked
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px 24px", marginBottom: "20px" }}>
-              {[
-                { l: "SCAM TYPE", v: selectedCase.type },
-                { l: "TOTAL REPORTS", v: selectedCase.reports },
-                { l: "APPROVING OFFICERS", v: selectedCase.officers },
-                { l: "DECISION DATE", v: selectedCase.date, mono: true },
-              ].map(f => (
-                <div key={f.l}>
-                  <div style={{ fontSize: "9px", fontWeight: 500, marginBottom: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>{f.l}</div>
-                  <div style={{ fontSize: "13px", color: "#fff", fontFamily: f.mono ? "'JetBrains Mono',monospace" : "inherit" }}>{f.v}</div>
-                </div>
-              ))}
-            </div>
-            <div style={{ padding: "12px 16px", borderRadius: "10px", marginBottom: "16px", background: "#080810", border: "1px solid #13131e" }}>
-              <div style={{ fontSize: "9px", fontWeight: 500, marginBottom: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>BLOCK HASH</div>
-              <div style={{ fontSize: "12px", color: "#3b82f6", fontFamily: "'JetBrains Mono',monospace", wordBreak: "break-all" }}>{selectedCase.hash}</div>
-            </div>
-            <div style={{ padding: "14px 16px", borderRadius: "10px", marginBottom: "20px", background: "#080810", border: "1px solid #13131e" }}>
-              <div style={{ fontSize: "9px", fontWeight: 500, marginBottom: "6px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>OFFICER NOTES</div>
-              <div style={{ fontSize: "13px", color: "#9ca3af", lineHeight: 1.7 }}>{selectedCase.notes}</div>
-            </div>
-            <button onClick={() => setSelectedCase(null)}
-              style={{ width: "100%", padding: "12px", borderRadius: "12px", fontSize: "13px", fontWeight: 700, border: "none", background: "#1a1a2a", color: "#fff", cursor: "pointer" }}>
-              Close
-            </button>
           </div>
         </div>
       )}

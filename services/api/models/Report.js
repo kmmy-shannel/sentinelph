@@ -30,11 +30,11 @@ const AiFlagSchema = new Schema(
     probabilityScore: { type: Number, min: 0, max: 1, default: null },
     label: {
       type: String,
-     enum: [
-    'legitimate', 'grey_area', 'malicious',
-    'likely_scam', 'uncertain', 'likely_legitimate',
-    'unavailable',
-  ],
+      enum: [
+        'legitimate', 'grey_area', 'malicious',
+        'likely_scam', 'uncertain', 'likely_legitimate',
+        'unavailable',
+      ],
       default: 'unavailable',
     },
     isScam: { type: Boolean, default: null },
@@ -86,6 +86,7 @@ const VoteSchema = new Schema(
     decision: { type: String, enum: ['approve', 'reject'], required: true },
     comment: { type: String, trim: true, maxlength: 2000, default: '' },
     votedAt: { type: Date, default: Date.now },
+    editedAt: { type: Date, default: null },
   },
   { _id: false }
 );
@@ -185,7 +186,6 @@ const ReportSchema = new Schema(
       default: null,
     },
 
-    // 'pending' → 'under_review' → 'one_approval' → 'two_approvals' → terminal
     status: {
       type: String,
       enum: [
@@ -309,6 +309,7 @@ ReportSchema.statics.castVote = async function castVote(
     decision,
     comment: String(comment || '').trim().slice(0, 2000),
     votedAt: new Date(),
+    editedAt: null,
   };
 
   const pipeline = [
@@ -339,7 +340,6 @@ ReportSchema.statics.castVote = async function castVote(
         status: {
           $switch: {
             branches: [
-              // ── Finalized ONLY when all 3 have voted AND majority agrees ──
               {
                 case: {
                   $and: [
@@ -358,7 +358,6 @@ ReportSchema.statics.castVote = async function castVote(
                 },
                 then: 'rejected',
               },
-              // ── Intermediate states (still waiting for the 3rd vote) ──
               { case: { $eq: ['$consensusState.approvals', 2] }, then: 'two_approvals' },
               { case: { $eq: ['$consensusState.approvals', 1] }, then: 'one_approval' },
             ],
@@ -368,7 +367,6 @@ ReportSchema.statics.castVote = async function castVote(
       },
     },
     {
-      // Stamp resolvedAt only on the FIRST transition to terminal.
       $set: {
         resolvedAt: {
           $cond: [
@@ -429,6 +427,179 @@ ReportSchema.statics.castVote = async function castVote(
   }
 
   throw httpError(409, 'VOTE_CONFLICT', 'The vote could not be recorded. Please refresh and try again.');
+};
+
+/**
+ * CHANGE VOTE — Option A (replace-in-place)
+ *
+ * An officer who has already voted may revise their decision + comment,
+ * but ONLY while the report is still in an OPEN status. Once the report
+ * is blacklisted/approved/rejected, the vote is frozen.
+ *
+ * Semantics:
+ *   - Locates votes[i] where userId === userId
+ *   - Overwrites decision + comment
+ *   - Keeps the original votedAt, stamps editedAt = now
+ *   - Recomputes consensusState and status from scratch (same math as castVote)
+ *   - resolvedAt is NEVER set here (editing cannot finalize a case; if the
+ *     report somehow became terminal before the edit — which the status
+ *     guard already prevents — we leave resolvedAt alone)
+ *
+ * Returns { updated, previous } so the controller can write a rich
+ * VOTE_EDITED audit entry with the previous decision + comment.
+ */
+ReportSchema.statics.changeVote = async function changeVote(
+  reportId,
+  { userId, decision, comment = '' } = {}
+) {
+  if (!reportId || typeof reportId !== 'string') {
+    throw httpError(400, 'VALIDATION_ERROR', 'A valid reportId is required.');
+  }
+  if (!userId || typeof userId !== 'string') {
+    throw httpError(400, 'VALIDATION_ERROR', 'A voter identity is required.');
+  }
+  if (!['approve', 'reject'].includes(decision)) {
+    throw httpError(400, 'VALIDATION_ERROR', "decision must be either 'approve' or 'reject'.");
+  }
+
+  const collection = mongoose.model('Report').collection;
+
+  const now = new Date();
+  const nextComment = String(comment || '').trim().slice(0, 2000);
+
+  // ── Fetch the previous vote for the audit trail ──
+  const before = await collection.findOne(
+    { reportId },
+    { projection: { status: 1, votes: 1, consensusState: 1 } }
+  );
+
+  if (!before) {
+    throw httpError(404, 'NOT_FOUND', 'Report not found.');
+  }
+  if (!OPEN_STATUSES.includes(before.status)) {
+    throw httpError(
+      409,
+      'REPORT_FINALIZED',
+      `This report is already finalized as "${before.status}" and its votes can no longer be edited.`
+    );
+  }
+
+  const existingVote = (before.votes || []).find((v) => v.userId === userId);
+  if (!existingVote) {
+    throw httpError(
+      409,
+      'NOT_VOTED_YET',
+      'You have not voted on this report yet, so there is nothing to edit.'
+    );
+  }
+
+  const previous = {
+    decision: existingVote.decision,
+    comment: existingVote.comment || '',
+    votedAt: existingVote.votedAt || null,
+    editedAt: existingVote.editedAt || null,
+  };
+
+  // ── Atomic replace: rebuild votes[] with this officer's entry swapped ──
+  const pipeline = [
+    {
+      $set: {
+        votes: {
+          $map: {
+            input: '$votes',
+            as: 'v',
+            in: {
+              $cond: [
+                { $eq: ['$$v.userId', userId] },
+                {
+                  $mergeObjects: [
+                    '$$v',
+                    {
+                      decision,
+                      comment: nextComment,
+                      editedAt: now,
+                    },
+                  ],
+                },
+                '$$v',
+              ],
+            },
+          },
+        },
+      },
+    },
+    {
+      $set: {
+        'consensusState.approvals': {
+          $size: {
+            $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'approve'] } },
+          },
+        },
+        'consensusState.rejections': {
+          $size: {
+            $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'reject'] } },
+          },
+        },
+        'consensusState.required': CONSENSUS_REQUIRED,
+      },
+    },
+    {
+      $set: {
+        status: {
+          $switch: {
+            branches: [
+              {
+                case: {
+                  $and: [
+                    { $gte: [{ $size: '$votes' }, 3] },
+                    { $gte: ['$consensusState.approvals', 2] },
+                  ],
+                },
+                then: 'blacklisted',
+              },
+              {
+                case: {
+                  $and: [
+                    { $gte: [{ $size: '$votes' }, 3] },
+                    { $gte: ['$consensusState.rejections', 2] },
+                  ],
+                },
+                then: 'rejected',
+              },
+              { case: { $eq: ['$consensusState.approvals', 2] }, then: 'two_approvals' },
+              { case: { $eq: ['$consensusState.approvals', 1] }, then: 'one_approval' },
+            ],
+            default: 'under_review',
+          },
+        },
+      },
+    },
+    // NOTE: resolvedAt is deliberately NOT touched here — a vote edit can
+    // never finalize a case (the guard above already blocked terminal
+    // reports), so we must not stamp resolvedAt.
+  ];
+
+  const result = await collection.findOneAndUpdate(
+    {
+      reportId,
+      status: { $in: OPEN_STATUSES },
+      'votes.userId': userId,
+    },
+    pipeline,
+    { returnDocument: 'after' }
+  );
+
+  const updated = unwrapFindOneAndUpdate(result);
+  if (updated) {
+    return { updated, previous };
+  }
+
+  // Rare race: the report flipped to terminal between the read and the write.
+  throw httpError(
+    409,
+    'VOTE_CONFLICT',
+    'The report changed while your edit was being saved. Please refresh and try again.'
+  );
 };
 
 ReportSchema.statics.applyWorkflowUpdate = async function applyWorkflowUpdate(
