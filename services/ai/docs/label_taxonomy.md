@@ -8,6 +8,13 @@ Four subtypes originally considered (political_campaign, charity_appeal,
 wrong_number_baiting, impersonation_family) were removed from scope
 because the training data does not contain examples of these patterns.
 They are documented as future work.
+> **Scope Update (2026-09-28):** The `urgent_fine_toll` subtype was merged
+> into `phishing_link` for this training iteration because the labeled
+> dataset contained only 3 examples of the subtype — insufficient to
+> train a classifier. Government impersonation scams (fake LTO fines,
+> BIR threats, NBI warrants, etc.) are now classified as `phishing_link`
+> with a link-based CTA, or `UNLABELED` if the CTA is callback-only.
+> `urgent_fine_toll` will be re-introduced when ≥50 labeled examples exist.
 
 ## 1. Overview: How the Two Levels Work Together
 
