@@ -4,9 +4,9 @@ app/config.py
 Centralised configuration for SentinelPH AI microservice.
 
 3-class schema:
-    0 = legitimate  (risk: low)
-    1 = grey_area   (risk: medium)
-    2 = malicious   (risk: high)
+    0 = legitimate  (risk: LOW)
+    1 = grey_area   (risk: MEDIUM)
+    2 = malicious   (risk: HIGH)
 """
 
 from pathlib import Path
@@ -49,7 +49,8 @@ class Settings(BaseSettings):
     LABEL2ID: dict = {"legitimate": 0, "grey_area": 1, "malicious": 2}
 
     # Risk level mapping (class index -> UI bucket)
-    RISK_LEVELS: dict = {0: "low", 1: "medium", 2: "high"}
+    # NOTE: uppercase to match the API contract and frontend expectations.
+    RISK_LEVELS: dict = {0: "LOW", 1: "MEDIUM", 2: "HIGH"}
 
     # Heuristic override: if a strong heuristic rule fires
     # (spoofed domain, brand impersonation), floor the malicious-class
@@ -75,10 +76,26 @@ settings.MODELS_DIR.mkdir(parents=True, exist_ok=True)
 settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# --- Module-level re-exports ---------------------------------------------
+# These make `from app.config import ID2LABEL` work directly, which is what
+# scripts (e.g. scripts/prepare_eval_test_set.py, scripts/evaluate.py) and
+# any other module that doesn't want to go through `settings` will expect.
+#
+# `settings` remains the single source of truth; these are just aliases so
+# the constant can be imported by name.
+ID2LABEL = settings.ID2LABEL
+LABEL2ID = settings.LABEL2ID
+RISK_LEVELS = settings.RISK_LEVELS
+MALICIOUS_HEURISTIC_FLOOR = settings.MALICIOUS_HEURISTIC_FLOOR
+NUM_LABELS = settings.NUM_LABELS
+
+
 def classify_probs(probs: list) -> tuple:
     """Return (label_name, risk_level) for a 3-length probability vector."""
     idx = max(range(len(probs)), key=lambda i: probs[i])
     return settings.ID2LABEL[idx], settings.RISK_LEVELS[idx]
+
+
 def classify_score(score: float) -> str:
     """
     DEPRECATED — kept for backward compatibility with app/main.py.
