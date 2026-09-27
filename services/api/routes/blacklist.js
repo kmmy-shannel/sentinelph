@@ -31,14 +31,11 @@ async function attachEvidenceImages(entries) {
   const phoneNumbers = entries.map((e) => e.phoneNumber).filter(Boolean);
   if (!phoneNumbers.length) return entries;
 
-  // One query for all reports matching the numbers we're returning.
-  // Sort so the most recent report per number wins.
   const reports = await Report.find({ reportedNumber: { $in: phoneNumbers } })
     .select('reportedNumber evidenceImage createdAt')
     .sort({ createdAt: -1 })
     .lean();
 
-  // Build a map: phoneNumber -> most recent evidenceImage
   const imageByNumber = new Map();
   for (const r of reports) {
     if (!imageByNumber.has(r.reportedNumber) && r.evidenceImage) {
@@ -121,6 +118,20 @@ router.post(
 
 // =====================================================================
 // GET /api/v1/blacklist/public — Citizen-safe public registry
+//
+// Returns ONLY confirmed blacklisted entries, projected to the fields
+// citizens may see:
+//   { phoneNumber, status, scamType, reportCount, region, blacklistedAt }
+//
+// NEVER returns: officer identities, votes, comments, hashes, notes.
+//
+// Registered BEFORE /:phoneNumber/status so "public" is never treated
+// as a phone number.
+//
+// Query params (all optional):
+//   ?q=<text>       filter by phoneNumber or scamType (case-insensitive)
+//   ?region=<r>     filter by region (UNCLASSIFIED entries not filtered out)
+//   ?limit=100      max rows (default 100, cap 500)
 // =====================================================================
 router.get(
   '/public',
@@ -133,6 +144,9 @@ router.get(
       500
     );
 
+    // Only confirmed scam entries are exposed to citizens. Statuses the
+    // officer flow uses once a report reaches two approvals:
+    //   'blacklisted' (canonical)   'approved' (legacy alias)
     const query = { status: { $in: ['blacklisted', 'approved'] } };
 
     if (req.query.region) {
@@ -155,6 +169,8 @@ router.get(
       .select('phoneNumber status scamType reportCount region blacklistedAt')
       .lean();
 
+    // Belt-and-braces projection: even if select() is bypassed, the
+    // response only ever carries the public fields.
     const publicItems = items.map((e) => ({
       phoneNumber: e.phoneNumber,
       status: e.status,
@@ -262,7 +278,6 @@ router.get(
       BlacklistEntry.countDocuments(query),
     ]);
 
-    // Attach the evidence screenshot from the linked report(s).
     const itemsWithEvidence = await attachEvidenceImages(items);
 
     return res.status(200).json({

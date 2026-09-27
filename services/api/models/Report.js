@@ -186,6 +186,41 @@ const ReportSchema = new Schema(
       default: null,
     },
 
+    // ─── REPORTER IDENTITY (new) ──────────────────────────────────────
+    // Human-readable reporter identity for officer transparency.
+    //
+    // NOT part of getCanonicalPayload() — deliberately excluded from the
+    // hash chain so adding these fields does not invalidate any existing
+    // report. Citizens opt in via the mobile app; if they decline, both
+    // fields are stored as null.
+    //
+    // Visibility is controlled at the query level (see LIST_SELECT /
+    // DETAIL_SELECT in reportReviewController.js). The citizen-facing
+    // createReport() response explicitly deletes these keys before
+    // returning, so the citizen never sees them echoed back.
+    reporterName: {
+      type: String,
+      trim: true,
+      maxlength: 120,
+      default: null,
+    },
+    reporterEmail: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      maxlength: 254,
+      default: null,
+    },
+    reporterShared: {
+      type: Boolean,
+      default: false,
+    },
+    // ──────────────────────────────────────────────────────────────────
+
+    // ---- Workflow state ----
+    // 'pending' → 'under_review' | 'one_approval' → 'blacklisted' | 'rejected'
+    // 'approved' is retained as an alias for 'blacklisted' so the vote
+    // route can map its decision without loss.
     status: {
       type: String,
       enum: [
@@ -274,18 +309,6 @@ ReportSchema.pre('findOneAndRemove', blockDirectMutation);
 
 /**
  * CANONICAL VOTE ENTRY POINT — 3-Officer Consensus (majority 2-of-3)
- *
- * ALL 3 officers must vote. The majority decides:
- *   2+ approvals  → 'blacklisted'
- *   2+ rejections → 'rejected'
- *
- * Intermediate states (fewer than 3 votes cast):
- *   2 approvals → 'two_approvals'
- *   1 approval  → 'one_approval'
- *   otherwise   → 'under_review'
- *
- * The 3rd officer is the FINALIZER — the case can't close before
- * all 3 votes are in. Stamps `resolvedAt` on the FIRST terminal transition.
  */
 ReportSchema.statics.castVote = async function castVote(
   reportId,
@@ -431,22 +454,6 @@ ReportSchema.statics.castVote = async function castVote(
 
 /**
  * CHANGE VOTE — Option A (replace-in-place)
- *
- * An officer who has already voted may revise their decision + comment,
- * but ONLY while the report is still in an OPEN status. Once the report
- * is blacklisted/approved/rejected, the vote is frozen.
- *
- * Semantics:
- *   - Locates votes[i] where userId === userId
- *   - Overwrites decision + comment
- *   - Keeps the original votedAt, stamps editedAt = now
- *   - Recomputes consensusState and status from scratch (same math as castVote)
- *   - resolvedAt is NEVER set here (editing cannot finalize a case; if the
- *     report somehow became terminal before the edit — which the status
- *     guard already prevents — we leave resolvedAt alone)
- *
- * Returns { updated, previous } so the controller can write a rich
- * VOTE_EDITED audit entry with the previous decision + comment.
  */
 ReportSchema.statics.changeVote = async function changeVote(
   reportId,
@@ -467,7 +474,6 @@ ReportSchema.statics.changeVote = async function changeVote(
   const now = new Date();
   const nextComment = String(comment || '').trim().slice(0, 2000);
 
-  // ── Fetch the previous vote for the audit trail ──
   const before = await collection.findOne(
     { reportId },
     { projection: { status: 1, votes: 1, consensusState: 1 } }
@@ -500,7 +506,6 @@ ReportSchema.statics.changeVote = async function changeVote(
     editedAt: existingVote.editedAt || null,
   };
 
-  // ── Atomic replace: rebuild votes[] with this officer's entry swapped ──
   const pipeline = [
     {
       $set: {
@@ -574,9 +579,6 @@ ReportSchema.statics.changeVote = async function changeVote(
         },
       },
     },
-    // NOTE: resolvedAt is deliberately NOT touched here — a vote edit can
-    // never finalize a case (the guard above already blocked terminal
-    // reports), so we must not stamp resolvedAt.
   ];
 
   const result = await collection.findOneAndUpdate(
@@ -594,7 +596,6 @@ ReportSchema.statics.changeVote = async function changeVote(
     return { updated, previous };
   }
 
-  // Rare race: the report flipped to terminal between the read and the write.
   throw httpError(
     409,
     'VOTE_CONFLICT',

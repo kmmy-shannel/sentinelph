@@ -5,10 +5,6 @@
 //   GET   /api/v1/reports/:id        -> getReportById  (full detail incl. screenshot)
 //   POST  /api/v1/reports/:id/vote   -> voteOnReport   (CANONICAL 3-officer vote)
 //   PATCH /api/v1/reports/:id/vote   -> changeVoteOnReport (edit an existing vote)
-//
-// Report-level consensus is the single source of truth. When a report
-// reaches 2 distinct approvals it becomes 'blacklisted' and the reported
-// entity is upserted into the BlacklistEntry collection.
 'use strict';
 
 const mongoose = require('mongoose');
@@ -25,6 +21,10 @@ const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 const BUCKETS = ['pending', 'resolved', 'all'];
 
+// The list never carries the base64 screenshot (it can be megabytes per
+// row) nor the pseudonymous citizen identifier. Reporter identity is
+// included by default; citizenHash is excluded here so no officer
+// response ever leaks the pseudonymous identifier.
 const LIST_SELECT = '-evidenceImage -citizenHash';
 const DETAIL_SELECT = '-citizenHash';
 
@@ -180,11 +180,6 @@ async function getReportById(req, res, next) {
   }
 }
 
-/**
- * POST /api/v1/reports/:id/vote   body: { decision: 'approve'|'reject', comment }
- *
- * CANONICAL voting entry point. 3-officer consensus, atomic vote write.
- */
 async function voteOnReport(req, res, next) {
   try {
     const userId = req.user && req.user.uid;
@@ -298,14 +293,6 @@ async function voteOnReport(req, res, next) {
   }
 }
 
-/**
- * PATCH /api/v1/reports/:id/vote   body: { decision: 'approve'|'reject', comment }
- *
- * Edit an existing vote. Only the officer who cast the original vote may
- * edit it, and only while the report is still in an OPEN status. The
- * previous decision + comment are snapshotted into the AuditLog so the
- * append-only history is preserved outside the votes[] array.
- */
 async function changeVoteOnReport(req, res, next) {
   try {
     const userId = req.user && req.user.uid;

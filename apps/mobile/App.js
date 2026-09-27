@@ -20,7 +20,7 @@ import {
 import { AuthProvider, useAuth } from './context/AuthContext';
 import AuthScreen from './screens/AuthScreen';
 import TabNavigator from './navigation/TabNavigator';
-import { initDB } from './db/sqlite';
+import { initDB, pruneBlacklistCache } from './db/sqlite';
 import * as syncQueue from './db/syncQueue';
 
 // --- ENV DIAGNOSTIC CHECK ---
@@ -80,10 +80,14 @@ export default function App() {
   });
   const [dbReady, setDbReady] = useState(false);
 
-  useEffect(() => {
+   useEffect(() => {
     async function prepareApp() {
       try {
         await initDB();
+        // Age out cached blacklist lookups older than 30 days so the
+        // table doesn't grow forever. Best-effort: failures are logged
+        // inside pruneBlacklistCache() and never block startup.
+        await pruneBlacklistCache();
       } catch (err) {
         console.warn('[App] SQLite init failed:', err?.message || err);
       } finally {

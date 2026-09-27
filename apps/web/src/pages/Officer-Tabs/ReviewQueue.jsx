@@ -16,7 +16,8 @@ const STATUS_ORDER = [
   { key: 'approved',      label: 'Approved',       color: '#22c55e' },
 ];
 
-const COL_WIDTHS = ['14%', '18%', '14%', '8%', '8%', '16%', '10%', '12%'];
+// 9 columns: ID, NUMBER, TYPE, REPORTER, REPORTS, CHANNEL, SUBMITTED, PRIOR VOTES, ACTION
+const COL_WIDTHS = ['12%', '14%', '12%', '14%', '7%', '7%', '14%', '9%', '11%'];
 
 const CheckIcon = ({ color }) => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -94,6 +95,11 @@ function mapReportToRow(r, currentUid) {
     nullifierHash: r.nullifierHash || r.nullifier || null,
     zkpHash: r.zkpHash || null,
     jurisdiction: r.jurisdiction || "PH",
+    // ─── REPORTER IDENTITY (from kimmy-branch) ────────────────────────
+    reporterName: r.reporterName || null,
+    reporterEmail: r.reporterEmail || null,
+    reporterShared: Boolean(r.reporterShared),
+    // ──────────────────────────────────────────────────────────────────
   };
 }
 
@@ -117,7 +123,6 @@ export default function ReviewQueue() {
   const [showSuccess, setShowSuccess] = useState(false);
   const [submittingVote, setSubmittingVote] = useState(false);
 
-  // Edit-mode state (Voted tab, own vote, still open).
   const [isEditMode, setIsEditMode] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
 
@@ -180,9 +185,7 @@ export default function ReviewQueue() {
     }
   }
 
-  // ── Open vote modal with full report (incl. evidence image) ──
   async function openVoteModal(row) {
-    // Pre-fill from the row so the modal is instant, then swap in detail.
     const prefillDecision = row.hasVoted ? row.myDecision : null;
     const prefillComment  = row.hasVoted ? (row.myComment || "") : "";
 
@@ -197,8 +200,6 @@ export default function ReviewQueue() {
       const { data } = await apiClient.get(`/api/v1/reports/${row.id}`);
       const full = data?.data || data?.report || data;
 
-      // Recompute the "my vote" fields off the freshest payload in case
-      // someone else voted since the last poll.
       const freshMyVote = (full?.votes || []).find(v => v.userId === user?.uid);
 
       setVoteModal({
@@ -210,6 +211,11 @@ export default function ReviewQueue() {
         myDecision: freshMyVote?.decision || row.myDecision,
         myComment: freshMyVote?.comment || "",
         myEditedAt: freshMyVote?.editedAt || null,
+        // ─── REPORTER IDENTITY ──────────────────────────────────────
+        reporterName: full?.reporterName ?? row.reporterName ?? null,
+        reporterEmail: full?.reporterEmail ?? row.reporterEmail ?? null,
+        reporterShared: Boolean(full?.reporterShared ?? row.reporterShared),
+        // ─────────────────────────────────────────────────────────────
         _loadingImage: false,
       });
 
@@ -225,13 +231,10 @@ export default function ReviewQueue() {
     }
   }
 
-  // Clickable rows: Voted + Resolved tabs open the modal on row click.
-  // Pending tab still requires the explicit Review button so you don't
-  // open a case by accident before deciding.
   const canOpenRow = useCallback((row) => {
     if (tab === 'voted' || tab === 'resolved') return true;
     if (tab === 'all') return row.hasVoted || row.isResolved;
-    return false; // pending: use the Review button
+    return false;
   }, [tab]);
 
   const filtered = useMemo(() => {
@@ -248,7 +251,9 @@ export default function ReviewQueue() {
       list = list.filter((r) =>
         r.id.toLowerCase().includes(q) ||
         r.number.toLowerCase().includes(q) ||
-        r.type.toLowerCase().includes(q)
+        r.type.toLowerCase().includes(q) ||
+        (r.reporterName || "").toLowerCase().includes(q) ||
+        (r.reporterEmail || "").toLowerCase().includes(q)
       );
     }
     return list;
@@ -273,10 +278,6 @@ export default function ReviewQueue() {
     setSavingEdit(false);
   }
 
-  // Which mode is this modal in?
-  //   'vote'  – you haven't voted yet (open report) → Approve/Reject + Submit
-  //   'edit'  – you voted, report still open, you clicked Edit vote
-  //   'read'  – you voted but it's terminal, or you're not the voter
   const modalMode = !voteModal
     ? 'vote'
     : voteModal.isResolved
@@ -440,6 +441,13 @@ export default function ReviewQueue() {
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#3b82f6", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.id.slice(0, 12)}</td>
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#fff", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.number}</td>
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#9ca3af", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.type}</td>
+                        {/* ─── REPORTER IDENTITY ─────────────────────────── */}
+                        <td style={{ padding: "12px 20px", fontSize: "12px", color: "#9ca3af", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {row.reporterShared && row.reporterName
+                            ? row.reporterName
+                            : <span style={{ color: "#4b5563", fontStyle: "italic" }}>Anonymous</span>}
+                        </td>
+                        {/* ──────────────────────────────────────────────── */}
                         <td style={{ padding: "12px 20px", fontSize: "12px", fontWeight: 700, color: "#fff" }}>{row.reports}</td>
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#6b7280" }}>{row.channel}</td>
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.submitted}</td>
@@ -494,6 +502,30 @@ export default function ReviewQueue() {
                 </div>
               )}
 
+              {/* ─── REPORTER IDENTITY ──────────────────────────────────── */}
+              <div style={{ padding: "12px 14px", borderRadius: "8px", marginBottom: "16px", background: voteModal.reporterShared ? "rgba(59,130,246,0.06)" : "rgba(148,163,184,0.03)", border: `1px solid ${voteModal.reporterShared ? "rgba(59,130,246,0.25)" : "rgba(148,163,184,0.08)"}` }}>
+                <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px", fontFamily: "'JetBrains Mono',monospace" }}>
+                  REPORTED BY
+                </div>
+                {voteModal.reporterShared && (voteModal.reporterName || voteModal.reporterEmail) ? (
+                  <div>
+                    <div style={{ fontSize: "13px", color: "#e2e8f0", fontWeight: 600 }}>
+                      {voteModal.reporterName || "(no name provided)"}
+                    </div>
+                    {voteModal.reporterEmail && (
+                      <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "2px" }}>
+                        {voteModal.reporterEmail}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic" }}>
+                    Anonymous reporter — citizen did not opt to share their identity.
+                  </div>
+                )}
+              </div>
+              {/* ────────────────────────────────────────────────────────── */}
+
               {voteModal.votes.length > 0 && (
                 <div style={{ marginBottom: "20px" }}>
                   <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "8px", fontFamily: "'JetBrains Mono',monospace" }}>
@@ -503,7 +535,7 @@ export default function ReviewQueue() {
                     {voteModal.votes.map((v, i) => {
                       const mine = v.userId === user?.uid;
                       return (
-                        <div key={i} style={{ padding: "10px 14px", borderRadius: "8px", background: "#080810", border: `1px solid ${v.decision === 'approve' ? '#22c55e30' : '#ef444430'}${mine ? '' : ''}` }}>
+                        <div key={i} style={{ padding: "10px 14px", borderRadius: "8px", background: "#080810", border: `1px solid ${v.decision === 'approve' ? '#22c55e30' : '#ef444430'}` }}>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
                             <span style={{ fontSize: "11px", color: mine ? "#9ca3af" : "#6b7280", fontFamily: "'JetBrains Mono',monospace" }}>
                               {mine ? 'You' : `Officer · ${(v.userId || '').slice(-6)}`}{v.editedAt ? ' · edited' : ''}
@@ -556,7 +588,7 @@ export default function ReviewQueue() {
                 </div>
               )}
 
-              {/* ── READ MODE (voted, still open, or finalized) ── */}
+              {/* ── READ MODE (voted, still open) ── */}
               {modalMode === 'read' && !voteModal.isResolved && voteModal.hasVoted && (
                 <div style={{ marginBottom: "16px" }}>
                   <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>YOUR VOTE</div>

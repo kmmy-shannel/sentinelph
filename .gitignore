@@ -68,3 +68,7 @@ Thumbs.db
 *.pkl
 .vercel
 .env*
+
+.venv_broken/
+.venv/
+venv/

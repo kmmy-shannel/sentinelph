@@ -1,0 +1,808 @@
+{
+  "version": "1.0",
+  "created_at": "2026-09-27",
+  "description": "Regression suite for SentinelPH's Level 1 (legitimate/grey_area/malicious) + Level 2 (13-subtype) SMS scam classifier. Combines known past failures, adversarial official-vs-spoofed domain pairs, must-never-flag OTPs, and baseline coverage across all 13 subtypes. Examples flagged must_not_flip:true are locked regression checks: any future model or heuristic change that flips their prediction should fail CI.",
+  "changelog": [],
+  "examples": [
+    {
+      "id": "reg_001",
+      "text": "PHLPOST - The package has arrived at the warehouse. Please confirm your address at https://phpost.life/ (Please reply 1 to activate the link)",
+      "expected_level1": "malicious",
+      "expected_level2": "phishing_link",
+      "note": "Original false negative that triggered the Level 2 rebuild; phpost.life is not a PHLPOST-owned domain and must always be caught as phishing regardless of model updates.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_002",
+      "text": "PHLPOST: Your parcel with tracking number RA123456789PH has arrived at the Quezon City Sorting Center. Track your delivery at https://phlpost.gov.ph/track",
+      "expected_level1": "legitimate",
+      "expected_level2": "delivery_tracking",
+      "note": "Adversarial pair partner to reg_001 - identical scenario and brand, but on the real phlpost.gov.ph domain. Confirms the model keys off domain legitimacy, not brand mention alone.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_003",
+      "text": "Your GCash Authentication Code is 839102. Do not share this code with anyone.",
+      "expected_level1": "legitimate",
+      "expected_level2": "two_factor_auth",
+      "note": "Canonical legit OTP format - no link, no callback, explicit non-share instruction. Must never be flagged malicious or the product becomes unusable for everyday logins.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_004",
+      "text": "BPI Alert: Your account has been locked due to suspicious activity. Verify immediately at bpi-secure-update-ph.com",
+      "expected_level1": "malicious",
+      "expected_level2": "phishing_link",
+      "note": "bpi-secure-update-ph.com is a lookalike domain, not bpi.com.ph. Mislabeling this as a legitimate bank_activity_alert was a known audit gap.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_005",
+      "text": "Hey Mark, are we still meeting for golf this Saturday?",
+      "expected_level1": "malicious",
+      "expected_level2": "wrong_number_baiting",
+      "note": "Classic wrong-number opener with zero scam content in the first message - included as a hard case to confirm the model has learned this specific pattern from prior incidents rather than requiring an explicit money/job hook to trigger.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_006",
+      "text": "Get P500 Cashback on Shopee 6.6 w/ BDO Credit Cards on Jun 5-7! Enroll your Promo ID 432A4649AA.",
+      "expected_level1": "grey_area",
+      "expected_level2": "brand_marketing",
+      "note": "Real co-branded bank-retailer promo with a promo ID instead of a link; tests that promo IDs and cashback language don't get over-triggered as phishing just because a bank is named.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_007",
+      "text": "BDO reminds you: we will NEVER ask for your OTP, PIN, or password through SMS, call, or email. Report suspicious messages to report@bdo.com.ph.",
+      "expected_level1": "legitimate",
+      "expected_level2": "bank_activity_alert",
+      "note": "One of three BDO anti-scam PSAs mislabeled malicious in the last audit - likely due to alarming keywords (OTP, password) despite being a defensive warning, not a request.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_008",
+      "text": "BDO Fraud Alert: If you receive a text or call asking you to click a link or share your One-Time PIN, do not respond. Hang up and call our official hotline (8631-8000).",
+      "expected_level1": "legitimate",
+      "expected_level2": "bank_activity_alert",
+      "note": "Second mislabeled BDO PSA - heuristic rules flagged 'click a link' and 'One-Time PIN' phrasing even though the message instructs the user not to comply.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_009",
+      "text": "Paalala mula sa BDO: Hindi kami nangangailangan ng iyong OTP o password sa pamamagitan ng text o tawag. I-report ang kahina-hinalang mensahe sa aming official channels.",
+      "expected_level1": "legitimate",
+      "expected_level2": "bank_activity_alert",
+      "note": "Third mislabeled BDO PSA, Filipino-language version - confirms the fix generalizes across English and Tagalog phrasing of the same anti-scam warning.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_010",
+      "text": "BDO: Your account has been temporarily suspended due to suspicious activity. Verify now at bdo-secure-update-ph.com to avoid permanent lock.",
+      "expected_level1": "malicious",
+      "expected_level2": "phishing_link",
+      "note": "Adversarial pair partner to reg_027 - same bank and 'suspicious activity' framing, but on a spoofed domain instead of bdo.com.ph.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_011",
+      "text": "Lazada: Congrats! You've been selected to claim a free gift. Claim here: lazada-rewards.vip/claim",
+      "expected_level1": "malicious",
+      "expected_level2": "phishing_link",
+      "note": "Adversarial pair partner to reg_035 - same brand and reward framing as the legitimate voucher promo, but on an unofficial .vip domain.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_012",
+      "text": "J&T Express: Your parcel could not be delivered due to incomplete address. Update your details now: jt-express-ph.click/update",
+      "expected_level1": "malicious",
+      "expected_level2": "phishing_link",
+      "note": "Adversarial pair partner to reg_024 - identical courier and delivery-failure premise, but jt-express-ph.click is not J&T's registered domain.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_013",
+      "text": "GCash: You have a pending cash-in of PHP 25,000.00. Verify your MPIN to receive it: gcash-verify.net/claim",
+      "expected_level1": "malicious",
+      "expected_level2": "phishing_link",
+      "note": "Adversarial pair partner to reg_028 - mimics GCash's real cash-in notification format, but legitimate GCash never asks users to submit their MPIN via an external link.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_014",
+      "text": "Shopee: Your account has unusual login activity and will be suspended in 24 hours. Confirm your identity: shopee-account-verify.top",
+      "expected_level1": "malicious",
+      "expected_level2": "phishing_link",
+      "note": "Suspicious .top TLD paired with account-suspension urgency - a core brand-impersonation + suspicious-TLD pattern the heuristic rules are meant to catch.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_015",
+      "text": "Maya: Your wallet has been temporarily locked for security reasons. Unlock it here: maya-secure.xyz/unlock",
+      "expected_level1": "malicious",
+      "expected_level2": "phishing_link",
+      "note": "Suspicious .xyz TLD impersonating Maya; included alongside reg_014 to confirm the pattern generalizes across e-wallet brands, not just one.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_016",
+      "text": "DSWD: Your Ayuda cash assistance of PHP 3,000 is ready for release. Claim now: dswd-ayuda.xyz/claim",
+      "expected_level1": "malicious",
+      "expected_level2": "phishing_link",
+      "note": "Government-relief impersonation targeting a real social program (DSWD Ayuda); tests generalization beyond bank/courier brands to government agencies.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_017",
+      "text": "SSS/Pag-IBIG: Your salary loan of PHP 15,000 has been approved. Complete your release by verifying your info here: sss-pagibig-release.life",
+      "expected_level1": "malicious",
+      "expected_level2": "phishing_link",
+      "note": "Combines two real government agencies into one lure and uses a .life TLD, echoing the phpost.life pattern from reg_001 in a different brand context.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_018",
+      "text": "NTC: Your SIM will be permanently deactivated for failure to register. Register immediately at ntc-simregister.xyz to avoid disconnection.",
+      "expected_level1": "malicious",
+      "expected_level2": "phishing_link",
+      "note": "Exploits the real SIM Registration Act requirement - a high-relevance PH-specific lure that heuristics must catch via domain, not by recognizing the topic as fake.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_019",
+      "text": "PLDT: Your monthly bill is overdue. Settle immediately to avoid disconnection: pldt-billing.top",
+      "expected_level1": "malicious",
+      "expected_level2": "phishing_link",
+      "note": "Utility-bill impersonation with a suspicious .top domain; rounds out phishing_link coverage across telco/utility brands.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_020",
+      "text": "J&T Express: Your parcel 623000198234PH is out for delivery today. Rider: Ronnie, 09181234567.",
+      "expected_level1": "legitimate",
+      "expected_level2": "delivery_tracking",
+      "note": "Routine courier update with a named rider and real-format tracking number, no link at all - baseline low-risk delivery example.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_021",
+      "text": "LBC: Your shipment is now at LBC Sucat Hub and will arrive within 1-2 business days. Track at lbcexpress.com.",
+      "expected_level1": "legitimate",
+      "expected_level2": "delivery_tracking",
+      "note": "Official LBC domain and standard shipment-status language; part of the general delivery_tracking baseline set.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_022",
+      "text": "Lazada: Your order #LZD90213 has been delivered. Salamat sa pamimili sa Lazada!",
+      "expected_level1": "legitimate",
+      "expected_level2": "delivery_tracking",
+      "note": "Post-delivery confirmation with no link or CTA - should never be confused with the reward-claim phishing variant in reg_011.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_023",
+      "text": "Shopee: Your package is out for delivery and will arrive today. Track your order in the Shopee app.",
+      "expected_level1": "legitimate",
+      "expected_level2": "delivery_tracking",
+      "note": "In-app tracking directive instead of an external link, a common legitimate courier pattern worth covering explicitly.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_024",
+      "text": "J&T Express: Your parcel 623000123456PH is out for delivery today. Track it at jtexpress.ph/track.",
+      "expected_level1": "legitimate",
+      "expected_level2": "delivery_tracking",
+      "note": "Adversarial pair partner to reg_012 - identical delivery scenario, but the link resolves to J&T's real jtexpress.ph domain.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_025",
+      "text": "Ninja Van: Your parcel has been picked up and is on its way to the sorting facility. ETA: 2 days.",
+      "expected_level1": "legitimate",
+      "expected_level2": "delivery_tracking",
+      "note": "Covers a courier brand outside the GCash/BDO/PHLPOST cluster to check the model isn't overfit to a small brand list.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_026",
+      "text": "2GO: Your cargo booking #2GO55231 has departed Manila and is expected to arrive in Cebu on Sep 30.",
+      "expected_level1": "legitimate",
+      "expected_level2": "delivery_tracking",
+      "note": "Inter-island cargo tracking, a less common but realistic PH courier scenario for delivery_tracking diversity.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_027",
+      "text": "BDO: You have sent PHP 2,500.00 to Juan D. via BDO Pay&Go on Sep 27. Manage your account at bdo.com.ph. Ref# 004821.",
+      "expected_level1": "legitimate",
+      "expected_level2": "bank_activity_alert",
+      "note": "Adversarial pair partner to reg_010 - same bank and 'account' framing, but a routine transaction notice on the real bdo.com.ph domain instead of a suspension threat.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_028",
+      "text": "GCash: You've successfully cashed in PHP 2,000.00 via 7-Eleven. Check your balance in the app or at gcash.com.",
+      "expected_level1": "legitimate",
+      "expected_level2": "bank_activity_alert",
+      "note": "Adversarial pair partner to reg_013 - same cash-in scenario and brand, but a factual notice on the real gcash.com domain with no MPIN request.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_029",
+      "text": "BPI Alert: A withdrawal of PHP 5,000.00 was made from your account ending in 1234 at BPI Cubao ATM.",
+      "expected_level1": "legitimate",
+      "expected_level2": "bank_activity_alert",
+      "note": "Standard ATM withdrawal notice with masked account digits and no link - baseline legitimate alert format.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_030",
+      "text": "Maya: Your cash-in of PHP 1,000.00 via GCash padala was successful. New balance: PHP 4,320.00.",
+      "expected_level1": "legitimate",
+      "expected_level2": "bank_activity_alert",
+      "note": "Cross-wallet transfer confirmation; tests that inter-wallet transaction language doesn't get flagged just for naming two e-wallet brands in one message.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_031",
+      "text": "Metrobank: A purchase of PHP 899.00 was made using your debit card at SM Supermarket. If not you, call our hotline immediately.",
+      "expected_level1": "legitimate",
+      "expected_level2": "bank_activity_alert",
+      "note": "Includes a security callout ('if not you, call') without a link - checks the model doesn't treat any fraud-warning phrasing as inherently malicious.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_032",
+      "text": "Shopee: 9.9 Mega Sale starts now! Up to 90% off + Free Shipping. Shop now sa Shopee app.",
+      "expected_level1": "grey_area",
+      "expected_level2": "brand_marketing",
+      "note": "Flagship annual sale event promo with hyperbolic discount language but no external link - baseline brand_marketing example.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_033",
+      "text": "Globe: Enjoy GOMO's Php 99 unli data promo! Reply STOP to opt out of promos.",
+      "expected_level1": "grey_area",
+      "expected_level2": "brand_marketing",
+      "note": "Telco promo including an opt-out mechanism, a common legitimate marketing compliance pattern.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_034",
+      "text": "Jollibee: Bagong Chickenjoy Bucket Treat available na sa lahat ng branch. Order via Jollibee app!",
+      "expected_level1": "grey_area",
+      "expected_level2": "brand_marketing",
+      "note": "Food brand product announcement with no financial ask or link - low-risk marketing baseline.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_035",
+      "text": "Lazada: Your 9.9 Super Show voucher is ready! Claim it now at lazada.com.ph/vouchers before it expires.",
+      "expected_level1": "grey_area",
+      "expected_level2": "brand_marketing",
+      "note": "Adversarial pair partner to reg_011 - same claim-your-gift framing, but on Lazada's real lazada.com.ph domain, confirming domain-based discrimination rather than keyword-based.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_036",
+      "text": "Zalora: Take an extra 20% off sale items this weekend only. Shop the sale on the Zalora app.",
+      "expected_level1": "grey_area",
+      "expected_level2": "brand_marketing",
+      "note": "Fashion e-commerce promo, adds brand diversity beyond the core GCash/BDO/Lazada/Shopee set.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_037",
+      "text": "Smart: Load up P50 and get 1GB data valid for 3 days! Dial *123# to load now.",
+      "expected_level1": "grey_area",
+      "expected_level2": "brand_marketing",
+      "note": "USSD-based promo CTA instead of a link or app - tests a different legitimate marketing delivery mechanism.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_038",
+      "text": "Watsons: You have 350 points expiring this month. Redeem them on your next in-store purchase.",
+      "expected_level1": "grey_area",
+      "expected_level2": "brand_marketing",
+      "note": "Loyalty-points reminder with no urgency language or link, a soft brand_marketing baseline case.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_039",
+      "text": "Hi Angel, kamusta na? Miss na kita. Sorry medyo late reply, busy lang sa business ko.",
+      "expected_level1": "malicious",
+      "expected_level2": "wrong_number_baiting",
+      "note": "Romance-scam opener disguised as a message to an existing contact; the affectionate tone is the lure mechanism itself.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_040",
+      "text": "Hi po, is this Ms. Reyes from the HR agency? I was referred for a work-from-home job, PHP 3,500 a day.",
+      "expected_level1": "malicious",
+      "expected_level2": "wrong_number_baiting",
+      "note": "Job-offer variant of the wrong-number pattern; the unrealistic daily pay is the scam signal embedded in the opener itself.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_041",
+      "text": "Hello, sorry maybe wrong number, pero since nag-text na tayo, may alam ka ba about crypto investing?",
+      "expected_level1": "malicious",
+      "expected_level2": "wrong_number_baiting",
+      "note": "Explicit wrong-number framing that pivots directly into an investment pitch within the same message - the clearest in-message hook variant.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_042",
+      "text": "Hi po, ito po ba yung number ni Ms. Reyes? Kasi po may available kaming home-based encoding job, 800/day lang po.",
+      "expected_level1": "malicious",
+      "expected_level2": "wrong_number_baiting",
+      "note": "Tagalog-heavy recruitment-lure variant to ensure coverage isn't limited to English phrasing of the same pattern.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_043",
+      "text": "Hi, sorry, nawala yung phone ko kaya ibang number ito. Pwede pa-send ng load, 300 lang, ibabalik ko bukas.",
+      "expected_level1": "malicious",
+      "expected_level2": "wrong_number_baiting",
+      "note": "Small-amount ask ('just 300') designed to feel low-risk to the recipient; tests that amount size doesn't reduce the malicious classification.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_044",
+      "text": "Hi Boss, natanggal ata number mo dati sa contacts ko. May bakante pa ba sa company niyo? Kailangan ko lang talaga ng work ngayon.",
+      "expected_level1": "malicious",
+      "expected_level2": "wrong_number_baiting",
+      "note": "Job-desperation framing aimed at eliciting a helpful response before pivoting to a fee or personal-info request in-thread.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_045",
+      "text": "Hello po, ito po ba yung number na nag-apply ng loan kay Sir? Kailangan lang pong i-confirm yung details niyo.",
+      "expected_level1": "malicious",
+      "expected_level2": "wrong_number_baiting",
+      "note": "Loan-application pretext opener, a variant seen alongside lending-app harassment scams targeting PH users.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_046",
+      "text": "LTO: You have an unsettled traffic violation of PHP 2,500. Pay within 24 hours at lto-payment.info to avoid warrant of arrest.",
+      "expected_level1": "malicious",
+      "expected_level2": "urgent_fine_toll",
+      "note": "Adversarial pair partner to reg_088 - same agency (LTO), but a fabricated fine with a threat of arrest and an unofficial .info domain instead of a routine renewal reminder.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_047",
+      "text": "NLEX/SLEX: Your RFID account has insufficient balance and an outstanding toll of PHP 350. Settle now: nlex-toll.top",
+      "expected_level1": "malicious",
+      "expected_level2": "urgent_fine_toll",
+      "note": "Toll-road RFID scams are a recurring, high-volume PH pattern; must always be caught given how routine legitimate RFID top-up reminders otherwise are.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_048",
+      "text": "BIR: Notice of tax delinquency. Failure to settle within 3 days will result in asset freeze. Call 0917-XXX-XXXX now.",
+      "expected_level1": "malicious",
+      "expected_level2": "urgent_fine_toll",
+      "note": "Callback-based (no link) fine scam impersonating a tax authority; confirms urgent_fine_toll detection isn't solely dependent on a URL being present.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_049",
+      "text": "Meralco: Your electric bill is overdue. Your service will be disconnected today unless you settle via this link: meralco-bills.icu",
+      "expected_level1": "malicious",
+      "expected_level2": "urgent_fine_toll",
+      "note": "Utility disconnection threat with same-day urgency, a high-pressure variant using a suspicious .icu TLD.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_050",
+      "text": "LTFRB: Your ride-hailing driver's account has a pending violation of PHP 1,000. Settle immediately to avoid suspension.",
+      "expected_level1": "malicious",
+      "expected_level2": "urgent_fine_toll",
+      "note": "Targets gig-economy drivers specifically, a narrower but realistic PH audience segment for this subtype.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_051",
+      "text": "MMDA: You have an unpaid traffic citation. Pay online now to avoid your license being flagged: mmda-citation.top",
+      "expected_level1": "malicious",
+      "expected_level2": "urgent_fine_toll",
+      "note": "Traffic-citation variant distinct from the LTO pair, broadening coverage across different PH traffic authorities.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_052",
+      "text": "NBI: There is a pending warrant of arrest under your name. Call this number immediately to clear your record: 0917-XXX-XXXX.",
+      "expected_level1": "malicious",
+      "expected_level2": "urgent_fine_toll",
+      "note": "Fear-based law-enforcement impersonation with no financial figure stated upfront, testing detection without an explicit peso amount.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_053",
+      "text": "SSS: You have an unpaid contribution penalty of PHP 1,200. Settle today to avoid loan disqualification: sss-penalty.xyz",
+      "expected_level1": "malicious",
+      "expected_level2": "urgent_fine_toll",
+      "note": "Government-benefits penalty framing, rounding out urgent_fine_toll coverage across a fourth PH agency.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_054",
+      "text": "Congratulations! Your number won PHP 50,000 in the GCash Anniversary Raffle. Claim: gcash-promo2026.com",
+      "expected_level1": "malicious",
+      "expected_level2": "fake_prize_lottery",
+      "note": "Unsolicited-win framing tied to a real e-wallet brand anniversary, a very common PH scam template.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_055",
+      "text": "SM Malls 25th Anniversary: You are our lucky winner of a brand new iPhone! Reply YES to claim.",
+      "expected_level1": "malicious",
+      "expected_level2": "fake_prize_lottery",
+      "note": "Reply-based claim mechanism instead of a link, showing the subtype isn't defined by URL presence.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_056",
+      "text": "PCSO: Your mobile number won 2nd prize sa 6/42 lotto promo. Text your full name and address to claim.",
+      "expected_level1": "malicious",
+      "expected_level2": "fake_prize_lottery",
+      "note": "Impersonates the actual government lottery agency (PCSO), which never notifies winners by unsolicited SMS - a high-priority must-catch pattern given the agency's real public trust.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_057",
+      "text": "Shopee: You've been randomly selected in our Lucky Draw! Claim your PHP 10,000 GCash prize now, reply CLAIM.",
+      "expected_level1": "malicious",
+      "expected_level2": "fake_prize_lottery",
+      "note": "Cross-brand prize scam pairing Shopee's name with a GCash payout, a common cross-brand lure structure.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_058",
+      "text": "Nescafe: Congratulations, you are our monthly raffle winner of PHP 20,000! Claim your prize by replying with your full name and address.",
+      "expected_level1": "malicious",
+      "expected_level2": "fake_prize_lottery",
+      "note": "FMCG/consumer-brand raffle impersonation, adding brand diversity beyond finance/telco/e-commerce.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_059",
+      "text": "Globe/Smart: You have won a free load prize of PHP 500! Claim now by texting CLAIM to this number.",
+      "expected_level1": "malicious",
+      "expected_level2": "fake_prize_lottery",
+      "note": "Small prize amount designed to feel plausible and low-stakes, testing that prize size doesn't reduce classification confidence.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_060",
+      "text": "Manalo ng PHP 100,000! I-claim ang iyong premyo bilang aming paraan ng pagbibigay pabalik sa komunidad. Text CLAIM ngayon.",
+      "expected_level1": "malicious",
+      "expected_level2": "fake_prize_lottery",
+      "note": "Charity-flavored language wrapped around a cash-prize claim; tests the reward-vs-cause decision rule against charity_appeal.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_061",
+      "text": "Good day! I am Mr. John Williams from the UK National Lottery Board. You have inherited GBP 850,000. Contact us to process your claim.",
+      "expected_level1": "malicious",
+      "expected_level2": "fake_prize_lottery",
+      "note": "Classic foreign-lottery/inheritance scam template, included to check generalization beyond PH-branded prize scams.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_062",
+      "text": "Mama, nawala yung phone ko kaya ibang number ito. Pwede pa-send ng load, 500, kailangan ko lang for now.",
+      "expected_level1": "malicious",
+      "expected_level2": "impersonation_family",
+      "note": "Canonical lost-phone, need-load family-impersonation opener targeting a parent.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_063",
+      "text": "Papa, na-in accident ako, kailangan ko ng pera ngayon din para sa hospital. Please GCash mo sa number na ito.",
+      "expected_level1": "malicious",
+      "expected_level2": "impersonation_family",
+      "note": "Medical-emergency variant with explicit urgency and a specific payment channel (GCash), a common escalation of the lost-phone template.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_064",
+      "text": "Ate, this is my new number, lost my old phone. Emergency, need 2k today, babayaran kita pag nasettle na ko.",
+      "expected_level1": "malicious",
+      "expected_level2": "impersonation_family",
+      "note": "English-language sibling-impersonation variant with a repayment promise, testing coverage beyond Tagalog phrasing.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_065",
+      "text": "Anak, na-block po ako sa bank app ko. Pwede mo ba i-transfer muna sa akin yung 3,000, ibabalik ko pagbukas ng bank bukas.",
+      "expected_level1": "malicious",
+      "expected_level2": "impersonation_family",
+      "note": "Reverse-direction variant where the impersonated parent asks the adult child for money, broadening the relationship-direction coverage.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_066",
+      "text": "Apo, nawala ang cellphone ni Lola, ito na lang bagong number. Pwede pautang muna ng 200 para sa pamasahe?",
+      "expected_level1": "malicious",
+      "expected_level2": "impersonation_family",
+      "note": "Grandparent-impersonation variant, a distinct generational framing from the parent/sibling examples already covered.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_067",
+      "text": "Kuya, nasa presinto ako, may kaso, kailangan ko ng bail money ngayon din. Wag mo munang sabihin kina Mama.",
+      "expected_level1": "malicious",
+      "expected_level2": "impersonation_family",
+      "note": "Classic arrest-bail escalation combined with a secrecy instruction ('don't tell Mama') - the secrecy request is a strong scam signal that must always be caught.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_068",
+      "text": "Ate, pasensya na, kailangan ko lang ng tulong sa tuition ko, baka pwede mo akong mapadalhan ng 5,000 ngayong linggo.",
+      "expected_level1": "malicious",
+      "expected_level2": "impersonation_family",
+      "note": "Tuition/school-fee framing, a softer urgency register than medical or arrest scenarios, checking sensitivity to less dramatic phrasing.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_069",
+      "text": "Hi Ate, ok lang ba kung mamaya na ko dumating? Traffic sa EDSA.",
+      "expected_level1": "legitimate",
+      "expected_level2": "personal_conversational",
+      "note": "Everyday casual logistics text with a known relationship term (Ate) and no financial content - core low-risk baseline.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_070",
+      "text": "Kamusta na, matagal na tayong hindi nag-usap. Kumusta trabaho mo dyan sa Dubai?",
+      "expected_level1": "legitimate",
+      "expected_level2": "personal_conversational",
+      "note": "OFW-context catch-up message, a very common legitimate PH texting pattern given the large overseas worker population.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_071",
+      "text": "Salamat sa tulong mo kanina ha, lifesaver ka talaga.",
+      "expected_level1": "legitimate",
+      "expected_level2": "personal_conversational",
+      "note": "Short gratitude message with no request at all - tests that the model doesn't need an explicit topic to classify low-risk personal texts correctly.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_072",
+      "text": "Pre, may dala ka bang extra charger? Nawala yung sakin.",
+      "expected_level1": "legitimate",
+      "expected_level2": "personal_conversational",
+      "note": "Casual favor-ask between friends involving a lost item, superficially similar in structure to scam openers but with no money or credentials involved.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_073",
+      "text": "Happy anniversary sa inyo ni Marga! God bless sa inyong pamilya.",
+      "expected_level1": "legitimate",
+      "expected_level2": "personal_conversational",
+      "note": "Celebratory greeting text, a common and entirely benign SMS category that should never trigger any risk signal.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_074",
+      "text": "Nasaan ka na? Nasa gate 3 na ako ng mall.",
+      "expected_level1": "legitimate",
+      "expected_level2": "personal_conversational",
+      "note": "Real-time meetup coordination text, representative of high-frequency everyday personal messaging.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_075",
+      "text": "Miss na kita Mama, kumusta dyan sa probinsya? Ingat lagi.",
+      "expected_level1": "legitimate",
+      "expected_level2": "personal_conversational",
+      "note": "Family check-in message that must not be confused with the impersonation_family subtype simply because it names a family member - no money ask is present.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_076",
+      "text": "Sorry, mali ata number, pero okay ka lang? Gusto lang makapagkwentuhan, medyo lonely lang ngayon.",
+      "expected_level1": "legitimate",
+      "expected_level2": "personal_conversational",
+      "note": "Deliberately ambiguous wrong-number opener with zero scam hook - a boundary case to ensure the model doesn't over-generalize every wrong-number message to wrong_number_baiting the way reg_005 does when a real hook is present.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_077",
+      "text": "BPI: 391045 is your One-Time PIN for your online banking login. Huwag ibahagi sa kahit kanino.",
+      "expected_level1": "legitimate",
+      "expected_level2": "two_factor_auth",
+      "note": "Bilingual OTP format combining an English code with a Tagalog non-share warning; must never be flagged given how central OTP delivery is to core banking flows.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_078",
+      "text": "Maya: Use code 738201 to verify your device. This code expires in 3 minutes.",
+      "expected_level1": "legitimate",
+      "expected_level2": "two_factor_auth",
+      "note": "Device-verification variant of an OTP (rather than login or transaction), broadening two_factor_auth coverage across use cases.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_079",
+      "text": "Shopee: Your verification code is 552091. For your security, do not share this code with anyone, including Shopee staff.",
+      "expected_level1": "legitimate",
+      "expected_level2": "two_factor_auth",
+      "note": "E-commerce login OTP; confirms coverage extends beyond banking and e-wallet brands to marketplace logins.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_080",
+      "text": "Lazada: 604738 is your verification code. Valid for 5 minutes. Do not share this with anyone.",
+      "expected_level1": "legitimate",
+      "expected_level2": "two_factor_auth",
+      "note": "Near-duplicate structure to reg_079 from a different marketplace brand, testing consistency of OTP handling across similar templates.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_081",
+      "text": "BDO: Your enrollment verification code is 219034. This code is confidential and should not be shared.",
+      "expected_level1": "legitimate",
+      "expected_level2": "two_factor_auth",
+      "note": "Account-enrollment OTP rather than a login or transaction code, rounding out the OTP lifecycle stages covered.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_082",
+      "text": "Maya: 847210 is your code to confirm your fund transfer of PHP 5,000.00. Do not share this code.",
+      "expected_level1": "legitimate",
+      "expected_level2": "two_factor_auth",
+      "note": "Transaction-confirmation OTP that includes a peso amount, checking the model doesn't over-weight monetary figures inside an otherwise standard OTP.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_083",
+      "text": "GCash: 305914 is your verification code to link a new device to your account. Ignore this message if you did not request it.",
+      "expected_level1": "legitimate",
+      "expected_level2": "two_factor_auth",
+      "note": "Includes an explicit 'ignore if not requested' instruction, a legitimate-OTP marker distinct from phishing's typical 'act now' urgency.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_084",
+      "text": "Reminder: Your dental appointment sa Metro Dental Ortigas ay bukas, Sept 28, 2PM. Reply C to confirm.",
+      "expected_level1": "legitimate",
+      "expected_level2": "appointment_reminder",
+      "note": "Standard clinic reminder with a simple reply-to-confirm mechanism, a baseline appointment_reminder example.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_085",
+      "text": "PhilHealth: Your appointment for member data update is on Oct 3, 9AM, PhilHealth Alabang branch.",
+      "expected_level1": "legitimate",
+      "expected_level2": "appointment_reminder",
+      "note": "Government-agency appointment notice with no fine, threat, or link - contrasts directly with the malicious government-impersonation examples elsewhere in the suite.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_086",
+      "text": "Your appointment with Dr. Santos (Makati Medical Center) is confirmed for Mon, 10AM. Text CANCEL to reschedule.",
+      "expected_level1": "legitimate",
+      "expected_level2": "appointment_reminder",
+      "note": "Private hospital scheduling confirmation, a common legitimate healthcare SMS pattern.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_087",
+      "text": "Paalala: Bakuna ng inyong anak sa Barangay Health Center ay sa Oct 5, 8AM-12NN. Dalhin ang immunization card.",
+      "expected_level1": "legitimate",
+      "expected_level2": "appointment_reminder",
+      "note": "Public health/vaccination reminder at the barangay level, representative of grassroots government SMS communication.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_088",
+      "text": "LTO: This is a reminder that your driver's license renewal is due on Oct 15. Renew online at lto.gov.ph or visit any LTO office.",
+      "expected_level1": "legitimate",
+      "expected_level2": "appointment_reminder",
+      "note": "Adversarial pair partner to reg_046 - same agency (LTO), but a routine renewal reminder on the real lto.gov.ph domain instead of a fabricated fine with a threat of arrest.",
+      "must_not_flip": true
+    },
+    {
+      "id": "reg_089",
+      "text": "DFA: Your passport appointment is confirmed for Oct 20, 8:00 AM, DFA NCR East. Bring your appointment confirmation and requirements.",
+      "expected_level1": "legitimate",
+      "expected_level2": "appointment_reminder",
+      "note": "Passport-processing appointment notice, another government scheduling context distinct from LTO and PhilHealth.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_090",
+      "text": "Philippine Red Cross: Tumulong sa mga apektado ng bagyo. Mag-donate via GCash 0917-XXX-XXXX o bisitahin ang redcross.org.ph.",
+      "expected_level1": "grey_area",
+      "expected_level2": "charity_appeal",
+      "note": "Named, verifiable organization with an official website reference alongside a donation channel - baseline legitimate-charity pattern.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_091",
+      "text": "Caritas Manila: Suportahan ang Pantawid ng Pag-asa program para sa mga batang may kanser. Mag-donate sa aming opisyal na account, listed sa caritasmanila.org.",
+      "expected_level1": "grey_area",
+      "expected_level2": "charity_appeal",
+      "note": "Named Catholic charity with a specific program and a domain reference, reinforcing the verifiability criterion from the decision rules.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_092",
+      "text": "ABS-CBN Sagip Kapamilya: Tulungan ang mga biktima ng lindol. Magpadala ng donasyon sa opisyal na listahan ng accounts sa aming website.",
+      "expected_level1": "grey_area",
+      "expected_level2": "charity_appeal",
+      "note": "Media-foundation disaster-relief appeal, a well-known and recurring PH charity messaging pattern.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_093",
+      "text": "World Vision: Your monthly sponsorship of PHP 700 for your foster child helps provide food and education. Salamat sa inyong suporta!",
+      "expected_level1": "grey_area",
+      "expected_level2": "charity_appeal",
+      "note": "Recurring-sponsor communication rather than a one-time disaster appeal, broadening the charity_appeal scenario coverage.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_094",
+      "text": "LGU Marikina: Nangangailangan ng tulong ang mga pamilyang apektado ng baha. Mag-donate ng relief goods o cash sa Marikina City Hall.",
+      "expected_level1": "grey_area",
+      "expected_level2": "charity_appeal",
+      "note": "Local government unit-led relief appeal, distinct from the national NGO examples and testing coverage of LGU-originated messages.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_095",
+      "text": "Kilalanin si Cong. Dela Cruz - tapat na lingkod ng Distrito 2. Bumoto ng matino sa Mayo eleksyon!",
+      "expected_level1": "grey_area",
+      "expected_level2": "political_campaign",
+      "note": "Standard candidate-introduction campaign text, a baseline political_campaign example.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_096",
+      "text": "Miting de avance ngayong Sabado, 4PM, Plaza Rizal. Sama-sama tayo para sa pagbabago!",
+      "expected_level1": "grey_area",
+      "expected_level2": "political_campaign",
+      "note": "Campaign-rally invitation with a specific time and venue, a common bulk-SMS pattern during PH election season.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_097",
+      "text": "Paalala: Huling araw ng voter registration bukas. Magparehistro na sa inyong lokal na COMELEC office.",
+      "expected_level1": "grey_area",
+      "expected_level2": "political_campaign",
+      "note": "Civic/voter-registration reminder rather than candidate promotion, testing that non-partisan political content is still correctly bucketed under political_campaign rather than a government appointment_reminder.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_098",
+      "text": "Abiso mula sa Barangay: Ang eleksyon para sa SK Chairman ay sa Oct 30. Tignan ang listahan ng kandidato sa barangay hall.",
+      "expected_level1": "grey_area",
+      "expected_level2": "political_campaign",
+      "note": "Local barangay/SK election notice, a smaller-scale political context distinct from national campaign messaging.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_099",
+      "text": "Maging bahagi ng kampanya! Kailangan namin ng mga volunteer para sa house-to-house campaign ngayong weekend. Text JOIN kung interesado.",
+      "expected_level1": "grey_area",
+      "expected_level2": "political_campaign",
+      "note": "Volunteer-recruitment campaign text, a structurally different CTA (reply JOIN) than typical vote-solicitation messages.",
+      "must_not_flip": false
+    },
+    {
+      "id": "reg_100",
+      "text": "Boto tayo ng tama ngayong Mayo! Panoorin ang aming town hall meeting online, link: fb.com/OfficialCandidatePage",
+      "expected_level1": "grey_area",
+      "expected_level2": "political_campaign",
+      "note": "Includes a link, but to a mainstream social media page rather than a lookalike domain - checks that link presence alone doesn't push a campaign message toward phishing_link.",
+      "must_not_flip": false
+    }
+  ]
+}

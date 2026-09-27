@@ -23,7 +23,7 @@ const {
   analyzeReportPreview,
   analyzeReportImage,
 } = require('../controllers/reportController');
-
+const { listMyReports } = require('../controllers/myReportsController');
 const {
   attachReport,
   getReportJurisdiction,
@@ -165,6 +165,26 @@ router.get(
   })
 );
 
+// =====================================================================
+// GET /api/v1/reports/mine — Citizen's own reports with review status
+// Declared BEFORE '/:id' so "mine" is never treated as a report id.
+//
+// Returns { reportId, nullifier, reviewStatus, internalStatus,
+// approvals, rejections, required, resolvedAt, createdAt } for every
+// report filed by the authenticated citizen (matched by citizenHash).
+// reviewStatus is one of: queued | under_review | confirmed | rejected
+// =====================================================================
+router.get(
+  '/mine',
+  verifyFirebaseToken,
+  enforceAuditorReadOnly,
+  requireRole('citizen'),
+  asyncHandler(listMyReports)
+);
+
+// =====================================================================
+// GET /api/v1/reports/:id — Fetch a single report (incl. screenshot)
+// =====================================================================
 router.get(
   '/:id',
   verifyFirebaseToken,

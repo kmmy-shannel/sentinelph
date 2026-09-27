@@ -108,6 +108,27 @@ async function createReport(req, res, next) {
       }
     }
 
+    // ─── REPORTER IDENTITY (new) ──────────────────────────────────────
+    // The mobile app sends reporterName + reporterEmail only when the
+    // citizen explicitly opts in. If they decline, both fields arrive as
+    // null and the report is stored anonymous. Fallback to the Firebase
+    // token's name/email claims only when the citizen enabled sharing
+    // but didn't type a name — this keeps "anonymous" truly anonymous.
+    const reporterShared = body.reporterShared === true;
+    let reporterName = null;
+    let reporterEmail = null;
+    if (reporterShared) {
+      reporterName =
+        (typeof body.reporterName === 'string' && body.reporterName.trim().length > 0
+          ? body.reporterName.trim().slice(0, 120)
+          : (req.user && req.user.name) || null);
+      reporterEmail =
+        (typeof body.reporterEmail === 'string' && body.reporterEmail.trim().length > 0
+          ? body.reporterEmail.trim().toLowerCase().slice(0, 254)
+          : (req.user && req.user.email) || null);
+    }
+    // ──────────────────────────────────────────────────────────────────
+
     // ─── AI assessment (unchanged) ────────────────────────────────────
     let aiFlag = null;
     let aiOcrText = null;
@@ -224,6 +245,12 @@ async function createReport(req, res, next) {
       // Pseudonymous reporter identifier (not part of the hash payload).
       citizenHash,
 
+      // ─── REPORTER IDENTITY (new) ────────────────────────────────────
+      reporterName,
+      reporterEmail,
+      reporterShared: Boolean(reporterShared && (reporterName || reporterEmail)),
+      // ────────────────────────────────────────────────────────────────
+
       // Region always wins over any legacy `jurisdiction` field.
       // Priority: canonical location.region → legacy body.jurisdiction → UNCLASSIFIED.
       jurisdiction:
@@ -238,7 +265,28 @@ async function createReport(req, res, next) {
     });
 
     // ─── First (and only) save. The pre-save hook computes `report.hash` ─
-    await report.save();
+        // ─── First (and only) save. The pre-save hook computes `report.hash` ─
+    try {
+      await report.save();
+    } catch (err) {
+      // Duplicate nullifier = this exact report (same content, same
+      // sender, same moment) was already accepted once. Return 409 with
+      // the existing report ID instead of a raw 500 so the client can
+      // treat it as "already submitted" and enqueue locally.
+      if (err && err.code === 11000 && err.keyPattern?.nullifier) {
+        const existing = await Report.findOne({ nullifier: nullifier })
+          .select('reportId sequence hash status')
+          .lean();
+        return res.status(409).json({
+          error: 'DUPLICATE_REPORT',
+          message:
+            'This exact report has already been submitted. If you meant to submit a different message, please edit the content and try again.',
+          existingReportId: existing?.reportId || null,
+          existingStatus: existing?.status || null,
+        });
+      }
+      throw err;
+    }
 
     // Note: the previous version called `appendToChain` and then tried a
     // second `report.save()` to persist the returned chain entry. That
@@ -249,9 +297,14 @@ async function createReport(req, res, next) {
     // computeHash + getGenesisHash utilities, so the chain stays valid
     // and `verifyReportChain` continues to pass.
 
-    // Never echo the pseudonymous identifier back to the client.
+    // Never echo the pseudonymous identifier OR the reporter identity
+    // back to the citizen. Officers fetch those through their own
+    // explicitly-projected endpoints.
     const reportPayload = report.toObject();
     delete reportPayload.citizenHash;
+    delete reportPayload.reporterName;
+    delete reportPayload.reporterEmail;
+    delete reportPayload.reporterShared;
 
     return res.status(201).json({
       message: 'Report created successfully.',
