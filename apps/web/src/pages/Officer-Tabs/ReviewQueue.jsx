@@ -1,5 +1,5 @@
 // apps/web/src/pages/Officer-Tabs/ReviewQueue.jsx
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchReports, submitReportVote } from "../../lib/api";
 import apiClient from "../../lib/api";
 import { useAuth } from "../../context/AuthContext";
@@ -125,6 +125,45 @@ export default function ReviewQueue() {
 
   const [isEditMode, setIsEditMode] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
+
+  // ─── Evidence zoom lightbox ────────────────────────────────────────
+  const [zoomImage, setZoomImage] = useState(null);
+  const [zoomScale, setZoomScale] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const dragStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+
+  // Only Esc closes the vote modal (unchanged) — the lightbox no longer
+  // responds to Esc; its only exit is the × button.
+  useEffect(() => {
+    if (!voteModal) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") closeModal();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [voteModal]);
+
+  // Snap the image back to center whenever zoom drops to 1×.
+  useEffect(() => {
+    if (zoomScale <= 1 && (pan.x !== 0 || pan.y !== 0)) {
+      setPan({ x: 0, y: 0 });
+    }
+  }, [zoomScale, pan.x, pan.y]);
+
+  function openZoom(src) {
+    setZoomImage(src);
+    setZoomScale(1);
+    setPan({ x: 0, y: 0 });
+    setDragging(false);
+  }
+  function closeZoom() {
+    setZoomImage(null);
+    setZoomScale(1);
+    setPan({ x: 0, y: 0 });
+    setDragging(false);
+  }
+  // ───────────────────────────────────────────────────────────────────
 
   const loadReports = useCallback(async () => {
     setLoading(true);
@@ -566,9 +605,31 @@ export default function ReviewQueue() {
 
               {!voteModal._loadingImage && voteModal.evidenceImage && (
                 <div style={{ marginBottom: "16px" }}>
-                  <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>SCREENSHOT EVIDENCE</div>
-                  <div style={{ borderRadius: "8px", overflow: "hidden", background: "#080810", border: "1px solid #13131e", maxHeight: "320px", display: "flex", justifyContent: "center" }}>
-                    <img src={voteModal.evidenceImage} alt="Screenshot evidence" style={{ maxWidth: "100%", maxHeight: "320px", objectFit: "contain" }} />
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
+                    <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563" }}>SCREENSHOT EVIDENCE</div>
+                    <div style={{ fontSize: "10px", color: "#3b82f6", fontFamily: "'JetBrains Mono',monospace" }}>Click to zoom</div>
+                  </div>
+                  <div
+                    onClick={() => openZoom(voteModal.evidenceImage)}
+                    style={{
+                      borderRadius: "8px",
+                      overflow: "hidden",
+                      background: "#080810",
+                      border: "1px solid #13131e",
+                      maxHeight: "320px",
+                      display: "flex",
+                      justifyContent: "center",
+                      cursor: "zoom-in",
+                      transition: "border-color 0.15s ease",
+                    }}
+                    onMouseEnter={(e) => e.currentTarget.style.borderColor = "#3b82f6"}
+                    onMouseLeave={(e) => e.currentTarget.style.borderColor = "#13131e"}
+                  >
+                    <img
+                      src={voteModal.evidenceImage}
+                      alt="Screenshot evidence"
+                      style={{ maxWidth: "100%", maxHeight: "320px", objectFit: "contain", pointerEvents: "none" }}
+                    />
                   </div>
                 </div>
               )}
@@ -656,6 +717,128 @@ export default function ReviewQueue() {
                 </>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Evidence zoom lightbox — only the × button closes it ──── */}
+      {zoomImage && (
+        <div
+          onWheel={(e) => {
+            e.preventDefault();
+            setZoomScale((s) => {
+              const next = Math.min(Math.max(s + (e.deltaY < 0 ? 0.15 : -0.15), 1), 5);
+              if (next <= 1) setPan({ x: 0, y: 0 });
+              return next;
+            });
+          }}
+          onMouseDown={(e) => {
+            // Only close if they clicked empty backdrop, not the image,
+            // but we don't want backdrop-close anymore — so no-op.
+            e.stopPropagation();
+          }}
+          style={{
+            position: "fixed", inset: 0, zIndex: 200,
+            background: "rgba(0,0,0,0.94)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: "40px",
+            cursor: dragging ? "grabbing" : (zoomScale > 1 ? "grab" : "default"),
+            overflow: "hidden",
+            userSelect: "none",
+          }}
+        >
+          <img
+            src={zoomImage}
+            alt="Screenshot evidence — zoomed"
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => {
+              if (zoomScale <= 1) return;
+              e.preventDefault();
+              e.stopPropagation();
+              dragStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
+              setDragging(true);
+            }}
+            onMouseMove={(e) => {
+              if (!dragging) return;
+              const dx = e.clientX - dragStart.current.x;
+              const dy = e.clientY - dragStart.current.y;
+              setPan({ x: dragStart.current.panX + dx, y: dragStart.current.panY + dy });
+            }}
+            onMouseUp={() => setDragging(false)}
+            onMouseLeave={() => setDragging(false)}
+            style={{
+              maxWidth: "95vw",
+              maxHeight: "95vh",
+              objectFit: "contain",
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoomScale})`,
+              transformOrigin: "center center",
+              transition: dragging ? "none" : "transform 0.12s ease-out",
+              boxShadow: "0 40px 100px rgba(0,0,0,0.85)",
+              border: "1px solid #1a1a2a",
+              borderRadius: "8px",
+              userSelect: "none",
+              cursor: zoomScale > 1 ? (dragging ? "grabbing" : "grab") : "default",
+            }}
+            draggable={false}
+          />
+
+          {/* Zoom controls */}
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{
+              position: "absolute", bottom: "20px", left: "50%", transform: "translateX(-50%)",
+              display: "flex", alignItems: "center", gap: "8px",
+              padding: "8px 12px", borderRadius: "999px",
+              background: "#0e0e18", border: "1px solid #1a1a2a",
+              boxShadow: "0 20px 40px rgba(0,0,0,0.6)",
+            }}
+          >
+            <button
+              onClick={() => setZoomScale((s) => {
+                const next = Math.max(s - 0.25, 1);
+                if (next <= 1) setPan({ x: 0, y: 0 });
+                return next;
+              })}
+              disabled={zoomScale <= 1}
+              style={{ width: "32px", height: "32px", borderRadius: "50%", background: "#111120", border: "1px solid #1a1a2a", color: zoomScale <= 1 ? "#374151" : "#e2e8f0", fontSize: "16px", cursor: zoomScale <= 1 ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+            >−</button>
+            <span style={{ fontSize: "11px", color: "#9ca3af", fontFamily: "'JetBrains Mono',monospace", minWidth: "48px", textAlign: "center" }}>
+              {Math.round(zoomScale * 100)}%
+            </span>
+            <button
+              onClick={() => setZoomScale((s) => Math.min(s + 0.25, 5))}
+              disabled={zoomScale >= 5}
+              style={{ width: "32px", height: "32px", borderRadius: "50%", background: "#111120", border: "1px solid #1a1a2a", color: zoomScale >= 5 ? "#374151" : "#e2e8f0", fontSize: "16px", cursor: zoomScale >= 5 ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+            >+</button>
+            <button
+              onClick={() => { setZoomScale(1); setPan({ x: 0, y: 0 }); }}
+              disabled={zoomScale === 1 && pan.x === 0 && pan.y === 0}
+              style={{ padding: "0 12px", height: "32px", borderRadius: "999px", background: "#111120", border: "1px solid #1a1a2a", color: (zoomScale === 1 && pan.x === 0 && pan.y === 0) ? "#374151" : "#9ca3af", fontSize: "11px", fontWeight: 600, cursor: (zoomScale === 1 && pan.x === 0 && pan.y === 0) ? "not-allowed" : "pointer" }}
+            >Reset</button>
+          </div>
+
+          {/* Close button — THE ONLY EXIT */}
+          <button
+            onClick={closeZoom}
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{
+              position: "absolute", top: "20px", right: "20px",
+              width: "44px", height: "44px", borderRadius: "50%",
+              background: "#0e0e18", border: "1px solid #3b82f6",
+              color: "#e2e8f0", fontSize: "22px", cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              boxShadow: "0 8px 20px rgba(0,0,0,0.6)",
+            }}
+            title="Close"
+          >×</button>
+
+          {/* Hint */}
+          <div style={{
+            position: "absolute", top: "26px", left: "50%", transform: "translateX(-50%)",
+            fontSize: "11px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace",
+            pointerEvents: "none", userSelect: "none",
+          }}>
+            scroll to zoom · drag to pan · click × to close
           </div>
         </div>
       )}
