@@ -1,8 +1,14 @@
 {
-  "version": "1.0",
+  "version": "1.1",
   "created_at": "2026-09-27",
-  "description": "Regression suite for SentinelPH's Level 1 (legitimate/grey_area/malicious) + Level 2 (13-subtype) SMS scam classifier. Combines known past failures, adversarial official-vs-spoofed domain pairs, must-never-flag OTPs, and baseline coverage across all 13 subtypes. Examples flagged must_not_flip:true are locked regression checks: any future model or heuristic change that flips their prediction should fail CI.",
-  "changelog": [],
+  "description": "Regression suite for SentinelPH's Level 1 (legitimate/grey_area/malicious) + Level 2 (9-subtype) SMS scam classifier. Combines known past failures, adversarial official-vs-spoofed domain pairs, must-never-flag OTPs, and baseline coverage across all 9 subtypes. Examples flagged must_not_flip:true are locked regression checks: any future model or heuristic change that flips their prediction should fail CI. Subtypes wrong_number_baiting, impersonation_family, political_campaign, and charity_appeal were dropped from scope on 2026-09-27 because the training data contains no real examples of these patterns; their remaining examples are retained with must_not_flip:false as documentation of the gap, pending future data collection.",
+  "changelog": [
+    {
+      "version": "1.1",
+      "date": "2026-09-27",
+      "change": "Scoped from 13 to 9 subtypes. Downgraded must_not_flip to false for examples of wrong_number_baiting, impersonation_family, political_campaign, and charity_appeal."
+    }
+  ],
   "examples": [
     {
       "id": "reg_001",
@@ -41,8 +47,8 @@
       "text": "Hey Mark, are we still meeting for golf this Saturday?",
       "expected_level1": "malicious",
       "expected_level2": "wrong_number_baiting",
-      "note": "Classic wrong-number opener with zero scam content in the first message - included as a hard case to confirm the model has learned this specific pattern from prior incidents rather than requiring an explicit money/job hook to trigger.",
-      "must_not_flip": true
+      "note": "SCOPE-DROPPED: wrong_number_baiting is out of scope as of 2026-09-27. Retained with must_not_flip:false to track the gap. Re-add to scope when training data is collected.",
+      "must_not_flip": false
     },
     {
       "id": "reg_006",
@@ -220,14 +226,14 @@
       "note": "Adversarial pair partner to reg_010 - same bank and 'account' framing, but a routine transaction notice on the real bdo.com.ph domain instead of a suspension threat.",
       "must_not_flip": true
     },
-    {
-      "id": "reg_028",
-      "text": "GCash: You've successfully cashed in PHP 2,000.00 via 7-Eleven. Check your balance in the app or at gcash.com.",
-      "expected_level1": "legitimate",
-      "expected_level2": "bank_activity_alert",
-      "note": "Adversarial pair partner to reg_013 - same cash-in scenario and brand, but a factual notice on the real gcash.com domain with no MPIN request.",
-      "must_not_flip": true
-    },
+   {
+  "id": "reg_028",
+  "text": "GCash: You've successfully cashed in PHP 2,000.00 via 7-Eleven. Check your balance in the app or at gcash.com.",
+  "expected_level1": "legitimate",
+  "expected_level2": "bank_activity_alert",
+  "note": "Adversarial pair partner to reg_013. Downgraded from must_not_flip:true on 2026-09-27 during scope-down — reg_027 (BDO adversarial pair) retains the hard-block role for this subtype since BDO has historically produced more audit issues.",
+  "must_not_flip": false
+},
     {
       "id": "reg_029",
       "text": "BPI Alert: A withdrawal of PHP 5,000.00 was made from your account ending in 1234 at BPI Cubao ATM.",
@@ -313,7 +319,7 @@
       "text": "Hi Angel, kamusta na? Miss na kita. Sorry medyo late reply, busy lang sa business ko.",
       "expected_level1": "malicious",
       "expected_level2": "wrong_number_baiting",
-      "note": "Romance-scam opener disguised as a message to an existing contact; the affectionate tone is the lure mechanism itself.",
+      "note": "SCOPE-DROPPED: wrong_number_baiting is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -321,7 +327,7 @@
       "text": "Hi po, is this Ms. Reyes from the HR agency? I was referred for a work-from-home job, PHP 3,500 a day.",
       "expected_level1": "malicious",
       "expected_level2": "wrong_number_baiting",
-      "note": "Job-offer variant of the wrong-number pattern; the unrealistic daily pay is the scam signal embedded in the opener itself.",
+      "note": "SCOPE-DROPPED: wrong_number_baiting is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -329,7 +335,7 @@
       "text": "Hello, sorry maybe wrong number, pero since nag-text na tayo, may alam ka ba about crypto investing?",
       "expected_level1": "malicious",
       "expected_level2": "wrong_number_baiting",
-      "note": "Explicit wrong-number framing that pivots directly into an investment pitch within the same message - the clearest in-message hook variant.",
+      "note": "SCOPE-DROPPED: wrong_number_baiting is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -337,15 +343,15 @@
       "text": "Hi po, ito po ba yung number ni Ms. Reyes? Kasi po may available kaming home-based encoding job, 800/day lang po.",
       "expected_level1": "malicious",
       "expected_level2": "wrong_number_baiting",
-      "note": "Tagalog-heavy recruitment-lure variant to ensure coverage isn't limited to English phrasing of the same pattern.",
+      "note": "SCOPE-DROPPED: wrong_number_baiting is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
-    {
+        {
       "id": "reg_043",
       "text": "Hi, sorry, nawala yung phone ko kaya ibang number ito. Pwede pa-send ng load, 300 lang, ibabalik ko bukas.",
       "expected_level1": "malicious",
       "expected_level2": "wrong_number_baiting",
-      "note": "Small-amount ask ('just 300') designed to feel low-risk to the recipient; tests that amount size doesn't reduce the malicious classification.",
+      "note": "SCOPE-DROPPED: wrong_number_baiting is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -353,7 +359,7 @@
       "text": "Hi Boss, natanggal ata number mo dati sa contacts ko. May bakante pa ba sa company niyo? Kailangan ko lang talaga ng work ngayon.",
       "expected_level1": "malicious",
       "expected_level2": "wrong_number_baiting",
-      "note": "Job-desperation framing aimed at eliciting a helpful response before pivoting to a fee or personal-info request in-thread.",
+      "note": "SCOPE-DROPPED: wrong_number_baiting is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -361,7 +367,7 @@
       "text": "Hello po, ito po ba yung number na nag-apply ng loan kay Sir? Kailangan lang pong i-confirm yung details niyo.",
       "expected_level1": "malicious",
       "expected_level2": "wrong_number_baiting",
-      "note": "Loan-application pretext opener, a variant seen alongside lending-app harassment scams targeting PH users.",
+      "note": "SCOPE-DROPPED: wrong_number_baiting is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -497,7 +503,7 @@
       "text": "Mama, nawala yung phone ko kaya ibang number ito. Pwede pa-send ng load, 500, kailangan ko lang for now.",
       "expected_level1": "malicious",
       "expected_level2": "impersonation_family",
-      "note": "Canonical lost-phone, need-load family-impersonation opener targeting a parent.",
+      "note": "SCOPE-DROPPED: impersonation_family is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -505,7 +511,7 @@
       "text": "Papa, na-in accident ako, kailangan ko ng pera ngayon din para sa hospital. Please GCash mo sa number na ito.",
       "expected_level1": "malicious",
       "expected_level2": "impersonation_family",
-      "note": "Medical-emergency variant with explicit urgency and a specific payment channel (GCash), a common escalation of the lost-phone template.",
+      "note": "SCOPE-DROPPED: impersonation_family is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -513,7 +519,7 @@
       "text": "Ate, this is my new number, lost my old phone. Emergency, need 2k today, babayaran kita pag nasettle na ko.",
       "expected_level1": "malicious",
       "expected_level2": "impersonation_family",
-      "note": "English-language sibling-impersonation variant with a repayment promise, testing coverage beyond Tagalog phrasing.",
+      "note": "SCOPE-DROPPED: impersonation_family is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -521,7 +527,7 @@
       "text": "Anak, na-block po ako sa bank app ko. Pwede mo ba i-transfer muna sa akin yung 3,000, ibabalik ko pagbukas ng bank bukas.",
       "expected_level1": "malicious",
       "expected_level2": "impersonation_family",
-      "note": "Reverse-direction variant where the impersonated parent asks the adult child for money, broadening the relationship-direction coverage.",
+      "note": "SCOPE-DROPPED: impersonation_family is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -529,7 +535,7 @@
       "text": "Apo, nawala ang cellphone ni Lola, ito na lang bagong number. Pwede pautang muna ng 200 para sa pamasahe?",
       "expected_level1": "malicious",
       "expected_level2": "impersonation_family",
-      "note": "Grandparent-impersonation variant, a distinct generational framing from the parent/sibling examples already covered.",
+      "note": "SCOPE-DROPPED: impersonation_family is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -537,15 +543,15 @@
       "text": "Kuya, nasa presinto ako, may kaso, kailangan ko ng bail money ngayon din. Wag mo munang sabihin kina Mama.",
       "expected_level1": "malicious",
       "expected_level2": "impersonation_family",
-      "note": "Classic arrest-bail escalation combined with a secrecy instruction ('don't tell Mama') - the secrecy request is a strong scam signal that must always be caught.",
-      "must_not_flip": true
+      "note": "SCOPE-DROPPED: impersonation_family is out of scope as of 2026-09-27. This was previously must_not_flip:true — now downgraded. Re-add when the subtype returns to scope.",
+      "must_not_flip": false
     },
     {
       "id": "reg_068",
       "text": "Ate, pasensya na, kailangan ko lang ng tulong sa tuition ko, baka pwede mo akong mapadalhan ng 5,000 ngayong linggo.",
       "expected_level1": "malicious",
       "expected_level2": "impersonation_family",
-      "note": "Tuition/school-fee framing, a softer urgency register than medical or arrest scenarios, checking sensitivity to less dramatic phrasing.",
+      "note": "SCOPE-DROPPED: impersonation_family is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -609,8 +615,8 @@
       "text": "Sorry, mali ata number, pero okay ka lang? Gusto lang makapagkwentuhan, medyo lonely lang ngayon.",
       "expected_level1": "legitimate",
       "expected_level2": "personal_conversational",
-      "note": "Deliberately ambiguous wrong-number opener with zero scam hook - a boundary case to ensure the model doesn't over-generalize every wrong-number message to wrong_number_baiting the way reg_005 does when a real hook is present.",
-      "must_not_flip": true
+      "note": "Deliberately ambiguous wrong-number opener with zero scam hook. Previously must_not_flip:true as a boundary case for wrong_number_baiting — downgraded on 2026-09-27 when that subtype was dropped from scope.",
+      "must_not_flip": false
     },
     {
       "id": "reg_077",
@@ -721,7 +727,7 @@
       "text": "Philippine Red Cross: Tumulong sa mga apektado ng bagyo. Mag-donate via GCash 0917-XXX-XXXX o bisitahin ang redcross.org.ph.",
       "expected_level1": "grey_area",
       "expected_level2": "charity_appeal",
-      "note": "Named, verifiable organization with an official website reference alongside a donation channel - baseline legitimate-charity pattern.",
+      "note": "SCOPE-DROPPED: charity_appeal is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -729,7 +735,7 @@
       "text": "Caritas Manila: Suportahan ang Pantawid ng Pag-asa program para sa mga batang may kanser. Mag-donate sa aming opisyal na account, listed sa caritasmanila.org.",
       "expected_level1": "grey_area",
       "expected_level2": "charity_appeal",
-      "note": "Named Catholic charity with a specific program and a domain reference, reinforcing the verifiability criterion from the decision rules.",
+      "note": "SCOPE-DROPPED: charity_appeal is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -737,7 +743,7 @@
       "text": "ABS-CBN Sagip Kapamilya: Tulungan ang mga biktima ng lindol. Magpadala ng donasyon sa opisyal na listahan ng accounts sa aming website.",
       "expected_level1": "grey_area",
       "expected_level2": "charity_appeal",
-      "note": "Media-foundation disaster-relief appeal, a well-known and recurring PH charity messaging pattern.",
+      "note": "SCOPE-DROPPED: charity_appeal is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -745,7 +751,7 @@
       "text": "World Vision: Your monthly sponsorship of PHP 700 for your foster child helps provide food and education. Salamat sa inyong suporta!",
       "expected_level1": "grey_area",
       "expected_level2": "charity_appeal",
-      "note": "Recurring-sponsor communication rather than a one-time disaster appeal, broadening the charity_appeal scenario coverage.",
+      "note": "SCOPE-DROPPED: charity_appeal is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -753,7 +759,7 @@
       "text": "LGU Marikina: Nangangailangan ng tulong ang mga pamilyang apektado ng baha. Mag-donate ng relief goods o cash sa Marikina City Hall.",
       "expected_level1": "grey_area",
       "expected_level2": "charity_appeal",
-      "note": "Local government unit-led relief appeal, distinct from the national NGO examples and testing coverage of LGU-originated messages.",
+      "note": "SCOPE-DROPPED: charity_appeal is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -761,7 +767,7 @@
       "text": "Kilalanin si Cong. Dela Cruz - tapat na lingkod ng Distrito 2. Bumoto ng matino sa Mayo eleksyon!",
       "expected_level1": "grey_area",
       "expected_level2": "political_campaign",
-      "note": "Standard candidate-introduction campaign text, a baseline political_campaign example.",
+      "note": "SCOPE-DROPPED: political_campaign is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -769,7 +775,7 @@
       "text": "Miting de avance ngayong Sabado, 4PM, Plaza Rizal. Sama-sama tayo para sa pagbabago!",
       "expected_level1": "grey_area",
       "expected_level2": "political_campaign",
-      "note": "Campaign-rally invitation with a specific time and venue, a common bulk-SMS pattern during PH election season.",
+      "note": "SCOPE-DROPPED: political_campaign is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -777,7 +783,7 @@
       "text": "Paalala: Huling araw ng voter registration bukas. Magparehistro na sa inyong lokal na COMELEC office.",
       "expected_level1": "grey_area",
       "expected_level2": "political_campaign",
-      "note": "Civic/voter-registration reminder rather than candidate promotion, testing that non-partisan political content is still correctly bucketed under political_campaign rather than a government appointment_reminder.",
+      "note": "SCOPE-DROPPED: political_campaign is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -785,7 +791,7 @@
       "text": "Abiso mula sa Barangay: Ang eleksyon para sa SK Chairman ay sa Oct 30. Tignan ang listahan ng kandidato sa barangay hall.",
       "expected_level1": "grey_area",
       "expected_level2": "political_campaign",
-      "note": "Local barangay/SK election notice, a smaller-scale political context distinct from national campaign messaging.",
+      "note": "SCOPE-DROPPED: political_campaign is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -793,7 +799,7 @@
       "text": "Maging bahagi ng kampanya! Kailangan namin ng mga volunteer para sa house-to-house campaign ngayong weekend. Text JOIN kung interesado.",
       "expected_level1": "grey_area",
       "expected_level2": "political_campaign",
-      "note": "Volunteer-recruitment campaign text, a structurally different CTA (reply JOIN) than typical vote-solicitation messages.",
+      "note": "SCOPE-DROPPED: political_campaign is out of scope as of 2026-09-27.",
       "must_not_flip": false
     },
     {
@@ -801,7 +807,7 @@
       "text": "Boto tayo ng tama ngayong Mayo! Panoorin ang aming town hall meeting online, link: fb.com/OfficialCandidatePage",
       "expected_level1": "grey_area",
       "expected_level2": "political_campaign",
-      "note": "Includes a link, but to a mainstream social media page rather than a lookalike domain - checks that link presence alone doesn't push a campaign message toward phishing_link.",
+      "note": "SCOPE-DROPPED: political_campaign is out of scope as of 2026-09-27.",
       "must_not_flip": false
     }
   ]
