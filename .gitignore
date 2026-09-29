@@ -72,3 +72,14 @@ Thumbs.db
 .venv_broken/
 .venv/
 venv/
+
+services/ai/models/**/*.bin
+services/ai/models/**/*.pt
+services/ai/models/**/*.safetensors
+services/ai/models/**/*.pth
+
+services/ai/models/**/checkpoints/
+services/ai/models/**/*.bin
+services/ai/models/**/*.pt
+services/ai/models/**/*.pth
+services/ai/models/**/*.safetensors
