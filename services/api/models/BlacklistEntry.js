@@ -130,9 +130,26 @@ BlacklistEntrySchema.statics.upsertFromReport = async function upsertFromReport(
         .filter(Boolean)
     : [];
 
+  // Build the officer notes: join all non-empty comments from the report's
+  // votes. This is what shows up in the Blacklist Registry modal.
+  const officerNotes = Array.isArray(report.votes)
+    ? report.votes
+        .map((v) => String(v.comment || '').trim())
+        .filter(Boolean)
+        .join(' · ')
+    : '';
+  const notes = officerNotes.slice(0, 2000) || null;
+
   const reportCount = await this.db
     .model('Report')
     .countDocuments({ reportedNumber: phoneNumber });
+
+  const voteSnapshot = (report.votes || []).map((v) => ({
+    officerId: v.userId,
+    decision: v.decision,
+    comment: v.comment || '',
+    votedAt: v.votedAt || new Date(),
+  }));
 
   let entry = await this.findOne({ phoneNumber });
 
@@ -141,32 +158,29 @@ BlacklistEntrySchema.statics.upsertFromReport = async function upsertFromReport(
       phoneNumber,
       region: report.jurisdiction || null,
       status: finalStatus,
-      votes: (report.votes || []).map((v) => ({
-        officerId: v.userId,
-        decision: v.decision,
-        comment: v.comment || '',
-        votedAt: v.votedAt || new Date(),
-      })),
+      votes: voteSnapshot,
       approvingOfficers,
       reportCount,
+      notes,
       blacklistedAt: finalStatus === 'blacklisted' ? new Date() : null,
     });
   } else {
     if (entry.status !== 'blacklisted' && entry.status !== 'rejected') {
       entry.status = finalStatus;
-      entry.votes = (report.votes || []).map((v) => ({
-        officerId: v.userId,
-        decision: v.decision,
-        comment: v.comment || '',
-        votedAt: v.votedAt || new Date(),
-      }));
+      entry.votes = voteSnapshot;
       entry.approvingOfficers = approvingOfficers;
       entry.reportCount = reportCount;
+      entry.notes = notes;
       if (finalStatus === 'blacklisted' && !entry.blacklistedAt) {
         entry.blacklistedAt = new Date();
       }
     } else {
       entry.reportCount = reportCount;
+      // Refresh notes if they're missing (e.g., old entries created before
+      // this field existed)
+      if (!entry.notes && notes) {
+        entry.notes = notes;
+      }
     }
   }
 

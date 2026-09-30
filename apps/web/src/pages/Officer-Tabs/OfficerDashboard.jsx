@@ -1,6 +1,6 @@
 // apps/web/src/pages/Officer-Tabs/OfficerDashboard.jsx
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, Cell } from "recharts";
+import { AreaChart, Area, XAxis, YAxis, ResponsiveContainer, BarChart, Bar, Cell } from "recharts";
 import apiClient from "../../lib/api";
 
 const card = { background: "#0e0e18", border: "1px solid #1a1a2a", borderRadius: "12px", padding: "20px" };
@@ -15,7 +15,6 @@ export default function OfficerDashboard() {
   const [resolvedIds, setResolvedIds]   = useState([]);
   const [dataVersion, setDataVersion]   = useState(0);
 
-  // Survives StrictMode's double-mount so the initial fetch only fires once.
   const initialFetchDoneRef = useRef(false);
 
   const loadDashboard = useCallback(async () => {
@@ -34,7 +33,7 @@ export default function OfficerDashboard() {
   }, []);
 
   useEffect(() => {
-    if (initialFetchDoneRef.current) return;   // skip the StrictMode re-run
+    if (initialFetchDoneRef.current) return;
     initialFetchDoneRef.current = true;
     loadDashboard();
   }, [loadDashboard]);
@@ -54,7 +53,6 @@ export default function OfficerDashboard() {
         </div>
       )}
 
-      {/* KPI strip */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "16px" }}>
         {[
           { l: "PENDING YOUR VOTE",       v: kpis.pendingVote,       sub: "Awaiting your review",            sc: "#ef4444" },
@@ -78,79 +76,74 @@ export default function OfficerDashboard() {
         </div>
       )}
 
-      {/* Charts */}
+      {/* Charts — non-interactive (no tooltip cursor, no hover dots) */}
       <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: "16px" }}>
         <div style={{ ...card, animation: "cardFade 0.25s ease-out" }}>
           <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff", marginBottom: "4px" }}>7-Day Report Trend</div>
           <div style={{ fontSize: "11px", color: "#4b5563", marginBottom: "16px" }}>Daily incoming reports, your jurisdiction</div>
-          <ResponsiveContainer width="100%" height={180}>
-            <AreaChart
-              key={`trend-${dataVersion}`}
-              data={trend}
-              margin={{ top: 4, right: 4, left: -20, bottom: 0 }}
-            >
-              <defs>
-                <linearGradient id="blueGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.35} />
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="day" tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
-              <Tooltip
-                contentStyle={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: "8px", color: "#e2e8f0", fontSize: 12 }}
-                cursor={{ stroke: "#3b82f6", strokeWidth: 1, strokeDasharray: "3 3" }}
-              />
-              <Area
-                type="monotone"
-                dataKey="v"
-                stroke="#3b82f6"
-                strokeWidth={2}
-                fill="url(#blueGrad)"
-                isAnimationActive={true}
-                animationBegin={0}
-                animationDuration={900}
-                animationEasing="ease-out"
-                activeDot={{ r: 5, fill: "#3b82f6", stroke: "#0e0e18", strokeWidth: 2 }}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
+          <div style={{ pointerEvents: "none" }}>
+            <ResponsiveContainer width="100%" height={180}>
+              <AreaChart
+                key={`trend-${dataVersion}`}
+                data={trend}
+                margin={{ top: 4, right: 4, left: -20, bottom: 0 }}
+              >
+                <defs>
+                  <linearGradient id="blueGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.35} />
+                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="day" tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
+                <Area
+                  type="monotone"
+                  dataKey="v"
+                  stroke="#3b82f6"
+                  strokeWidth={2}
+                  fill="url(#blueGrad)"
+                  isAnimationActive={true}
+                  animationBegin={0}
+                  animationDuration={900}
+                  animationEasing="ease-out"
+                  activeDot={false}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
         </div>
 
         <div style={{ ...card, animation: "cardFade 0.25s ease-out" }}>
           <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff", marginBottom: "4px" }}>Regional Heatmap</div>
           <div style={{ fontSize: "11px", color: "#4b5563", marginBottom: "16px" }}>Cumulative reports by jurisdiction</div>
-          <ResponsiveContainer width="100%" height={180}>
-            <BarChart
-              key={`heatmap-${dataVersion}`}
-              data={heatmap}
-              layout="vertical"
-              margin={{ top: 0, right: 16, left: 0, bottom: 0 }}
-            >
-              <XAxis type="number" tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
-              <YAxis dataKey="region" type="category" tick={{ fill: "#6b7280", fontSize: 10 }} axisLine={false} tickLine={false} width={100} />
-              <Tooltip
-                contentStyle={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: "8px", color: "#e2e8f0", fontSize: 12 }}
-                cursor={{ fill: "rgba(59,130,246,0.06)" }}
-              />
-              <Bar
-                dataKey="v"
-                radius={[0, 4, 4, 0]}
-                isAnimationActive={true}
-                animationBegin={0}
-                animationDuration={800}
-                animationEasing="ease-out"
+          <div style={{ pointerEvents: "none" }}>
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart
+                key={`heatmap-${dataVersion}`}
+                data={heatmap}
+                layout="vertical"
+                margin={{ top: 0, right: 16, left: 0, bottom: 0 }}
               >
-                {heatmap.map((_, i) => (
-                  <Cell key={i} fill={`rgba(59,130,246,${Math.max(0.3, 0.9 - i * 0.15)})`} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
+                <XAxis type="number" tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis dataKey="region" type="category" tick={{ fill: "#6b7280", fontSize: 10 }} axisLine={false} tickLine={false} width={100} />
+                <Bar
+                  dataKey="v"
+                  radius={[0, 4, 4, 0]}
+                  isAnimationActive={true}
+                  animationBegin={0}
+                  animationDuration={800}
+                  animationEasing="ease-out"
+                >
+                  {heatmap.map((_, i) => (
+                    <Cell key={i} fill={`rgba(59,130,246,${Math.max(0.3, 0.9 - i * 0.15)})`} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
         </div>
       </div>
 
-      {/* Tables */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
         <div style={card}>
           <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff", marginBottom: "4px" }}>Consensus Status — Awaiting 3rd Vote</div>

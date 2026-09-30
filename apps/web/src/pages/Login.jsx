@@ -172,9 +172,8 @@ export default function Login() {
         animation: "floatGlow2 15s infinite ease-in-out"
       }} />
 
-      {/* ── LEFT PANEL ── */}
+      {/* LEFT PANEL */}
       <div className="login-left-panel" style={{ width: "46%", flexShrink: 0, display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "56px 64px", position: "relative", zIndex: 1 }}>
-        {/* Logo */}
         <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
           <img
             src="/logo.png"
@@ -187,7 +186,6 @@ export default function Login() {
           </div>
         </div>
 
-        {/* Hero */}
         <div style={{ maxWidth: "600px" }}>
           <div style={{ display: "inline-flex", alignItems: "center", gap: "9px", padding: "7px 14px", borderRadius: "999px", marginBottom: "26px", fontSize: "12px", fontWeight: 500, letterSpacing: "0.08em", fontFamily: "'JetBrains Mono',monospace", background: accent + "15", border: `1px solid ${accent}30`, color: accent, transition: "all 0.6s ease" }}>
             <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: accent, display: "inline-block", transition: "background 0.6s ease" }} />
@@ -201,7 +199,6 @@ export default function Login() {
             Access is scoped to your jurisdiction and permissions. All sessions are cryptographically logged and tamper-evident.
           </p>
 
-          {/* Stats row */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "16px", padding: "26px", borderRadius: "16px", background: "#0d0d18", border: "1px solid #13131e" }}>
             {[
               { v: (stats.reportsFiled ?? 0).toLocaleString(), l: "Reports Filed" },
@@ -216,7 +213,6 @@ export default function Login() {
           </div>
         </div>
 
-        {/* Footer */}
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: "9px", marginBottom: "10px" }}>
             <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: "#22c55e", display: "inline-block" }} />
@@ -229,14 +225,13 @@ export default function Login() {
         </div>
       </div>
 
-      {/* ── RIGHT PANEL ── */}
+      {/* RIGHT PANEL */}
       <div className="login-right-panel" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "40px 32px", position: "relative", zIndex: 1, minWidth: 0 }}>
         <div style={{ width: "100%", maxWidth: "520px" }}>
           <div style={{ borderRadius: "22px", padding: "44px", position: "relative", background: "#0b0b16", border: "1px solid #16162a", boxShadow: "0 40px 80px rgba(0,0,0,0.4)" }}>
             <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "22px 22px 0 0", background: `linear-gradient(90deg,transparent,${accent},transparent)`, transition: "background 0.6s ease" }} />
 
             <div style={{ position: "relative", zIndex: 1 }}>
-              {/* Big logo above Sign In */}
               <div style={{ display: "flex", justifyContent: "center", marginBottom: "20px" }}>
                 <img
                   src="/logo.png"
@@ -272,7 +267,7 @@ export default function Login() {
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value.trim())}
-                    placeholder="you@sentinelph.gov.ph"
+                    placeholder="e.g@gmail.com"
                     onFocus={() => setFocusField("email")}
                     onBlur={() => setFocusField(null)}
                     autoComplete="username"
@@ -463,108 +458,125 @@ export default function Login() {
         </div>
       )}
 
-      {/* BLOCKED ACCOUNT MODAL */}
-      {blockedAccount && (
-        <div
-          style={{
-            position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
-            zIndex: 200, background: "rgba(0,0,0,0.8)", backdropFilter: "blur(6px)",
-          }}
-          onClick={() => setBlockedAccount(null)}
-        >
+      {/* BLOCKED ACCOUNT MODAL — muted, professional */}
+      {blockedAccount && (() => {
+        const isDisabled = blockedAccount.status === 'disabled';
+        const toneColor = isDisabled ? '#ef4444' : '#f59e0b';
+        const toneMutedBg = isDisabled ? '#1a0d0d' : '#1a1508';
+        const toneBorder = isDisabled ? '#ef444425' : '#f59e0b25';
+        const toneBorderSoft = isDisabled ? '#ef444420' : '#f59e0b20';
+
+        return (
           <div
             style={{
-              width: "100%", maxWidth: "460px", margin: "0 16px", borderRadius: "20px",
-              padding: "36px", position: "relative", background: "#0e0e18",
-              border: "1px solid #1a1a2a", boxShadow: "0 40px 80px rgba(0,0,0,0.5)",
+              position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+              zIndex: 200, background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)",
             }}
-            onClick={(e) => e.stopPropagation()}
+            onClick={() => setBlockedAccount(null)}
           >
             <div
               style={{
-                position: "absolute", top: 0, left: 0, right: 0, height: "1px",
-                borderRadius: "20px 20px 0 0",
-                background: `linear-gradient(90deg,transparent,${blockedAccount.status === 'disabled' ? '#ef4444' : '#f59e0b'},transparent)`,
+                width: "100%", maxWidth: "440px", margin: "0 16px", borderRadius: "18px",
+                padding: "32px", position: "relative", background: "#0e0e18",
+                border: "1px solid #1a1a2a", boxShadow: "0 40px 80px rgba(0,0,0,0.5)",
               }}
-            />
-
-            <div style={{ display: "flex", justifyContent: "center", marginBottom: "20px" }}>
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Small top accent line */}
               <div
                 style={{
-                  width: "70px", height: "70px", borderRadius: "50%",
-                  background: blockedAccount.status === 'disabled' ? "#ef444415" : "#f59e0b15",
-                  border: `1px solid ${blockedAccount.status === 'disabled' ? '#ef444440' : '#f59e0b40'}`,
-                  display: "flex", alignItems: "center", justifyContent: "center",
+                  position: "absolute", top: 0, left: 0, right: 0, height: "1px",
+                  borderRadius: "18px 18px 0 0",
+                  background: `linear-gradient(90deg,transparent,${toneColor}60,transparent)`,
                 }}
-              >
-                {blockedAccount.status === 'disabled' ? (
-                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
-                  </svg>
+              />
+
+              {/* Small muted icon */}
+              <div style={{ display: "flex", justifyContent: "center", marginBottom: "18px" }}>
+                <div
+                  style={{
+                    width: "52px", height: "52px", borderRadius: "50%",
+                    background: toneMutedBg,
+                    border: `1px solid ${toneBorderSoft}`,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}
+                >
+                  {isDisabled ? (
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={toneColor} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="10" />
+                      <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+                    </svg>
+                  ) : (
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={toneColor} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="10" />
+                      <polyline points="12 6 12 12 16 14" />
+                    </svg>
+                  )}
+                </div>
+              </div>
+
+              {/* Header + body */}
+              <div style={{ textAlign: "center", marginBottom: "22px" }}>
+                <div style={{ fontSize: "17px", fontWeight: 700, color: "#fff", marginBottom: "8px", letterSpacing: "-0.01em" }}>
+                  {isDisabled ? 'Account Disabled' : 'Account Suspended'}
+                </div>
+
+                {isDisabled ? (
+                  <div style={{ fontSize: "13px", color: "#9ca3af", lineHeight: 1.6 }}>
+                    {blockedAccount.message || 'Your account has been disabled. Contact your NBI supervisor.'}
+                  </div>
                 ) : (
-                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="10" />
-                    <polyline points="12 6 12 12 16 14" />
-                  </svg>
+                  <div style={{ fontSize: "13px", color: "#9ca3af", lineHeight: 1.6 }}>
+                    Your account is temporarily suspended
+                    {blockedAccount.until
+                      ? <> until <strong style={{ color: "#d1d5db", fontWeight: 600 }}>{new Date(blockedAccount.until).toLocaleString('en-PH', {
+                          month: 'short', day: 'numeric', year: 'numeric',
+                          hour: '2-digit', minute: '2-digit',
+                        })}</strong>.</>
+                      : '.'}
+                  </div>
                 )}
               </div>
-            </div>
 
-            <div style={{ textAlign: "center", marginBottom: "24px" }}>
-              <div style={{ fontSize: "21px", fontWeight: 800, color: "#fff", marginBottom: "8px" }}>
-                {blockedAccount.status === 'disabled' ? 'Account Disabled' : 'Account Suspended'}
-              </div>
-
-              {blockedAccount.status === 'disabled' ? (
-                <div style={{ fontSize: "14px", color: "#9ca3af", lineHeight: 1.7 }}>
-                  {blockedAccount.message || 'Your account has been disabled. Contact your NBI supervisor.'}
-                </div>
-              ) : (
-                <div style={{ fontSize: "14px", color: "#9ca3af", lineHeight: 1.7 }}>
-                  Your account is temporarily suspended
-                  {blockedAccount.until
-                    ? <> until <strong style={{ color: "#f59e0b" }}>{new Date(blockedAccount.until).toLocaleString('en-PH', {
-                        month: 'short', day: 'numeric', year: 'numeric',
-                        hour: '2-digit', minute: '2-digit',
-                      })}</strong>.</>
-                    : '.'}
+              {/* Reason panel — muted */}
+              {blockedAccount.reason && (
+                <div style={{ padding: "14px 16px", borderRadius: "10px", marginBottom: "14px", background: "#080810", border: "1px solid #1a1a2a" }}>
+                  <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.08em", color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", marginBottom: "6px" }}>
+                    REASON FROM ADMINISTRATOR
+                  </div>
+                  <div style={{ fontSize: "13px", color: "#d1d5db", lineHeight: 1.6 }}>
+                    "{blockedAccount.reason}"
+                  </div>
                 </div>
               )}
-            </div>
 
-            {blockedAccount.reason && (
-              <div style={{ padding: "14px 16px", borderRadius: "12px", marginBottom: "16px", background: "#1a0f06", border: "1px solid #f59e0b30" }}>
-                <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "0.08em", color: "#f59e0b", fontFamily: "'JetBrains Mono',monospace", marginBottom: "6px" }}>
-                  REASON FROM ADMINISTRATOR
-                </div>
-                <div style={{ fontSize: "14px", color: "#fcd34d", lineHeight: 1.6, fontStyle: "italic" }}>
-                  "{blockedAccount.reason}"
+              {/* Help note — muted */}
+              <div style={{ padding: "12px 14px", borderRadius: "10px", background: "#080810", border: "1px solid #13131e", marginBottom: "20px" }}>
+                <div style={{ fontSize: "12px", color: "#6b7280", lineHeight: 1.6 }}>
+                  Contact your <strong style={{ color: "#9ca3af", fontWeight: 600 }}>NBI supervisor</strong> if you believe this is an error.
                 </div>
               </div>
-            )}
 
-            <div style={{ padding: "13px 15px", borderRadius: "12px", background: "#080810", border: "1px solid #13131e", marginBottom: "20px" }}>
-              <div style={{ fontSize: "13px", color: "#6b7280", lineHeight: 1.6 }}>
-                Contact your <strong style={{ color: "#9ca3af" }}>NBI supervisor</strong> if you believe this is an error.
-              </div>
+              {/* Neutral close button — no bright color */}
+              <button
+                onClick={() => setBlockedAccount(null)}
+                style={{
+                  width: "100%", padding: "13px", borderRadius: "11px",
+                  fontSize: "14px", fontWeight: 600, border: "1px solid #1a1a2a",
+                  background: "#111120",
+                  color: "#e2e8f0",
+                  cursor: "pointer",
+                  transition: "background 0.2s",
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = "#181828"}
+                onMouseLeave={(e) => e.currentTarget.style.background = "#111120"}
+              >
+                Close
+              </button>
             </div>
-
-            <button
-              onClick={() => setBlockedAccount(null)}
-              style={{
-                width: "100%", padding: "15px", borderRadius: "13px",
-                fontSize: "15px", fontWeight: 700, border: "none",
-                background: blockedAccount.status === 'disabled' ? "#ef4444" : "#f59e0b",
-                color: blockedAccount.status === 'disabled' ? "#fff" : "#0a0a12",
-                cursor: "pointer",
-              }}
-            >
-              Close
-            </button>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }

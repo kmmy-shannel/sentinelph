@@ -152,7 +152,6 @@ export default function Sidebar({ isOpen, onClose }) {
           flexDirection: "column",
         }}
       >
-        {/* Logo header — bigger, no violet box */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", padding: "18px 16px", borderBottom: "1px solid #0f0f1a" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
             <img
@@ -218,7 +217,7 @@ export default function Sidebar({ isOpen, onClose }) {
             style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "11px", color: "#374151", background: "none", border: "none", cursor: "pointer", padding: 0 }}
             onMouseEnter={e => { e.currentTarget.style.color = "#ef4444"; e.currentTarget.querySelector('svg').style.stroke = "#ef4444"; }}
             onMouseLeave={e => { e.currentTarget.style.color = "#374151"; e.currentTarget.querySelector('svg').style.stroke = "#374151"; }}>
-            <LogoutIcon color="#374151" /> Sign out →
+            <LogoutIcon color="#374151" /> Sign out
           </button>
         </div>
 

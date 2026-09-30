@@ -30,6 +30,7 @@ const {
   listReports,
   getReportById,
   voteOnReport,
+  changeVoteOnReport,
 } = require('../controllers/reportReviewController');
 
 const router = express.Router();
@@ -41,24 +42,13 @@ const upload = multer({
 
 const AUTO_CANDIDATE_THRESHOLD = 3;
 
-// Officers may only act on reports inside their assigned jurisdiction.
-// Unscoped reports (UNCLASSIFIED / no region) resolve to null and pass.
 const jurisdictionGuard = requireJurisdictionMatch(getReportJurisdiction);
 
-/**
- * Informational candidate tracking only: keeps BlacklistEntry.reportCount
- * fresh and opens an 'under_review' candidate once a number has been
- * reported AUTO_CANDIDATE_THRESHOLD times, so the mobile lookup can show
- * "Under Review". It never decides anything — a number becomes
- * 'blacklisted' exclusively through report-level Two-Officer consensus
- * (see reportReviewController.voteOnReport).
- */
 async function maybeOpenBlacklistCandidate(reportedNumber, region) {
   try {
     const phoneNumber = String(reportedNumber || '').trim();
     if (!phoneNumber) return;
 
-    // Atomic increment: concurrent submissions can no longer lose counts.
     const existing = await BlacklistEntry.findOneAndUpdate(
       { phoneNumber },
       { $inc: { reportCount: 1 } },
@@ -89,22 +79,9 @@ async function maybeOpenBlacklistCandidate(reportedNumber, region) {
   }
 }
 
-// =====================================================================
-// POST /api/v1/reports/analyze — Layer-1 live preview (no persistence)
-// Rate limited: each call hits the metered AI backend.
-// =====================================================================
 router.post('/analyze', analyzeLimiter, analyzeReportPreview);
-
-// =====================================================================
-// POST /api/v1/reports/ocr — Multipart screenshot → FastAPI /ocr
-// Limiter runs BEFORE multer so a throttled client never gets its
-// (up to 15 MB) upload buffered into memory.
-// =====================================================================
 router.post('/ocr', ocrLimiter, upload.single('image'), analyzeReportImage);
 
-// =====================================================================
-// POST /api/v1/reports — Submit a new report (Citizen only)
-// =====================================================================
 router.post(
   '/',
   verifyFirebaseToken,
@@ -115,9 +92,6 @@ router.post(
   asyncHandler(async (req, res, next) => {
     const originalJson = res.json.bind(res);
     res.json = (body) => {
-      // Side effects fire ONLY for a report that was actually created (201).
-      // Previously they also fired on 400/429 error bodies, which logged a
-      // phantom REPORT_SUBMITTED and inflated the blacklist report count.
       if (res.statusCode === 201) {
         const reportId = body?.reportId || body?.data?.reportId;
         const reportedNumber =
@@ -153,10 +127,6 @@ router.post(
   })
 );
 
-// =====================================================================
-// GET /api/v1/reports — List/paginate reports (region-scoped for officers)
-//   ?page=1&limit=20&bucket=pending|resolved|all&status=&reportedNumber=&region=
-// =====================================================================
 router.get(
   '/',
   verifyFirebaseToken,
@@ -165,10 +135,6 @@ router.get(
   listReports
 );
 
-// =====================================================================
-// GET /api/v1/reports/chain/verify — Recompute & verify chain integrity
-// (declared BEFORE '/:id' so "chain" is never treated as a report id)
-// =====================================================================
 router.get(
   '/chain/verify',
   verifyFirebaseToken,
@@ -229,11 +195,6 @@ router.get(
   getReportById
 );
 
-// =====================================================================
-// POST /api/v1/reports/:id/vote — Officer approve/reject
-// CANONICAL Two-Officer consensus entry point. At 2 approvals the report
-// becomes 'blacklisted' and the number is upserted into BlacklistEntry.
-// =====================================================================
 router.post(
   '/:id/vote',
   verifyFirebaseToken,
@@ -242,6 +203,17 @@ router.post(
   attachReport,
   jurisdictionGuard,
   voteOnReport
+);
+
+// NEW — edit an existing vote (officer only, still-open reports only)
+router.patch(
+  '/:id/vote',
+  verifyFirebaseToken,
+  enforceAuditorReadOnly,
+  requireRole('officer'),
+  attachReport,
+  jurisdictionGuard,
+  changeVoteOnReport
 );
 
 module.exports = router;

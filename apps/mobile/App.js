@@ -22,6 +22,7 @@ import AuthScreen from './screens/AuthScreen';
 import TabNavigator from './navigation/TabNavigator';
 import { initDB, pruneBlacklistCache } from './db/sqlite';
 import * as syncQueue from './db/syncQueue';
+import { ThemeProvider, useTheme } from './theme/ThemeContext';
 
 // --- ENV DIAGNOSTIC CHECK ---
 console.log('================ [ENV CHECK START] ================');
@@ -69,6 +70,22 @@ function RootNavigator() {
   );
 }
 
+/**
+ * Status bar that follows the active theme.
+ * Dark mode  → dark bg + light icons
+ * Light mode → light bg + dark icons
+ * Must be rendered INSIDE <ThemeProvider> so useTheme() has context.
+ */
+function ThemedStatusBar() {
+  const { theme, mode } = useTheme();
+  return (
+    <RNStatusBar
+      barStyle={mode === 'dark' ? 'light-content' : 'dark-content'}
+      backgroundColor={theme.bg}
+    />
+  );
+}
+
 export default function App() {
   const [fontsLoaded] = useFonts({
     Inter_400Regular,
@@ -80,7 +97,7 @@ export default function App() {
   });
   const [dbReady, setDbReady] = useState(false);
 
-   useEffect(() => {
+  useEffect(() => {
     async function prepareApp() {
       try {
         await initDB();
@@ -123,10 +140,12 @@ export default function App() {
 
   return (
     <SafeAreaProvider onLayout={onLayoutRootView} style={{ flex: 1 }}>
-      <RNStatusBar barStyle="light-content" backgroundColor="#0a1120" />
-      <AuthProvider>
-        <RootNavigator />
-      </AuthProvider>
+      <ThemeProvider>
+        <ThemedStatusBar />
+        <AuthProvider>
+          <RootNavigator />
+        </AuthProvider>
+      </ThemeProvider>
     </SafeAreaProvider>
   );
 }

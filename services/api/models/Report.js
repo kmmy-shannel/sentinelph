@@ -24,19 +24,57 @@ function unwrapFindOneAndUpdate(result) {
   return isEnvelope ? result.value || null : result;
 }
 
+// Compute the 2-of-3 aggregated subtype verdict from a list of votes.
+// Returns { label, agreement } where label is the winning subtype
+// (or null if no 2 officers agreed) and agreement is the count.
+function computeAggregatedSubtype(votes) {
+  const tally = {};
+  for (const v of votes || []) {
+    if (v.subtypeAction === 'unsure' || !v.subtypeAction) continue;
+    const label = v.subtypeAction === 'corrected'
+      ? v.correctedSubtype
+      : v.aiSubtypeAtVote;   // "confirmed" means the AI's label was right
+    if (!label) continue;
+    tally[label] = (tally[label] || 0) + 1;
+  }
+  const sorted = Object.entries(tally).sort((a, b) => b[1] - a[1]);
+  if (sorted.length === 0) return { label: null, agreement: 0 };
+  const [winner, count] = sorted[0];
+  return {
+    label: count >= 2 ? winner : null,
+    agreement: count,
+  };
+}
+
 const AiFlagSchema = new Schema(
   {
     available: { type: Boolean, default: false },
     probabilityScore: { type: Number, min: 0, max: 1, default: null },
     label: {
       type: String,
-     enum: [
-    'legitimate', 'grey_area', 'malicious',
-    'likely_scam', 'uncertain', 'likely_legitimate',
-    'unavailable',
-  ],
+      enum: [
+        'legitimate', 'grey_area', 'malicious',
+        'likely_scam', 'uncertain', 'likely_legitimate',
+        'unavailable',
+      ],
       default: 'unavailable',
     },
+    // ─── LEVEL 2 SUBTYPE FIELDS ───────────────────────────────────
+    subtype: {
+      type: String,
+      enum: [
+        'personal_conversational', 'two_factor_auth', 'appointment_reminder',
+        'delivery_tracking', 'bank_activity_alert',
+        'brand_marketing',
+        'phishing_link', 'fake_prize_lottery',
+        'UNLABELED',
+        null,
+      ],
+      default: null,
+    },
+    subtypeConfidence: { type: Number, min: 0, max: 1, default: null },
+    subtypeModelVersion: { type: String, default: null },
+    // ──────────────────────────────────────────────────────────────
     isScam: { type: Boolean, default: null },
     confidenceScore: { type: Number, min: 0, max: 1, default: null },
     riskLevel: {
@@ -86,6 +124,18 @@ const VoteSchema = new Schema(
     decision: { type: String, enum: ['approve', 'reject'], required: true },
     comment: { type: String, trim: true, maxlength: 2000, default: '' },
     votedAt: { type: Date, default: Date.now },
+    editedAt: { type: Date, default: null },
+    // ─── SUBTYPE VERIFICATION (continuous-learning signal) ─────────
+    subtypeAction: {
+      type: String,
+      enum: ['confirmed', 'corrected', 'unsure', null],
+      default: null,
+    },
+    correctedSubtype: { type: String, default: null },
+    isHighValue: { type: Boolean, default: false },
+    aiSubtypeAtVote: { type: String, default: null },
+    aiSubtypeModelVersionAtVote: { type: String, default: null },
+    // ──────────────────────────────────────────────────────────────
   },
   { _id: false }
 );
@@ -184,12 +234,58 @@ const ReportSchema = new Schema(
       select: false,
       default: null,
     },
-    // Human-readable reporter identity for officer transparency.
-    // NON-HASHED: deliberately excluded from getCanonicalPayload() so
-    // adding this field does not invalidate any existing chain record.
-    // select:false by default — must be requested explicitly, so the
-    // public/citizen-facing views never accidentally leak it.
-        // ─── REPORTER IDENTITY (new) ──────────────────────────────────────
+
+    // ─── OFFICER REVIEW FIELDS (per-report final verdict) ──────────
+    // Populated by the officer review workflow. NOT part of the hash
+    // chain — excluded from getCanonicalPayload() so mutations don't
+    // invalidate the chain.
+    officerAction: {
+      type: String,
+      enum: ['confirmed', 'corrected', 'unsure', 'spam', null],
+      default: null,
+    },
+    officerSubtype: {
+      type: String,
+      default: null,
+    },
+    officerLabel: {
+      type: String,
+      enum: ['legitimate', 'grey_area', 'malicious', null],
+      default: null,
+    },
+    officerId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    officerVerifiedAt: {
+      type: Date,
+      default: null,
+    },
+    isHighValue: {
+      type: Boolean,
+      default: false,
+    },
+
+    // ─── AGGREGATED SUBTYPE VERDICT (computed at finalization) ─────
+    // Set when the report reaches a terminal state (blacklisted /
+    // approved / rejected). Contains the 2-of-3 officer consensus
+    // subtype label, or null if no 2 officers agreed.
+    officerSubtypeAggregated: {
+      type: String,
+      default: null,
+    },
+    officerSubtypeAgreement: {
+      type: Number,
+      default: 0,
+    },
+    officerSubtypeFinalizedAt: {
+      type: Date,
+      default: null,
+    },
+    // ──────────────────────────────────────────────────────────────
+
+    // ─── REPORTER IDENTITY ────────────────────────────────────────
     // Human-readable reporter identity for officer transparency.
     //
     // NOT part of getCanonicalPayload() — deliberately excluded from the
@@ -218,7 +314,8 @@ const ReportSchema = new Schema(
       type: Boolean,
       default: false,
     },
-    // ──────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────
+
     // ---- Workflow state ----
     // 'pending' → 'under_review' | 'one_approval' → 'blacklisted' | 'rejected'
     // 'approved' is retained as an alias for 'blacklisted' so the vote
@@ -311,22 +408,20 @@ ReportSchema.pre('findOneAndRemove', blockDirectMutation);
 
 /**
  * CANONICAL VOTE ENTRY POINT — 3-Officer Consensus (majority 2-of-3)
- *
- * ALL 3 officers must vote. The majority decides:
- *   2+ approvals  → 'blacklisted'
- *   2+ rejections → 'rejected'
- *
- * Intermediate states (fewer than 3 votes cast):
- *   2 approvals → 'two_approvals'
- *   1 approval  → 'one_approval'
- *   otherwise   → 'under_review'
- *
- * The 3rd officer is the FINALIZER — the case can't close before
- * all 3 votes are in. Stamps `resolvedAt` on the FIRST terminal transition.
  */
 ReportSchema.statics.castVote = async function castVote(
   reportId,
-  { userId, role = 'officer', decision, comment = '' } = {}
+  {
+    userId,
+    role = 'officer',
+    decision,
+    comment = '',
+    subtypeAction = null,
+    correctedSubtype = null,
+    isHighValue = false,
+    aiSubtypeAtVote = null,
+    aiSubtypeModelVersionAtVote = null,
+  } = {}
 ) {
   if (!reportId || typeof reportId !== 'string') {
     throw httpError(400, 'VALIDATION_ERROR', 'A valid reportId is required to vote.');
@@ -338,6 +433,20 @@ ReportSchema.statics.castVote = async function castVote(
     throw httpError(400, 'VALIDATION_ERROR', "decision must be either 'approve' or 'reject'.");
   }
 
+  const VALID_SUBTYPE_ACTIONS = ['confirmed', 'corrected', 'unsure', null];
+  if (!VALID_SUBTYPE_ACTIONS.includes(subtypeAction)) {
+    throw httpError(400, 'VALIDATION_ERROR',
+      `subtypeAction must be one of: confirmed, corrected, unsure, null (got "${subtypeAction}").`);
+  }
+  if (subtypeAction === 'corrected' && !correctedSubtype) {
+    throw httpError(400, 'VALIDATION_ERROR',
+      'correctedSubtype is required when subtypeAction is "corrected".');
+  }
+  if (subtypeAction !== 'corrected' && correctedSubtype) {
+    throw httpError(400, 'VALIDATION_ERROR',
+      'correctedSubtype may only be set when subtypeAction is "corrected".');
+  }
+
   const collection = mongoose.model('Report').collection;
 
   const vote = {
@@ -346,6 +455,12 @@ ReportSchema.statics.castVote = async function castVote(
     decision,
     comment: String(comment || '').trim().slice(0, 2000),
     votedAt: new Date(),
+    editedAt: null,
+    subtypeAction: subtypeAction || null,
+    correctedSubtype: subtypeAction === 'corrected' ? correctedSubtype : null,
+    isHighValue: Boolean(isHighValue),
+    aiSubtypeAtVote: aiSubtypeAtVote || null,
+    aiSubtypeModelVersionAtVote: aiSubtypeModelVersionAtVote || null,
   };
 
   const pipeline = [
@@ -376,7 +491,6 @@ ReportSchema.statics.castVote = async function castVote(
         status: {
           $switch: {
             branches: [
-              // ── Finalized ONLY when all 3 have voted AND majority agrees ──
               {
                 case: {
                   $and: [
@@ -395,7 +509,6 @@ ReportSchema.statics.castVote = async function castVote(
                 },
                 then: 'rejected',
               },
-              // ── Intermediate states (still waiting for the 3rd vote) ──
               { case: { $eq: ['$consensusState.approvals', 2] }, then: 'two_approvals' },
               { case: { $eq: ['$consensusState.approvals', 1] }, then: 'one_approval' },
             ],
@@ -405,7 +518,6 @@ ReportSchema.statics.castVote = async function castVote(
       },
     },
     {
-      // Stamp resolvedAt only on the FIRST transition to terminal.
       $set: {
         resolvedAt: {
           $cond: [
@@ -440,7 +552,27 @@ ReportSchema.statics.castVote = async function castVote(
   );
 
   const updated = unwrapFindOneAndUpdate(result);
-  if (updated) return updated;
+  if (updated) {
+    // If the report just reached a terminal state, compute and persist
+    // the aggregated subtype verdict.
+    if (['blacklisted', 'approved', 'rejected'].includes(updated.status)) {
+      const { label, agreement } = computeAggregatedSubtype(updated.votes);
+      await mongoose.model('Report').collection.updateOne(
+        { reportId },
+        {
+          $set: {
+            officerSubtypeAggregated: label,
+            officerSubtypeAgreement: agreement,
+            officerSubtypeFinalizedAt: new Date(),
+          },
+        }
+      );
+      updated.officerSubtypeAggregated = label;
+      updated.officerSubtypeAgreement = agreement;
+      updated.officerSubtypeFinalizedAt = new Date();
+    }
+    return updated;
+  }
 
   const existing = await collection.findOne(
     { reportId },
@@ -466,6 +598,196 @@ ReportSchema.statics.castVote = async function castVote(
   }
 
   throw httpError(409, 'VOTE_CONFLICT', 'The vote could not be recorded. Please refresh and try again.');
+};
+
+/**
+ * CHANGE VOTE — Option A (replace-in-place)
+ */
+ReportSchema.statics.changeVote = async function changeVote(
+  reportId,
+  {
+    userId,
+    decision,
+    comment = '',
+    subtypeAction = null,
+    correctedSubtype = null,
+    isHighValue = false,
+    aiSubtypeAtVote = null,
+    aiSubtypeModelVersionAtVote = null,
+  } = {}
+) {
+  if (!reportId || typeof reportId !== 'string') {
+    throw httpError(400, 'VALIDATION_ERROR', 'A valid reportId is required.');
+  }
+  if (!userId || typeof userId !== 'string') {
+    throw httpError(400, 'VALIDATION_ERROR', 'A voter identity is required.');
+  }
+  if (!['approve', 'reject'].includes(decision)) {
+    throw httpError(400, 'VALIDATION_ERROR', "decision must be either 'approve' or 'reject'.");
+  }
+
+  const VALID_SUBTYPE_ACTIONS = ['confirmed', 'corrected', 'unsure', null];
+  if (!VALID_SUBTYPE_ACTIONS.includes(subtypeAction)) {
+    throw httpError(400, 'VALIDATION_ERROR',
+      `subtypeAction must be one of: confirmed, corrected, unsure, null.`);
+  }
+  if (subtypeAction === 'corrected' && !correctedSubtype) {
+    throw httpError(400, 'VALIDATION_ERROR',
+      'correctedSubtype is required when subtypeAction is "corrected".');
+  }
+
+  const collection = mongoose.model('Report').collection;
+
+  const now = new Date();
+  const nextComment = String(comment || '').trim().slice(0, 2000);
+
+  const before = await collection.findOne(
+    { reportId },
+    { projection: { status: 1, votes: 1, consensusState: 1 } }
+  );
+
+  if (!before) {
+    throw httpError(404, 'NOT_FOUND', 'Report not found.');
+  }
+  if (!OPEN_STATUSES.includes(before.status)) {
+    throw httpError(
+      409,
+      'REPORT_FINALIZED',
+      `This report is already finalized as "${before.status}" and its votes can no longer be edited.`
+    );
+  }
+
+  const existingVote = (before.votes || []).find((v) => v.userId === userId);
+  if (!existingVote) {
+    throw httpError(
+      409,
+      'NOT_VOTED_YET',
+      'You have not voted on this report yet, so there is nothing to edit.'
+    );
+  }
+
+  const previous = {
+    decision: existingVote.decision,
+    comment: existingVote.comment || '',
+    votedAt: existingVote.votedAt || null,
+    editedAt: existingVote.editedAt || null,
+  };
+
+  const pipeline = [
+    {
+      $set: {
+        votes: {
+          $map: {
+            input: '$votes',
+            as: 'v',
+            in: {
+              $cond: [
+                { $eq: ['$$v.userId', userId] },
+                {
+                  $mergeObjects: [
+                    '$$v',
+                    {
+                      decision,
+                      comment: nextComment,
+                      editedAt: now,
+                      subtypeAction: subtypeAction || null,
+                      correctedSubtype: subtypeAction === 'corrected' ? correctedSubtype : null,
+                      isHighValue: Boolean(isHighValue),
+                      aiSubtypeAtVote: aiSubtypeAtVote || null,
+                      aiSubtypeModelVersionAtVote: aiSubtypeModelVersionAtVote || null,
+                    },
+                  ],
+                },
+                '$$v',
+              ],
+            },
+          },
+        },
+      },
+    },
+    {
+      $set: {
+        'consensusState.approvals': {
+          $size: {
+            $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'approve'] } },
+          },
+        },
+        'consensusState.rejections': {
+          $size: {
+            $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'reject'] } },
+          },
+        },
+        'consensusState.required': CONSENSUS_REQUIRED,
+      },
+    },
+    {
+      $set: {
+        status: {
+          $switch: {
+            branches: [
+              {
+                case: {
+                  $and: [
+                    { $gte: [{ $size: '$votes' }, 3] },
+                    { $gte: ['$consensusState.approvals', 2] },
+                  ],
+                },
+                then: 'blacklisted',
+              },
+              {
+                case: {
+                  $and: [
+                    { $gte: [{ $size: '$votes' }, 3] },
+                    { $gte: ['$consensusState.rejections', 2] },
+                  ],
+                },
+                then: 'rejected',
+              },
+              { case: { $eq: ['$consensusState.approvals', 2] }, then: 'two_approvals' },
+              { case: { $eq: ['$consensusState.approvals', 1] }, then: 'one_approval' },
+            ],
+            default: 'under_review',
+          },
+        },
+      },
+    },
+  ];
+
+  const result = await collection.findOneAndUpdate(
+    {
+      reportId,
+      status: { $in: OPEN_STATUSES },
+      'votes.userId': userId,
+    },
+    pipeline,
+    { returnDocument: 'after' }
+  );
+
+  const updated = unwrapFindOneAndUpdate(result);
+  if (updated) {
+    if (['blacklisted', 'approved', 'rejected'].includes(updated.status)) {
+      const { label, agreement } = computeAggregatedSubtype(updated.votes);
+      await mongoose.model('Report').collection.updateOne(
+        { reportId },
+        {
+          $set: {
+            officerSubtypeAggregated: label,
+            officerSubtypeAgreement: agreement,
+            officerSubtypeFinalizedAt: new Date(),
+          },
+        }
+      );
+      updated.officerSubtypeAggregated = label;
+      updated.officerSubtypeAgreement = agreement;
+    }
+    return { updated, previous };
+  }
+
+  throw httpError(
+    409,
+    'VOTE_CONFLICT',
+    'The report changed while your edit was being saved. Please refresh and try again.'
+  );
 };
 
 ReportSchema.statics.applyWorkflowUpdate = async function applyWorkflowUpdate(

@@ -49,7 +49,6 @@ export default function SuperAdminDashboard() {
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
-  // ── Derived KPIs ───────────────────────────────────────────
   const totalUsers   = users.length;
   const activeUsers  = users.filter(u => u.status === "Active").length;
   const suspended    = users.filter(u => u.status === "Suspended").length;
@@ -71,7 +70,6 @@ export default function SuperAdminDashboard() {
         </div>
       )}
 
-      {/* KPI strip */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "16px" }}>
         {[
           { l: "TOTAL ACCOUNTS", v: loading ? "—" : String(totalUsers), sub: `${activeUsers} active · ${suspended + pendingUsers} inactive`, sc: "#fff" },
@@ -89,14 +87,13 @@ export default function SuperAdminDashboard() {
 
       <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: "16px" }}>
 
-        {/* RBAC roster (top 5) */}
         <div style={card}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
             <div>
               <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff" }}>RBAC Provisioning — Live Roster</div>
               <div style={{ fontSize: "11px", marginTop: "2px", color: "#4b5563" }}>Most recently active accounts</div>
             </div>
-            <button onClick={() => navigate("/superadmin/users-rbac")} style={{ fontSize: "11px", fontWeight: 600, color: A, background: "none", border: "none", cursor: "pointer" }}>Manage all →</button>
+            <button onClick={() => navigate("/superadmin/users-rbac")} style={{ fontSize: "11px", fontWeight: 600, color: A, background: "none", border: "none", cursor: "pointer" }}>Manage all</button>
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead><tr>{["NAME","ROLE","AGENCY","LAST LOGIN","STATUS"].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
@@ -129,11 +126,10 @@ export default function SuperAdminDashboard() {
           </table>
         </div>
 
-        {/* Immutable audit feed (top 5) */}
         <div style={card}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
             <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff" }}>Immutable Audit Feed</div>
-            <button onClick={() => navigate("/superadmin/audit-logs")} style={{ fontSize: "11px", fontWeight: 600, color: A, background: "none", border: "none", cursor: "pointer" }}>Full log →</button>
+            <button onClick={() => navigate("/superadmin/audit-logs")} style={{ fontSize: "11px", fontWeight: 600, color: A, background: "none", border: "none", cursor: "pointer" }}>Full log</button>
           </div>
           {loading && <div style={{ fontSize: "12px", color: "#4b5563", textAlign: "center", padding: "16px" }}>Loading…</div>}
           {!loading && logs.length === 0 && <div style={{ fontSize: "12px", color: "#4b5563", textAlign: "center", padding: "16px" }}>No audit events yet.</div>}
@@ -158,10 +154,8 @@ export default function SuperAdminDashboard() {
         </div>
       </div>
 
-      {/* Chain + Health row */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
 
-        {/* Chain card */}
         <div style={{ ...card, background: chainOk ? "#061a0f" : "#0a0a15", border: `1.5px solid ${chainOk ? "#22c55e40" : "#1a1a2a"}` }}>
           <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
             <div style={{ width: "40px", height: "40px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: chainOk ? "#14412a" : "#111118", border: `2px solid ${chainOk ? "#22c55e" : "#374151"}`, flexShrink: 0 }}>
@@ -180,12 +174,11 @@ export default function SuperAdminDashboard() {
               </div>
             </div>
             <button onClick={() => navigate("/superadmin/chain-integrity")} style={{ fontSize: "11px", fontWeight: 600, color: chainOk ? "#22c55e" : A, background: "none", border: "none", cursor: "pointer", flexShrink: 0 }}>
-              {chainOk ? "Recompute →" : "Open →"}
+              {chainOk ? "Recompute" : "Open"}
             </button>
           </div>
         </div>
 
-        {/* Health mini card */}
         <div style={{ ...card, background: "#0a0a15", border: "1.5px solid #1a1a2a" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
             <div style={{ fontWeight: 600, color: "#fff", fontSize: "13px" }}>System Health</div>
