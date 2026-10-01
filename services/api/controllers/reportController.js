@@ -44,6 +44,9 @@ function normalizeAiFlag(aiFlag) {
     riskLevel: aiFlag.riskLevel ?? aiFlag.risk_level ?? 'UNKNOWN',
     explanationReasons: aiFlag.explanationReasons ?? aiFlag.explanation_reasons ?? [],
     label: aiFlag.label ?? null,
+    subtype: aiFlag.subtype ?? null,                                       // NEW
+    subtypeConfidence: aiFlag.subtypeConfidence ?? null,                   // NEW
+    subtypeModelVersion: aiFlag.subtypeModelVersion ?? null,               // NEW
     ocrText: aiFlag.ocrText ?? aiFlag.ocr_text ?? null,
   };
 }
