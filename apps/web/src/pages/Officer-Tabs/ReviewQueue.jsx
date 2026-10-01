@@ -16,6 +16,7 @@ const STATUS_ORDER = [
   { key: 'approved',      label: 'Approved',       color: '#22c55e' },
 ];
 
+// 10 columns: ID, NUMBER, TYPE, SUBTYPE, REPORTER, REPORTS, CHANNEL, SUBMITTED, PRIOR VOTES, ACTION
 const COL_WIDTHS = ['10%', '12%', '10%', '13%', '12%', '6%', '6%', '12%', '9%', '10%'];
 
 // ─── Prior-votes color: amber for any vote, grey only when none ──────
@@ -239,6 +240,7 @@ export default function ReviewQueue() {
   const [isEditMode, setIsEditMode] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
 
+  // ─── SUBTYPE VERIFICATION STATE (continuous learning) ─────────────
   const [subtypeAction, setSubtypeAction] = useState(null);
   const [correctedSubtype, setCorrectedSubtype] = useState(null);
   const [isHighValue, setIsHighValue] = useState(false);
@@ -747,6 +749,7 @@ export default function ReviewQueue() {
                 </div>
               )}
 
+              {/* ─── AI CLASSIFICATION (Level 1 + Level 2) ─────────────── */}
               <div style={{ marginBottom: "16px" }}>
                 <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "8px", fontFamily: "'JetBrains Mono',monospace" }}>
                   AI CLASSIFICATION
@@ -813,6 +816,7 @@ export default function ReviewQueue() {
                 )}
               </div>
 
+              {/* ─── REPORTER IDENTITY ──────────────────────────────────── */}
               <div style={{ padding: "12px 14px", borderRadius: "8px", marginBottom: "16px", background: voteModal.reporterShared ? "rgba(59,130,246,0.06)" : "rgba(148,163,184,0.03)", border: `1px solid ${voteModal.reporterShared ? "rgba(59,130,246,0.25)" : "rgba(148,163,184,0.08)"}` }}>
                 <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px", fontFamily: "'JetBrains Mono',monospace" }}>
                   REPORTED BY
@@ -1071,6 +1075,7 @@ export default function ReviewQueue() {
                     </div>
                   )}
 
+                  {/* ─── WHAT DO APPROVE / REJECT MEAN? ──────────────── */}
                   <div style={{
                     marginBottom: "12px",
                     padding: "12px 14px",

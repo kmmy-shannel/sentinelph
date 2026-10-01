@@ -25,15 +25,13 @@ function unwrapFindOneAndUpdate(result) {
 }
 
 // Compute the 2-of-3 aggregated subtype verdict from a list of votes.
-// Returns { label, agreement } where label is the winning subtype
-// (or null if no 2 officers agreed) and agreement is the count.
 function computeAggregatedSubtype(votes) {
   const tally = {};
   for (const v of votes || []) {
     if (v.subtypeAction === 'unsure' || !v.subtypeAction) continue;
     const label = v.subtypeAction === 'corrected'
       ? v.correctedSubtype
-      : v.aiSubtypeAtVote;   // "confirmed" means the AI's label was right
+      : v.aiSubtypeAtVote;
     if (!label) continue;
     tally[label] = (tally[label] || 0) + 1;
   }
@@ -59,7 +57,6 @@ const AiFlagSchema = new Schema(
       ],
       default: 'unavailable',
     },
-    // ─── LEVEL 2 SUBTYPE FIELDS ───────────────────────────────────
     subtype: {
       type: String,
       enum: [
@@ -74,7 +71,6 @@ const AiFlagSchema = new Schema(
     },
     subtypeConfidence: { type: Number, min: 0, max: 1, default: null },
     subtypeModelVersion: { type: String, default: null },
-    // ──────────────────────────────────────────────────────────────
     isScam: { type: Boolean, default: null },
     confidenceScore: { type: Number, min: 0, max: 1, default: null },
     riskLevel: {
@@ -262,9 +258,6 @@ const ReportSchema = new Schema(
     },
 
     // ─── OFFICER REVIEW FIELDS (per-report final verdict) ──────────
-    // Populated by the officer review workflow. NOT part of the hash
-    // chain — excluded from getCanonicalPayload() so mutations don't
-    // invalidate the chain.
     officerAction: {
       type: String,
       enum: ['confirmed', 'corrected', 'unsure', 'spam', null],
@@ -457,25 +450,11 @@ ReportSchema.statics.castVote = async function castVote(
   };
 
   const pipeline = [
+    { $set: { votes: { $concatArrays: [{ $ifNull: ['$votes', []] }, [{ $literal: vote }]] } } },
     {
       $set: {
-        votes: {
-          $concatArrays: [{ $ifNull: ['$votes', []] }, [{ $literal: vote }]],
-        },
-      },
-    },
-    {
-      $set: {
-        'consensusState.approvals': {
-          $size: {
-            $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'approve'] } },
-          },
-        },
-        'consensusState.rejections': {
-          $size: {
-            $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'reject'] } },
-          },
-        },
+        'consensusState.approvals': { $size: { $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'approve'] } } } },
+        'consensusState.rejections': { $size: { $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'reject'] } } } },
         'consensusState.required': CONSENSUS_REQUIRED,
       },
     },
@@ -484,24 +463,8 @@ ReportSchema.statics.castVote = async function castVote(
         status: {
           $switch: {
             branches: [
-              {
-                case: {
-                  $and: [
-                    { $gte: [{ $size: '$votes' }, 3] },
-                    { $gte: ['$consensusState.approvals', 2] },
-                  ],
-                },
-                then: 'blacklisted',
-              },
-              {
-                case: {
-                  $and: [
-                    { $gte: [{ $size: '$votes' }, 3] },
-                    { $gte: ['$consensusState.rejections', 2] },
-                  ],
-                },
-                then: 'rejected',
-              },
+              { case: { $and: [{ $gte: [{ $size: '$votes' }, 3] }, { $gte: ['$consensusState.approvals', 2] }] }, then: 'blacklisted' },
+              { case: { $and: [{ $gte: [{ $size: '$votes' }, 3] }, { $gte: ['$consensusState.rejections', 2] }] }, then: 'rejected' },
               { case: { $eq: ['$consensusState.approvals', 2] }, then: 'two_approvals' },
               { case: { $eq: ['$consensusState.approvals', 1] }, then: 'one_approval' },
             ],
@@ -514,18 +477,7 @@ ReportSchema.statics.castVote = async function castVote(
       $set: {
         resolvedAt: {
           $cond: [
-            {
-              $and: [
-                { $gte: [{ $size: '$votes' }, 3] },
-                {
-                  $or: [
-                    { $gte: ['$consensusState.approvals', 2] },
-                    { $gte: ['$consensusState.rejections', 2] },
-                  ],
-                },
-                { $eq: [{ $ifNull: ['$resolvedAt', null] }, null] },
-              ],
-            },
+            { $and: [{ $gte: [{ $size: '$votes' }, 3] }, { $or: [{ $gte: ['$consensusState.approvals', 2] }, { $gte: ['$consensusState.rejections', 2] }] }, { $eq: [{ $ifNull: ['$resolvedAt', null] }, null] }] },
             '$$NOW',
             { $ifNull: ['$resolvedAt', null] },
           ],
@@ -535,30 +487,18 @@ ReportSchema.statics.castVote = async function castVote(
   ];
 
   const result = await collection.findOneAndUpdate(
-    {
-      reportId,
-      status: { $in: OPEN_STATUSES },
-      'votes.userId': { $ne: userId },
-    },
+    { reportId, status: { $in: OPEN_STATUSES }, 'votes.userId': { $ne: userId } },
     pipeline,
     { returnDocument: 'after' }
   );
 
   const updated = unwrapFindOneAndUpdate(result);
   if (updated) {
-    // If the report just reached a terminal state, compute and persist
-    // the aggregated subtype verdict.
     if (['blacklisted', 'approved', 'rejected'].includes(updated.status)) {
       const { label, agreement } = computeAggregatedSubtype(updated.votes);
       await mongoose.model('Report').collection.updateOne(
         { reportId },
-        {
-          $set: {
-            officerSubtypeAggregated: label,
-            officerSubtypeAgreement: agreement,
-            officerSubtypeFinalizedAt: new Date(),
-          },
-        }
+        { $set: { officerSubtypeAggregated: label, officerSubtypeAgreement: agreement, officerSubtypeFinalizedAt: new Date() } }
       );
       updated.officerSubtypeAggregated = label;
       updated.officerSubtypeAgreement = agreement;
@@ -567,27 +507,14 @@ ReportSchema.statics.castVote = async function castVote(
     return updated;
   }
 
-  const existing = await collection.findOne(
-    { reportId },
-    { projection: { status: 1, votes: 1 } }
-  );
+  const existing = await collection.findOne({ reportId }, { projection: { status: 1, votes: 1 } });
 
-  if (!existing) {
-    throw httpError(404, 'NOT_FOUND', 'Report not found.');
-  }
+  if (!existing) throw httpError(404, 'NOT_FOUND', 'Report not found.');
   if (!OPEN_STATUSES.includes(existing.status)) {
-    throw httpError(
-      409,
-      'REPORT_FINALIZED',
-      `This report is already finalized as "${existing.status}" and no longer accepts votes.`
-    );
+    throw httpError(409, 'REPORT_FINALIZED', `This report is already finalized as "${existing.status}" and no longer accepts votes.`);
   }
   if (Array.isArray(existing.votes) && existing.votes.some((v) => v.userId === userId)) {
-    throw httpError(
-      409,
-      'DUPLICATE_VOTE',
-      'You have already voted on this report. A single officer cannot vote twice.'
-    );
+    throw httpError(409, 'DUPLICATE_VOTE', 'You have already voted on this report. A single officer cannot vote twice.');
   }
 
   throw httpError(409, 'VOTE_CONFLICT', 'The vote could not be recorded. Please refresh and try again.');
@@ -611,55 +538,25 @@ ReportSchema.statics.changeVote = async function changeVote(
     aiSubtypeModelVersionAtVote = null,
   } = {}
 ) {
-  if (!reportId || typeof reportId !== 'string') {
-    throw httpError(400, 'VALIDATION_ERROR', 'A valid reportId is required.');
-  }
-  if (!userId || typeof userId !== 'string') {
-    throw httpError(400, 'VALIDATION_ERROR', 'A voter identity is required.');
-  }
-  if (!['approve', 'reject'].includes(decision)) {
-    throw httpError(400, 'VALIDATION_ERROR', "decision must be either 'approve' or 'reject'.");
-  }
+  if (!reportId || typeof reportId !== 'string') throw httpError(400, 'VALIDATION_ERROR', 'A valid reportId is required.');
+  if (!userId || typeof userId !== 'string') throw httpError(400, 'VALIDATION_ERROR', 'A voter identity is required.');
+  if (!['approve', 'reject'].includes(decision)) throw httpError(400, 'VALIDATION_ERROR', "decision must be either 'approve' or 'reject'.");
 
   const VALID_SUBTYPE_ACTIONS = ['confirmed', 'corrected', 'unsure', null];
-  if (!VALID_SUBTYPE_ACTIONS.includes(subtypeAction)) {
-    throw httpError(400, 'VALIDATION_ERROR',
-      `subtypeAction must be one of: confirmed, corrected, unsure, null.`);
-  }
-  if (subtypeAction === 'corrected' && !correctedSubtype) {
-    throw httpError(400, 'VALIDATION_ERROR',
-      'correctedSubtype is required when subtypeAction is "corrected".');
-  }
+  if (!VALID_SUBTYPE_ACTIONS.includes(subtypeAction)) throw httpError(400, 'VALIDATION_ERROR', `subtypeAction must be one of: confirmed, corrected, unsure, null.`);
+  if (subtypeAction === 'corrected' && !correctedSubtype) throw httpError(400, 'VALIDATION_ERROR', 'correctedSubtype is required when subtypeAction is "corrected".');
 
   const collection = mongoose.model('Report').collection;
 
   const now = new Date();
   const nextComment = String(comment || '').trim().slice(0, 2000);
 
-  const before = await collection.findOne(
-    { reportId },
-    { projection: { status: 1, votes: 1, consensusState: 1 } }
-  );
-
-  if (!before) {
-    throw httpError(404, 'NOT_FOUND', 'Report not found.');
-  }
-  if (!OPEN_STATUSES.includes(before.status)) {
-    throw httpError(
-      409,
-      'REPORT_FINALIZED',
-      `This report is already finalized as "${before.status}" and its votes can no longer be edited.`
-    );
-  }
+  const before = await collection.findOne({ reportId }, { projection: { status: 1, votes: 1, consensusState: 1 } });
+  if (!before) throw httpError(404, 'NOT_FOUND', 'Report not found.');
+  if (!OPEN_STATUSES.includes(before.status)) throw httpError(409, 'REPORT_FINALIZED', `This report is already finalized as "${before.status}" and its votes can no longer be edited.`);
 
   const existingVote = (before.votes || []).find((v) => v.userId === userId);
-  if (!existingVote) {
-    throw httpError(
-      409,
-      'NOT_VOTED_YET',
-      'You have not voted on this report yet, so there is nothing to edit.'
-    );
-  }
+  if (!existingVote) throw httpError(409, 'NOT_VOTED_YET', 'You have not voted on this report yet, so there is nothing to edit.');
 
   const previous = {
     decision: existingVote.decision,
@@ -702,16 +599,8 @@ ReportSchema.statics.changeVote = async function changeVote(
     },
     {
       $set: {
-        'consensusState.approvals': {
-          $size: {
-            $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'approve'] } },
-          },
-        },
-        'consensusState.rejections': {
-          $size: {
-            $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'reject'] } },
-          },
-        },
+        'consensusState.approvals': { $size: { $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'approve'] } } } },
+        'consensusState.rejections': { $size: { $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'reject'] } } } },
         'consensusState.required': CONSENSUS_REQUIRED,
       },
     },
@@ -720,24 +609,8 @@ ReportSchema.statics.changeVote = async function changeVote(
         status: {
           $switch: {
             branches: [
-              {
-                case: {
-                  $and: [
-                    { $gte: [{ $size: '$votes' }, 3] },
-                    { $gte: ['$consensusState.approvals', 2] },
-                  ],
-                },
-                then: 'blacklisted',
-              },
-              {
-                case: {
-                  $and: [
-                    { $gte: [{ $size: '$votes' }, 3] },
-                    { $gte: ['$consensusState.rejections', 2] },
-                  ],
-                },
-                then: 'rejected',
-              },
+              { case: { $and: [{ $gte: [{ $size: '$votes' }, 3] }, { $gte: ['$consensusState.approvals', 2] }] }, then: 'blacklisted' },
+              { case: { $and: [{ $gte: [{ $size: '$votes' }, 3] }, { $gte: ['$consensusState.rejections', 2] }] }, then: 'rejected' },
               { case: { $eq: ['$consensusState.approvals', 2] }, then: 'two_approvals' },
               { case: { $eq: ['$consensusState.approvals', 1] }, then: 'one_approval' },
             ],
@@ -749,11 +622,7 @@ ReportSchema.statics.changeVote = async function changeVote(
   ];
 
   const result = await collection.findOneAndUpdate(
-    {
-      reportId,
-      status: { $in: OPEN_STATUSES },
-      'votes.userId': userId,
-    },
+    { reportId, status: { $in: OPEN_STATUSES }, 'votes.userId': userId },
     pipeline,
     { returnDocument: 'after' }
   );
@@ -764,13 +633,7 @@ ReportSchema.statics.changeVote = async function changeVote(
       const { label, agreement } = computeAggregatedSubtype(updated.votes);
       await mongoose.model('Report').collection.updateOne(
         { reportId },
-        {
-          $set: {
-            officerSubtypeAggregated: label,
-            officerSubtypeAgreement: agreement,
-            officerSubtypeFinalizedAt: new Date(),
-          },
-        }
+        { $set: { officerSubtypeAggregated: label, officerSubtypeAgreement: agreement, officerSubtypeFinalizedAt: new Date() } }
       );
       updated.officerSubtypeAggregated = label;
       updated.officerSubtypeAgreement = agreement;
@@ -778,73 +641,34 @@ ReportSchema.statics.changeVote = async function changeVote(
     return { updated, previous };
   }
 
-  throw httpError(
-    409,
-    'VOTE_CONFLICT',
-    'The report changed while your edit was being saved. Please refresh and try again.'
-  );
+  throw httpError(409, 'VOTE_CONFLICT', 'The report changed while your edit was being saved. Please refresh and try again.');
 };
 
-ReportSchema.statics.applyWorkflowUpdate = async function applyWorkflowUpdate(
-  reportId,
-  { votes, consensusState, status }
-) {
-  const allowedStatuses = [
-    'pending',
-    'under_review',
-    'one_approval',
-    'two_approvals',
-    'blacklisted',
-    'approved',
-    'rejected',
-  ];
-  if (status && !allowedStatuses.includes(status)) {
-    throw new Error(`Invalid status "${status}". Allowed: ${allowedStatuses.join(', ')}`);
-  }
+ReportSchema.statics.applyWorkflowUpdate = async function applyWorkflowUpdate(reportId, { votes, consensusState, status }) {
+  const allowedStatuses = ['pending', 'under_review', 'one_approval', 'two_approvals', 'blacklisted', 'approved', 'rejected'];
+  if (status && !allowedStatuses.includes(status)) throw new Error(`Invalid status "${status}". Allowed: ${allowedStatuses.join(', ')}`);
 
   const update = {};
   if (votes !== undefined) update.votes = votes;
   if (consensusState !== undefined) update.consensusState = consensusState;
   if (status !== undefined) {
     update.status = status;
-    if (RESOLVED_STATUSES.includes(status)) {
-      update.resolvedAt = new Date();
-    }
+    if (RESOLVED_STATUSES.includes(status)) update.resolvedAt = new Date();
   }
 
-  if (Object.keys(update).length === 0) {
-    throw new Error('applyWorkflowUpdate requires at least one workflow field to change.');
-  }
+  if (Object.keys(update).length === 0) throw new Error('applyWorkflowUpdate requires at least one workflow field to change.');
 
-  return mongoose.model('Report').collection.updateOne(
-    { reportId },
-    { $set: update }
-  );
+  return mongoose.model('Report').collection.updateOne({ reportId }, { $set: update });
 };
 
 ReportSchema.statics.updateStatus = async function updateStatus(reportId, newStatus) {
-  const allowed = [
-    'pending',
-    'under_review',
-    'one_approval',
-    'two_approvals',
-    'blacklisted',
-    'approved',
-    'rejected',
-  ];
-  if (!allowed.includes(newStatus)) {
-    throw new Error(`Invalid status "${newStatus}". Allowed: ${allowed.join(', ')}`);
-  }
+  const allowed = ['pending', 'under_review', 'one_approval', 'two_approvals', 'blacklisted', 'approved', 'rejected'];
+  if (!allowed.includes(newStatus)) throw new Error(`Invalid status "${newStatus}". Allowed: ${allowed.join(', ')}`);
 
   const update = { status: newStatus };
-  if (RESOLVED_STATUSES.includes(newStatus)) {
-    update.resolvedAt = new Date();
-  }
+  if (RESOLVED_STATUSES.includes(newStatus)) update.resolvedAt = new Date();
 
-  return mongoose.model('Report').collection.updateOne(
-    { reportId },
-    { $set: update }
-  );
+  return mongoose.model('Report').collection.updateOne({ reportId }, { $set: update });
 };
 
 const ReportModel = mongoose.model('Report', ReportSchema);
