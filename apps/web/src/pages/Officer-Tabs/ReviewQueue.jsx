@@ -1,5 +1,5 @@
 // apps/web/src/pages/Officer-Tabs/ReviewQueue.jsx
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchReports, submitReportVote } from "../../lib/api";
 import apiClient from "../../lib/api";
 import { useAuth } from "../../context/AuthContext";
@@ -16,11 +16,53 @@ const STATUS_ORDER = [
   { key: 'approved',      label: 'Approved',       color: '#22c55e' },
 ];
 
-// 9 columns: ID, NUMBER, TYPE, REPORTER, REPORTS, CHANNEL, SUBMITTED, PRIOR VOTES, ACTION
-const COL_WIDTHS = ['12%', '14%', '12%', '14%', '7%', '7%', '14%', '9%', '11%'];
+// 10 columns: ID, NUMBER, TYPE, SUBTYPE, REPORTER, REPORTS, CHANNEL, SUBMITTED, PRIOR VOTES, ACTION
+const COL_WIDTHS = ['10%', '12%', '10%', '13%', '12%', '6%', '6%', '12%', '9%', '10%'];
 
-const CheckIcon = ({ color }) => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+// ─── SUBTYPE TAXONOMY (Level 2) ──────────────────────────────────────
+const SUBTYPES_BY_TIER = {
+  legitimate: [
+    'personal_conversational',
+    'two_factor_auth',
+    'appointment_reminder',
+    'delivery_tracking',
+    'bank_activity_alert',
+  ],
+  grey_area: [
+    'brand_marketing',
+  ],
+  malicious: [
+    'phishing_link',
+    'fake_prize_lottery',
+    'wrong_number_baiting',
+    'urgent_fine_toll',
+    'impersonation_family',
+  ],
+};
+
+const SUBTYPE_LABELS = {
+  personal_conversational: 'Personal Conversation',
+  two_factor_auth: 'One-Time Password (OTP)',
+  appointment_reminder: 'Appointment Reminder',
+  delivery_tracking: 'Delivery Tracking',
+  bank_activity_alert: 'Bank Activity Alert',
+  brand_marketing: 'Brand Marketing',
+  phishing_link: 'Phishing Link (Smishing)',
+  fake_prize_lottery: 'Fake Prize / Lottery',
+  wrong_number_baiting: 'Wrong-Number Baiting',
+  urgent_fine_toll: 'Urgent Fine / Toll',
+  impersonation_family: 'Impersonation (Family)',
+};
+
+const RISK_TIER_STYLES = {
+  malicious: { dot: '#f43f5e', text: '#fb7185', bg: 'rgba(244,63,94,0.06)', border: 'rgba(244,63,94,0.25)' },
+  grey_area: { dot: '#eab308', text: '#facc15', bg: 'rgba(234,179,8,0.06)', border: 'rgba(234,179,8,0.25)' },
+  legitimate: { dot: '#10b981', text: '#34d399', bg: 'rgba(16,185,129,0.06)', border: 'rgba(16,185,129,0.25)' },
+};
+
+// ─── SVG ICONS ───────────────────────────────────────────────────────
+const CheckIcon = ({ color, size = 14 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <path d="M20 6L9 17l-5-5" />
   </svg>
 );
@@ -36,6 +78,33 @@ const SearchIcon = ({ color = "#4b5563" }) => (
   <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
     <circle cx="6" cy="6" r="4.5" stroke={color} strokeWidth="1.2" />
     <path d="M9.5 9.5l2.5 2.5" stroke={color} strokeWidth="1.2" strokeLinecap="round" />
+  </svg>
+);
+
+const PencilIcon = ({ color, size = 14 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 20h9" />
+    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+  </svg>
+);
+
+const QuestionIcon = ({ color, size = 14 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10" />
+    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+    <line x1="12" y1="17" x2="12.01" y2="17" />
+  </svg>
+);
+
+const StarIcon = ({ color = "#f59e0b", size = 14, filled = false }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? color : "none"} stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+  </svg>
+);
+
+const ChevronDownIcon = ({ color = "#64748b", size = 12 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="6 9 12 15 18 9" />
   </svg>
 );
 
@@ -95,11 +164,20 @@ function mapReportToRow(r, currentUid) {
     nullifierHash: r.nullifierHash || r.nullifier || null,
     zkpHash: r.zkpHash || null,
     jurisdiction: r.jurisdiction || "PH",
-    // ─── REPORTER IDENTITY (from kimmy-branch) ────────────────────────
     reporterName: r.reporterName || null,
     reporterEmail: r.reporterEmail || null,
     reporterShared: Boolean(r.reporterShared),
-    // ──────────────────────────────────────────────────────────────────
+    aiSubtype: ai.subtype || r.aiSubtype || null,
+    aiSubtypeConfidence: typeof ai.subtypeConfidence === "number"
+      ? ai.subtypeConfidence
+      : (typeof r.aiSubtypeConfidence === "number" ? r.aiSubtypeConfidence : null),
+    aiSubtypeModelVersion: ai.subtypeModelVersion || r.aiSubtypeModelVersion || null,
+    aiExplanationReasons: Array.isArray(ai.explanationReasons)
+      ? ai.explanationReasons
+      : (Array.isArray(r.aiExplanationReasons) ? r.aiExplanationReasons : []),
+    mySubtypeAction: myVote?.subtypeAction || null,
+    myCorrectedSubtype: myVote?.correctedSubtype || null,
+    myIsHighValue: Boolean(myVote?.isHighValue),
   };
 }
 
@@ -125,6 +203,46 @@ export default function ReviewQueue() {
 
   const [isEditMode, setIsEditMode] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
+
+  // ─── SUBTYPE VERIFICATION STATE (continuous learning) ─────────────
+  const [subtypeAction, setSubtypeAction] = useState(null);
+  const [correctedSubtype, setCorrectedSubtype] = useState(null);
+  const [isHighValue, setIsHighValue] = useState(false);
+
+  // ─── Evidence zoom lightbox ────────────────────────────────────────
+  const [zoomImage, setZoomImage] = useState(null);
+  const [zoomScale, setZoomScale] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const dragStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+
+  useEffect(() => {
+    if (!voteModal) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") closeModal();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [voteModal]);
+
+  useEffect(() => {
+    if (zoomScale <= 1 && (pan.x !== 0 || pan.y !== 0)) {
+      setPan({ x: 0, y: 0 });
+    }
+  }, [zoomScale, pan.x, pan.y]);
+
+  function openZoom(src) {
+    setZoomImage(src);
+    setZoomScale(1);
+    setPan({ x: 0, y: 0 });
+    setDragging(false);
+  }
+  function closeZoom() {
+    setZoomImage(null);
+    setZoomScale(1);
+    setPan({ x: 0, y: 0 });
+    setDragging(false);
+  }
 
   const loadReports = useCallback(async () => {
     setLoading(true);
@@ -194,6 +312,10 @@ export default function ReviewQueue() {
     setIsEditMode(false);
     setLoadingDetail(true);
 
+    setSubtypeAction(row.mySubtypeAction || null);
+    setCorrectedSubtype(row.myCorrectedSubtype || null);
+    setIsHighValue(Boolean(row.myIsHighValue));
+
     setVoteModal({ ...row, evidenceImage: null, _loadingImage: true });
 
     try {
@@ -211,17 +333,29 @@ export default function ReviewQueue() {
         myDecision: freshMyVote?.decision || row.myDecision,
         myComment: freshMyVote?.comment || "",
         myEditedAt: freshMyVote?.editedAt || null,
-        // ─── REPORTER IDENTITY ──────────────────────────────────────
         reporterName: full?.reporterName ?? row.reporterName ?? null,
         reporterEmail: full?.reporterEmail ?? row.reporterEmail ?? null,
         reporterShared: Boolean(full?.reporterShared ?? row.reporterShared),
-        // ─────────────────────────────────────────────────────────────
+        aiSubtype: full?.aiFlag?.subtype || full?.aiSubtype || row.aiSubtype || null,
+        aiSubtypeConfidence:
+          (typeof full?.aiFlag?.subtypeConfidence === "number" ? full.aiFlag.subtypeConfidence : null) ??
+          (typeof full?.aiSubtypeConfidence === "number" ? full.aiSubtypeConfidence : null) ??
+          row.aiSubtypeConfidence ?? null,
+        aiSubtypeModelVersion:
+          full?.aiFlag?.subtypeModelVersion || full?.aiSubtypeModelVersion || row.aiSubtypeModelVersion || null,
+        aiExplanationReasons:
+          Array.isArray(full?.aiFlag?.explanationReasons) ? full.aiFlag.explanationReasons :
+          Array.isArray(full?.aiExplanationReasons) ? full.aiExplanationReasons :
+          row.aiExplanationReasons || [],
         _loadingImage: false,
       });
 
       if (freshMyVote) {
         setDecision(freshMyVote.decision);
         setComment(freshMyVote.comment || "");
+        setSubtypeAction(freshMyVote.subtypeAction || null);
+        setCorrectedSubtype(freshMyVote.correctedSubtype || null);
+        setIsHighValue(Boolean(freshMyVote.isHighValue));
       }
     } catch (err) {
       console.error('[ReviewQueue] detail fetch failed:', err);
@@ -252,6 +386,7 @@ export default function ReviewQueue() {
         r.id.toLowerCase().includes(q) ||
         r.number.toLowerCase().includes(q) ||
         r.type.toLowerCase().includes(q) ||
+        (r.aiSubtype || "").toLowerCase().includes(q) ||
         (r.reporterName || "").toLowerCase().includes(q) ||
         (r.reporterEmail || "").toLowerCase().includes(q)
       );
@@ -276,6 +411,9 @@ export default function ReviewQueue() {
     setComment("");
     setIsEditMode(false);
     setSavingEdit(false);
+    setSubtypeAction(null);
+    setCorrectedSubtype(null);
+    setIsHighValue(false);
   }
 
   const modalMode = !voteModal
@@ -286,11 +424,29 @@ export default function ReviewQueue() {
         ? (isEditMode ? 'edit' : 'read')
         : 'vote';
 
+  function buildSubtypePayload() {
+    return {
+      subtypeAction: subtypeAction || null,
+      correctedSubtype: subtypeAction === 'corrected' ? correctedSubtype : null,
+      isHighValue: Boolean(isHighValue),
+      aiSubtypeAtVote: voteModal?.aiSubtype || null,
+      aiSubtypeModelVersionAtVote: voteModal?.aiSubtypeModelVersion || null,
+    };
+  }
+
   async function handleSubmitVote() {
     if (!decision || !comment.trim() || !voteModal) return;
+    if (subtypeAction === 'corrected' && !correctedSubtype) {
+      alert("Please choose the correct subtype, or pick a different option.");
+      return;
+    }
     setSubmittingVote(true);
     try {
-      await submitReportVote(voteModal.id, { decision, comment: comment.trim() });
+      await submitReportVote(voteModal.id, {
+        decision,
+        comment: comment.trim(),
+        ...buildSubtypePayload(),
+      });
       closeModal();
       setShowSuccess(true);
       setTimeout(() => setShowSuccess(false), 3000);
@@ -306,11 +462,16 @@ export default function ReviewQueue() {
 
   async function handleSaveEdit() {
     if (!decision || !comment.trim() || !voteModal) return;
+    if (subtypeAction === 'corrected' && !correctedSubtype) {
+      alert("Please choose the correct subtype, or pick a different option.");
+      return;
+    }
     setSavingEdit(true);
     try {
       await apiClient.patch(`/api/v1/reports/${voteModal.id}/vote`, {
         decision,
         comment: comment.trim(),
+        ...buildSubtypePayload(),
       });
       closeModal();
       setShowSuccess(true);
@@ -328,17 +489,24 @@ export default function ReviewQueue() {
   function enterEditMode() {
     setDecision(voteModal.myDecision || null);
     setComment(voteModal.myComment || "");
+    setSubtypeAction(voteModal.mySubtypeAction || null);
+    setCorrectedSubtype(voteModal.myCorrectedSubtype || null);
+    setIsHighValue(Boolean(voteModal.myIsHighValue));
     setIsEditMode(true);
   }
 
   function cancelEditMode() {
     setDecision(voteModal.myDecision || null);
     setComment(voteModal.myComment || "");
+    setSubtypeAction(voteModal.mySubtypeAction || null);
+    setCorrectedSubtype(voteModal.myCorrectedSubtype || null);
+    setIsHighValue(Boolean(voteModal.myIsHighValue));
     setIsEditMode(false);
   }
 
   const submitDisabled =
-    !decision || !comment.trim() || submittingVote || savingEdit;
+    !decision || !comment.trim() || submittingVote || savingEdit ||
+    (subtypeAction === 'corrected' && !correctedSubtype);
 
   return (
     <div>
@@ -368,14 +536,14 @@ export default function ReviewQueue() {
           </button>
         ))}
 
-        <div style={{ position: "relative", marginLeft: "auto", width: "220px" }}>
+        <div style={{ position: "relative", marginLeft: "auto", width: "240px" }}>
           <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", pointerEvents: "none", display: "flex" }}>
             <SearchIcon />
           </span>
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search ID, number, type…"
+            placeholder="Search ID, number, type, subtype…"
             style={{ width: "100%", padding: "8px 12px 8px 30px", borderRadius: "8px", fontSize: "12px", background: "#0e0e18", border: "1px solid #1a1a2a", color: "#e2e8f0", outline: "none", boxSizing: "border-box" }}
           />
         </div>
@@ -395,7 +563,7 @@ export default function ReviewQueue() {
       {showSuccess && (
         <div style={{ marginBottom: "16px", padding: "12px 16px", borderRadius: "10px", fontSize: "13px", fontWeight: 500, background: "#0a1a12", border: "1px solid #22c55e40", color: "#22c55e", display: "flex", alignItems: "center", gap: "10px" }}>
           <CheckIcon color="#22c55e" />
-          Vote saved.
+          Vote saved. Your subtype feedback is queued for the next retraining run.
         </div>
       )}
 
@@ -423,9 +591,19 @@ export default function ReviewQueue() {
                 <colgroup>
                   {COL_WIDTHS.map((w, i) => <col key={i} style={{ width: w }} />)}
                 </colgroup>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid #1a1a2a" }}>
+                    {['ID', 'NUMBER', 'TYPE', 'SUBTYPE', 'REPORTER', 'RPT', 'CH.', 'SUBMITTED', 'PRIOR VOTES', ''].map((h, i) => (
+                      <th key={i} style={{ padding: "8px 20px", textAlign: "left", fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", textTransform: "uppercase" }}>
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
                 <tbody>
                   {group.items.map((row) => {
                     const clickable = canOpenRow(row);
+                    const tier = RISK_TIER_STYLES[row.aiLabel] || null;
                     return (
                       <tr
                         key={row.id}
@@ -441,20 +619,38 @@ export default function ReviewQueue() {
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#3b82f6", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.id.slice(0, 12)}</td>
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#fff", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.number}</td>
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#9ca3af", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.type}</td>
-                        {/* ─── REPORTER IDENTITY ─────────────────────────── */}
+                        <td style={{ padding: "12px 20px", fontSize: "11px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {row.aiSubtype ? (
+                            <span
+                              style={{
+                                padding: "2px 8px",
+                                borderRadius: "6px",
+                                fontFamily: "'JetBrains Mono',monospace",
+                                color: tier ? tier.text : "#a5b4fc",
+                                background: tier ? tier.bg : "rgba(79,70,229,0.08)",
+                                border: `1px solid ${tier ? tier.border : "rgba(79,70,229,0.2)"}`,
+                              }}
+                            >
+                              {row.aiSubtype}
+                            </span>
+                          ) : (
+                            <span style={{ color: "#4b5563" }}>—</span>
+                          )}
+                        </td>
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#9ca3af", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           {row.reporterShared && row.reporterName
                             ? row.reporterName
                             : <span style={{ color: "#4b5563", fontStyle: "italic" }}>Anonymous</span>}
                         </td>
-                        {/* ──────────────────────────────────────────────── */}
                         <td style={{ padding: "12px 20px", fontSize: "12px", fontWeight: 700, color: "#fff" }}>{row.reports}</td>
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#6b7280" }}>{row.channel}</td>
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.submitted}</td>
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: row.priorVotes === "1 vote" ? "#f59e0b" : "#4b5563" }}>{row.priorVotes}</td>
                         <td style={{ padding: "12px 20px" }}>
                           {row.hasVoted ? (
-                            <span style={{ fontSize: "11px", color: "#22c55e", fontWeight: 600 }}>Voted</span>
+                            <span style={{ fontSize: "11px", color: "#22c55e", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                              <CheckIcon color="#22c55e" size={11} /> Voted
+                            </span>
                           ) : row.isUnresolved ? (
                             <button
                               onClick={(e) => { e.stopPropagation(); openVoteModal(row); }}
@@ -477,7 +673,7 @@ export default function ReviewQueue() {
 
       {voteModal && (
         <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }} onClick={closeModal}>
-          <div style={{ width: "100%", maxWidth: "560px", maxHeight: "90vh", margin: "0 16px", borderRadius: "20px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a", display: "flex", flexDirection: "column", overflow: "hidden" }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ width: "100%", maxWidth: "600px", maxHeight: "90vh", margin: "0 16px", borderRadius: "20px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a", display: "flex", flexDirection: "column", overflow: "hidden" }} onClick={(e) => e.stopPropagation()}>
             <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: "linear-gradient(90deg,transparent,#3b82f6,transparent)", zIndex: 1 }} />
             <div style={{ position: "sticky", top: 0, zIndex: 10, display: "flex", alignItems: "flex-start", justifyContent: "space-between", padding: "28px 28px 16px", background: "#0e0e18", borderBottom: "1px solid #13131e" }}>
               <div>
@@ -494,13 +690,93 @@ export default function ReviewQueue() {
                 <div style={{ fontSize: "11px", color: "#4b5563" }}>Prior votes: {voteModal.priorVotes} · Submitted {voteModal.submitted}</div>
               </div>
 
-              {/* Read-only badge for terminal reports */}
               {voteModal.isResolved && (
                 <div style={{ marginBottom: "16px", padding: "10px 14px", borderRadius: "8px", background: "#0a1a12", border: "1px solid #22c55e30", fontSize: "11px", color: "#22c55e", display: "flex", alignItems: "center", gap: "8px" }}>
                   <CheckIcon color="#22c55e" />
                   This case is finalized. Votes can no longer be changed.
                 </div>
               )}
+
+              {/* ─── AI CLASSIFICATION (Level 1 + Level 2) ─────────────── */}
+              <div style={{ marginBottom: "16px" }}>
+                <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "8px", fontFamily: "'JetBrains Mono',monospace" }}>
+                  AI CLASSIFICATION
+                </div>
+
+                {voteModal.aiSubtype ? (
+                  (() => {
+                    const tier = RISK_TIER_STYLES[voteModal.aiLabel] || RISK_TIER_STYLES.grey_area;
+                    return (
+                      <div style={{ padding: "14px 16px", borderRadius: "10px", background: tier.bg, border: `1px solid ${tier.border}` }}>
+                        <div style={{ display: "flex", gap: "20px", alignItems: "flex-start", marginBottom: voteModal.aiExplanationReasons?.length > 0 ? "12px" : 0 }}>
+                          <div style={{ flex: "0 0 auto", minWidth: "110px" }}>
+                            <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>
+                              RISK TIER
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: tier.dot }} />
+                              <span style={{ fontSize: "12px", fontWeight: 700, color: tier.text, fontFamily: "'JetBrains Mono',monospace", textTransform: "uppercase" }}>
+                                {voteModal.aiRiskLevel}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: "10px", color: "#64748b", marginTop: "4px" }}>
+                              {voteModal.aiLabel}
+                            </div>
+                          </div>
+
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>
+                              SUBTYPE
+                            </div>
+                            <div style={{ fontSize: "13px", fontWeight: 700, color: "#e2e8f0", fontFamily: "'JetBrains Mono',monospace", marginBottom: "4px", wordBreak: "break-word" }}>
+                              {voteModal.aiSubtype}
+                            </div>
+                            <div style={{ fontSize: "10px", color: "#64748b" }}>
+                              {voteModal.aiSubtypeConfidence != null
+                                ? `${(voteModal.aiSubtypeConfidence * 100).toFixed(1)}% confidence`
+                                : "confidence unavailable"}
+                              {voteModal.aiSubtypeModelVersion && (
+                                <span style={{ marginLeft: "8px" }}>
+                                  · {voteModal.aiSubtypeModelVersion}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {voteModal.aiExplanationReasons?.length > 0 && (
+                          <div style={{ paddingTop: "12px", borderTop: "1px solid rgba(148,163,184,0.08)" }}>
+                            <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "8px" }}>
+                              WHY THE AI FLAGGED THIS
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                              {voteModal.aiExplanationReasons.map((reason, i) => (
+                                <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
+                                  <span style={{ fontSize: "10px", color: "#818cf8", fontWeight: 700, marginTop: "1px", flexShrink: 0 }}>
+                                    {i + 1}.
+                                  </span>
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ fontSize: "11px", fontWeight: 600, color: "#cbd5e1" }}>
+                                      {reason.category}
+                                    </div>
+                                    <div style={{ fontSize: "10px", color: "#64748b", lineHeight: 1.4 }}>
+                                      {reason.description}
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()
+                ) : (
+                  <div style={{ padding: "12px 14px", borderRadius: "10px", background: "rgba(148,163,184,0.03)", border: "1px solid rgba(148,163,184,0.08)", fontSize: "11px", color: "#64748b", fontStyle: "italic" }}>
+                    No subtype available for this report (subtype model may not have loaded when it was submitted).
+                  </div>
+                )}
+              </div>
 
               {/* ─── REPORTER IDENTITY ──────────────────────────────────── */}
               <div style={{ padding: "12px 14px", borderRadius: "8px", marginBottom: "16px", background: voteModal.reporterShared ? "rgba(59,130,246,0.06)" : "rgba(148,163,184,0.03)", border: `1px solid ${voteModal.reporterShared ? "rgba(59,130,246,0.25)" : "rgba(148,163,184,0.08)"}` }}>
@@ -524,7 +800,6 @@ export default function ReviewQueue() {
                   </div>
                 )}
               </div>
-              {/* ────────────────────────────────────────────────────────── */}
 
               {voteModal.votes.length > 0 && (
                 <div style={{ marginBottom: "20px" }}>
@@ -546,7 +821,24 @@ export default function ReviewQueue() {
                             </span>
                           </div>
                           <div style={{ fontSize: "11px", color: "#9ca3af", lineHeight: 1.5 }}>"{v.comment || 'No comment'}"</div>
-                          <div style={{ fontSize: "10px", color: "#4b5563", marginTop: "4px", fontFamily: "'JetBrains Mono',monospace" }}>
+                          {(v.subtypeAction || v.isHighValue) && (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
+                              {v.subtypeAction && (
+                                <span style={{ padding: "2px 8px", borderRadius: "6px", fontSize: "10px", fontFamily: "'JetBrains Mono',monospace", background: v.subtypeAction === 'confirmed' ? "rgba(34,197,94,0.1)" : v.subtypeAction === 'corrected' ? "rgba(59,130,246,0.1)" : "rgba(234,179,8,0.1)", border: `1px solid ${v.subtypeAction === 'confirmed' ? '#22c55e40' : v.subtypeAction === 'corrected' ? '#3b82f640' : '#eab30840'}`, color: v.subtypeAction === 'confirmed' ? "#22c55e" : v.subtypeAction === 'corrected' ? "#3b82f6" : "#facc15" }}>
+                                  {v.subtypeAction === 'confirmed' && 'Confirmed: '}
+                                  {v.subtypeAction === 'corrected' && 'Corrected: '}
+                                  {v.subtypeAction === 'unsure' && 'Unsure'}
+                                  {v.subtypeAction === 'corrected' && v.correctedSubtype ? v.correctedSubtype : ''}
+                                </span>
+                              )}
+                              {v.isHighValue && (
+                                <span style={{ padding: "2px 8px", borderRadius: "6px", fontSize: "10px", fontFamily: "'JetBrains Mono',monospace", background: "rgba(245,158,11,0.1)", border: "1px solid #f59e0b40", color: "#f59e0b", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                                  <StarIcon color="#f59e0b" size={10} filled /> High-value
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          <div style={{ fontSize: "10px", color: "#4b5563", marginTop: "6px", fontFamily: "'JetBrains Mono',monospace" }}>
                             {formatTimestamp(v.votedAt)}
                             {v.editedAt ? ` · edited ${formatTimestamp(v.editedAt)}` : ''}
                           </div>
@@ -566,9 +858,31 @@ export default function ReviewQueue() {
 
               {!voteModal._loadingImage && voteModal.evidenceImage && (
                 <div style={{ marginBottom: "16px" }}>
-                  <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>SCREENSHOT EVIDENCE</div>
-                  <div style={{ borderRadius: "8px", overflow: "hidden", background: "#080810", border: "1px solid #13131e", maxHeight: "320px", display: "flex", justifyContent: "center" }}>
-                    <img src={voteModal.evidenceImage} alt="Screenshot evidence" style={{ maxWidth: "100%", maxHeight: "320px", objectFit: "contain" }} />
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
+                    <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563" }}>SCREENSHOT EVIDENCE</div>
+                    <div style={{ fontSize: "10px", color: "#3b82f6", fontFamily: "'JetBrains Mono',monospace" }}>Click to zoom</div>
+                  </div>
+                  <div
+                    onClick={() => openZoom(voteModal.evidenceImage)}
+                    style={{
+                      borderRadius: "8px",
+                      overflow: "hidden",
+                      background: "#080810",
+                      border: "1px solid #13131e",
+                      maxHeight: "320px",
+                      display: "flex",
+                      justifyContent: "center",
+                      cursor: "zoom-in",
+                      transition: "border-color 0.15s ease",
+                    }}
+                    onMouseEnter={(e) => e.currentTarget.style.borderColor = "#3b82f6"}
+                    onMouseLeave={(e) => e.currentTarget.style.borderColor = "#13131e"}
+                  >
+                    <img
+                      src={voteModal.evidenceImage}
+                      alt="Screenshot evidence"
+                      style={{ maxWidth: "100%", maxHeight: "320px", objectFit: "contain", pointerEvents: "none" }}
+                    />
                   </div>
                 </div>
               )}
@@ -588,7 +902,6 @@ export default function ReviewQueue() {
                 </div>
               )}
 
-              {/* ── READ MODE (voted, still open) ── */}
               {modalMode === 'read' && !voteModal.isResolved && voteModal.hasVoted && (
                 <div style={{ marginBottom: "16px" }}>
                   <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>YOUR VOTE</div>
@@ -598,6 +911,26 @@ export default function ReviewQueue() {
                       {voteModal.myDecision === 'approve' ? 'You approved this report' : 'You rejected this report'}
                     </div>
                     <div style={{ fontSize: "12px", color: "#cbd5e1", lineHeight: 1.5 }}>"{voteModal.myComment || 'No comment'}"</div>
+
+                    {(voteModal.mySubtypeAction || voteModal.myIsHighValue) && (
+                      <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid rgba(148,163,184,0.08)", display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                        {voteModal.mySubtypeAction && (
+                          <span style={{ padding: "3px 10px", borderRadius: "6px", fontSize: "10px", fontFamily: "'JetBrains Mono',monospace", background: voteModal.mySubtypeAction === 'confirmed' ? "rgba(34,197,94,0.1)" : voteModal.mySubtypeAction === 'corrected' ? "rgba(59,130,246,0.1)" : "rgba(234,179,8,0.1)", border: `1px solid ${voteModal.mySubtypeAction === 'confirmed' ? '#22c55e40' : voteModal.mySubtypeAction === 'corrected' ? '#3b82f640' : '#eab30840'}`, color: voteModal.mySubtypeAction === 'confirmed' ? "#22c55e" : voteModal.mySubtypeAction === 'corrected' ? "#3b82f6" : "#facc15" }}>
+                            {voteModal.mySubtypeAction === 'confirmed' && 'Subtype confirmed: '}
+                            {voteModal.mySubtypeAction === 'corrected' && 'Subtype corrected: '}
+                            {voteModal.mySubtypeAction === 'unsure' && 'Subtype unsure'}
+                            {voteModal.mySubtypeAction === 'confirmed' && voteModal.aiSubtype ? voteModal.aiSubtype : ''}
+                            {voteModal.mySubtypeAction === 'corrected' && voteModal.myCorrectedSubtype ? voteModal.myCorrectedSubtype : ''}
+                          </span>
+                        )}
+                        {voteModal.myIsHighValue && (
+                          <span style={{ padding: "3px 10px", borderRadius: "6px", fontSize: "10px", fontFamily: "'JetBrains Mono',monospace", background: "rgba(245,158,11,0.1)", border: "1px solid #f59e0b40", color: "#f59e0b", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                            <StarIcon color="#f59e0b" size={10} filled /> Marked high-value
+                          </span>
+                        )}
+                      </div>
+                    )}
+
                     {voteModal.myEditedAt && (
                       <div style={{ fontSize: "10px", color: "#4b5563", marginTop: "6px", fontFamily: "'JetBrains Mono',monospace" }}>
                         edited {formatTimestamp(voteModal.myEditedAt)}
@@ -613,12 +946,132 @@ export default function ReviewQueue() {
                 </div>
               )}
 
-              {/* ── VOTE / EDIT MODE ── */}
               {(modalMode === 'vote' || modalMode === 'edit') && (
                 <>
                   {modalMode === 'edit' && (
                     <div style={{ marginBottom: "16px", padding: "10px 14px", borderRadius: "8px", background: "#0a1020", border: "1px solid #3b82f630", fontSize: "11px", color: "#93c5fd" }}>
                       You are editing your vote. Your original timestamp will be kept, and an edit timestamp will be recorded.
+                    </div>
+                  )}
+
+                  {voteModal.aiSubtype && (
+                    <div style={{ marginBottom: "20px", padding: "14px 16px", borderRadius: "10px", background: "#080810", border: "1px solid #1a1a28" }}>
+                      <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "8px", fontFamily: "'JetBrains Mono',monospace" }}>
+                        SUBTYPE VERIFICATION
+                      </div>
+                      <div style={{ fontSize: "11px", color: "#94a3b8", marginBottom: "12px", lineHeight: 1.5 }}>
+                        Your answer becomes a training signal. Confirmed examples reinforce the model; corrected examples teach it the right label; unsure examples are excluded from the next retrain.
+                      </div>
+
+                      <div style={{ display: "flex", gap: "8px", marginBottom: subtypeAction === 'corrected' ? "14px" : "0" }}>
+                        <button
+                          type="button"
+                          onClick={() => { setSubtypeAction('confirmed'); setCorrectedSubtype(null); }}
+                          style={{
+                            flex: 1, padding: "12px 8px", borderRadius: "10px", fontSize: "11px", fontWeight: 700,
+                            cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px",
+                            background: subtypeAction === 'confirmed' ? "rgba(34,197,94,0.12)" : "#111118",
+                            border: `1.5px solid ${subtypeAction === 'confirmed' ? "#22c55e" : "#1a1a28"}`,
+                            color: subtypeAction === 'confirmed' ? "#22c55e" : "#64748b",
+                          }}
+                        >
+                          <CheckIcon color={subtypeAction === 'confirmed' ? "#22c55e" : "#64748b"} size={16} />
+                          <span>Confirm AI</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setSubtypeAction('corrected')}
+                          style={{
+                            flex: 1, padding: "12px 8px", borderRadius: "10px", fontSize: "11px", fontWeight: 700,
+                            cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px",
+                            background: subtypeAction === 'corrected' ? "rgba(59,130,246,0.12)" : "#111118",
+                            border: `1.5px solid ${subtypeAction === 'corrected' ? "#3b82f6" : "#1a1a28"}`,
+                            color: subtypeAction === 'corrected' ? "#3b82f6" : "#64748b",
+                          }}
+                        >
+                          <PencilIcon color={subtypeAction === 'corrected' ? "#3b82f6" : "#64748b"} size={16} />
+                          <span>Correct AI</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => { setSubtypeAction('unsure'); setCorrectedSubtype(null); }}
+                          style={{
+                            flex: 1, padding: "12px 8px", borderRadius: "10px", fontSize: "11px", fontWeight: 700,
+                            cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px",
+                            background: subtypeAction === 'unsure' ? "rgba(234,179,8,0.1)" : "#111118",
+                            border: `1.5px solid ${subtypeAction === 'unsure' ? "#eab308" : "#1a1a28"}`,
+                            color: subtypeAction === 'unsure' ? "#facc15" : "#64748b",
+                          }}
+                        >
+                          <QuestionIcon color={subtypeAction === 'unsure' ? "#facc15" : "#64748b"} size={16} />
+                          <span>Unsure</span>
+                        </button>
+                      </div>
+
+                      {subtypeAction === 'corrected' && (
+                        <div style={{ marginBottom: "14px", position: "relative" }}>
+                          <label style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", display: "block", marginBottom: "6px", fontFamily: "'JetBrains Mono',monospace" }}>
+                            CORRECT SUBTYPE
+                          </label>
+                          <div style={{ position: "relative" }}>
+                            <select
+                              value={correctedSubtype || ''}
+                              onChange={(e) => setCorrectedSubtype(e.target.value || null)}
+                              style={{
+                                width: "100%", padding: "10px 32px 10px 12px", borderRadius: "10px", fontSize: "12px",
+                                background: "#111118", border: "1px solid #1a1a28", color: "#e2e8f0",
+                                outline: "none", cursor: "pointer", appearance: "none", WebkitAppearance: "none",
+                                fontFamily: "'JetBrains Mono',monospace",
+                              }}
+                            >
+                              <option value="">— Choose the correct subtype —</option>
+                              {(SUBTYPES_BY_TIER[voteModal.aiLabel] || []).map((st) => (
+                                <option key={st} value={st}>
+                                  {SUBTYPE_LABELS[st] || st}
+                                  {st === voteModal.aiSubtype ? '  (current AI pick)' : ''}
+                                </option>
+                              ))}
+                            </select>
+                            <span style={{ position: "absolute", right: "10px", top: "50%", transform: "translateY(-50%)", pointerEvents: "none", display: "flex" }}>
+                              <ChevronDownIcon />
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      <label style={{ display: "flex", alignItems: "center", gap: "10px", paddingTop: "12px", borderTop: "1px solid rgba(148,163,184,0.06)", cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={isHighValue}
+                          onChange={(e) => setIsHighValue(e.target.checked)}
+                          style={{ width: "14px", height: "14px", cursor: "pointer", accentColor: "#f59e0b" }}
+                        />
+                        <span style={{ fontSize: "11px", color: "#94a3b8", display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                          <StarIcon color="#f59e0b" size={12} filled={isHighValue} />
+                          Mark as high-value training example
+                          <span style={{ color: "#4b5563" }}>
+                            (weighted 3x in the next retrain)
+                          </span>
+                        </span>
+                      </label>
+
+                      {subtypeAction === 'confirmed' && (
+                        <div style={{ marginTop: "10px", fontSize: "10px", color: "#22c55e", fontStyle: "italic" }}>
+                          Your confirmation will be logged with weight 2.0 in the next retraining run.
+                        </div>
+                      )}
+                      {subtypeAction === 'corrected' && correctedSubtype && (
+                        <div style={{ marginTop: "10px", fontSize: "10px", color: "#3b82f6", fontStyle: "italic" }}>
+                          Your correction ({voteModal.aiSubtype} → {correctedSubtype}) will be logged with weight 2.5 — the model will learn from this.
+                        </div>
+                      )}
+                      {subtypeAction === 'unsure' && (
+                        <div style={{ marginTop: "10px", fontSize: "10px", color: "#facc15", fontStyle: "italic" }}>
+                          This report will be excluded from training. Use this when the evidence is genuinely ambiguous.
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -656,6 +1109,120 @@ export default function ReviewQueue() {
                 </>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {zoomImage && (
+        <div
+          onWheel={(e) => {
+            e.preventDefault();
+            setZoomScale((s) => {
+              const next = Math.min(Math.max(s + (e.deltaY < 0 ? 0.15 : -0.15), 1), 5);
+              if (next <= 1) setPan({ x: 0, y: 0 });
+              return next;
+            });
+          }}
+          onMouseDown={(e) => { e.stopPropagation(); }}
+          style={{
+            position: "fixed", inset: 0, zIndex: 200,
+            background: "rgba(0,0,0,0.94)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: "40px",
+            cursor: dragging ? "grabbing" : (zoomScale > 1 ? "grab" : "default"),
+            overflow: "hidden",
+            userSelect: "none",
+          }}
+        >
+          <img
+            src={zoomImage}
+            alt="Screenshot evidence — zoomed"
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => {
+              if (zoomScale <= 1) return;
+              e.preventDefault();
+              e.stopPropagation();
+              dragStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
+              setDragging(true);
+            }}
+            onMouseMove={(e) => {
+              if (!dragging) return;
+              const dx = e.clientX - dragStart.current.x;
+              const dy = e.clientY - dragStart.current.y;
+              setPan({ x: dragStart.current.panX + dx, y: dragStart.current.panY + dy });
+            }}
+            onMouseUp={() => setDragging(false)}
+            onMouseLeave={() => setDragging(false)}
+            style={{
+              maxWidth: "95vw",
+              maxHeight: "95vh",
+              objectFit: "contain",
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoomScale})`,
+              transformOrigin: "center center",
+              transition: dragging ? "none" : "transform 0.12s ease-out",
+              boxShadow: "0 40px 100px rgba(0,0,0,0.85)",
+              border: "1px solid #1a1a2a",
+              borderRadius: "8px",
+              userSelect: "none",
+              cursor: zoomScale > 1 ? (dragging ? "grabbing" : "grab") : "default",
+            }}
+            draggable={false}
+          />
+
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{
+              position: "absolute", bottom: "20px", left: "50%", transform: "translateX(-50%)",
+              display: "flex", alignItems: "center", gap: "8px",
+              padding: "8px 12px", borderRadius: "999px",
+              background: "#0e0e18", border: "1px solid #1a1a2a",
+              boxShadow: "0 20px 40px rgba(0,0,0,0.6)",
+            }}
+          >
+            <button
+              onClick={() => setZoomScale((s) => {
+                const next = Math.max(s - 0.25, 1);
+                if (next <= 1) setPan({ x: 0, y: 0 });
+                return next;
+              })}
+              disabled={zoomScale <= 1}
+              style={{ width: "32px", height: "32px", borderRadius: "50%", background: "#111120", border: "1px solid #1a1a2a", color: zoomScale <= 1 ? "#374151" : "#e2e8f0", fontSize: "16px", cursor: zoomScale <= 1 ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+            >−</button>
+            <span style={{ fontSize: "11px", color: "#9ca3af", fontFamily: "'JetBrains Mono',monospace", minWidth: "48px", textAlign: "center" }}>
+              {Math.round(zoomScale * 100)}%
+            </span>
+            <button
+              onClick={() => setZoomScale((s) => Math.min(s + 0.25, 5))}
+              disabled={zoomScale >= 5}
+              style={{ width: "32px", height: "32px", borderRadius: "50%", background: "#111120", border: "1px solid #1a1a2a", color: zoomScale >= 5 ? "#374151" : "#e2e8f0", fontSize: "16px", cursor: zoomScale >= 5 ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+            >+</button>
+            <button
+              onClick={() => { setZoomScale(1); setPan({ x: 0, y: 0 }); }}
+              disabled={zoomScale === 1 && pan.x === 0 && pan.y === 0}
+              style={{ padding: "0 12px", height: "32px", borderRadius: "999px", background: "#111120", border: "1px solid #1a1a2a", color: (zoomScale === 1 && pan.x === 0 && pan.y === 0) ? "#374151" : "#9ca3af", fontSize: "11px", fontWeight: 600, cursor: (zoomScale === 1 && pan.x === 0 && pan.y === 0) ? "not-allowed" : "pointer" }}
+            >Reset</button>
+          </div>
+
+          <button
+            onClick={closeZoom}
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{
+              position: "absolute", top: "20px", right: "20px",
+              width: "44px", height: "44px", borderRadius: "50%",
+              background: "#0e0e18", border: "1px solid #3b82f6",
+              color: "#e2e8f0", fontSize: "22px", cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              boxShadow: "0 8px 20px rgba(0,0,0,0.6)",
+            }}
+            title="Close"
+          >×</button>
+
+          <div style={{
+            position: "absolute", top: "26px", left: "50%", transform: "translateX(-50%)",
+            fontSize: "11px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace",
+            pointerEvents: "none", userSelect: "none",
+          }}>
+            scroll to zoom · drag to pan · click × to close
           </div>
         </div>
       )}

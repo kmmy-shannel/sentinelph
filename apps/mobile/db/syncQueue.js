@@ -22,6 +22,15 @@
 // updates each local row's review_status. This is what makes the
 // My Reports / Home four-stage lifecycle (queued → under_review →
 // confirmed | rejected) reflect the latest officer votes.
+//
+// NEW (officer subtype verdict — Phase 4 continuous learning):
+// refreshReportStatuses() now also pulls officerVerifiedAt,
+// officerSubtype, officerSubtypeAction, and officerDecision from each
+// row in GET /api/v1/reports/mine, and writes them into the local
+// SQLite row via updateReportOfficerVerdictByNullifier. This lets
+// MyReportsScreen show the citizen the officer's correction (e.g.
+// "Your report helped improve the model — corrected to Phishing Link")
+// once the review is finalized.
 
 import NetInfo from '@react-native-community/netinfo';
 import api, { OfflineError } from '../lib/api';
@@ -30,6 +39,7 @@ import {
   markReportSynced,
   markReportSyncFailed,
   updateReportReviewStatusByNullifier,
+  updateReportOfficerVerdictByNullifier,
 } from './sqlite';
 
 const DEFAULT_SCAM_TYPE = 'UNKNOWN';
@@ -186,6 +196,16 @@ export async function syncNow() {
  * Matching key: nullifier. This is the ZKP one-time-reporter proof the
  * server stores on every Report and returns from /reports/mine. localId
  * is mobile-only and never reaches the server.
+ *
+ * NEW: when the server returns officer verdict fields on a row
+ * (officerVerifiedAt, officerSubtype, officerSubtypeAction,
+ * officerDecision), those are written into the local row too. This is
+ * what lets MyReportsScreen display "An officer corrected the AI's
+ * subtype to Phishing Link" once the review is finalized.
+ *
+ * NOTE: The server only populates these fields AFTER the review is
+ * finalized (2-of-3 consensus reached or rejected). Before that, they
+ * remain absent and we skip the update — the AI verdict alone is shown.
  */
 export async function refreshReportStatuses() {
   try {
@@ -195,8 +215,25 @@ export async function refreshReportStatuses() {
 
     let updated = 0;
     for (const r of reports) {
-      if (!r?.nullifier || !r?.reviewStatus) continue;
-      await updateReportReviewStatusByNullifier(r.nullifier, r.reviewStatus);
+      if (!r?.nullifier) continue;
+
+      // 1. Update the review_status (queued / under_review / confirmed /
+      //    rejected). This always runs when the server sends a value.
+      if (r.reviewStatus) {
+        await updateReportReviewStatusByNullifier(r.nullifier, r.reviewStatus);
+      }
+
+      // 2. Update officer verdict fields only when they exist — this is
+      //    the continuous-learning signal, mirrored back to the citizen.
+      if (r.officerVerifiedAt) {
+        await updateReportOfficerVerdictByNullifier(r.nullifier, {
+          officerVerifiedAt: r.officerVerifiedAt,
+          officerSubtype: r.officerSubtype || null,
+          officerSubtypeAction: r.officerSubtypeAction || null,
+          officerDecision: r.officerDecision || null,
+        });
+      }
+
       updated += 1;
     }
     return { updated };

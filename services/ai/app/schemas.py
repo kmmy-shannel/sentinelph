@@ -55,6 +55,20 @@ class PredictResponse(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     report_id: Optional[str] = None
+        # --- Level 2 subtype fields ---
+    subtype: Optional[str] = Field(
+        default=None,
+        description="Level 2 subtype (e.g. 'phishing_link', 'two_factor_auth'). "
+                    "None if the subtype model isn't loaded or the tier has no model.",
+    )
+    subtype_confidence: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Model confidence in the subtype prediction.",
+    )
+    subtype_model_version: Optional[str] = Field(
+        default=None,
+        description="Subtype model version string, e.g. 'subtype-malicious-v001'.",
+    )
 
     # Legacy field kept for UI backward-compat: P(malicious) as a scalar.
     probability_score: float = Field(
