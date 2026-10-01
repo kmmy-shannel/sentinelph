@@ -198,9 +198,14 @@ def predict(payload: PredictRequest) -> PredictResponse:
         report_id=payload.report_id,
         probability_score=probability,
         label=label,
+        # --- Level 2 subtype fields (NEW) ---
+        subtype=result.get("subtype"),
+        subtype_confidence=result.get("subtype_confidence"),
+        subtype_model_version=result.get("subtype_model_version"),
+        # --- Existing fields ---
         is_scam=result["is_scam"],
         confidence_score=result["confidence_score"],
-        risk_level=risk_level_upper,                  # ← UPPERCASE
+        risk_level=risk_level_upper,
         explanation_reasons=result["explanation_reasons"],
         ocr_used=ocr_used,
         ocr_extracted_chars=ocr_char_count,

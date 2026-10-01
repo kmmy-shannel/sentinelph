@@ -14,8 +14,19 @@ Both results are checked against hard release gates. A JSON report is
 written to --output regardless of outcome, so failed runs are still
 auditable.
 
+Two evaluation modes are supported:
+
+  --mode model     (default) tests the raw DistilBERT classifier only
+  --mode pipeline  tests the full inference pipeline (model + heuristics),
+                   matching what the production FastAPI service actually
+                   returns to the mobile app
+
+Use --mode model to gate model-quality regressions across retrains. Use
+--mode pipeline to verify the user-facing behavior end to end.
+
 Usage (run from services/ai/):
     python scripts/evaluate.py --model-path ./checkpoints/v3
+    python scripts/evaluate.py --model-path ./checkpoints/v3 --mode pipeline
 
 Exit codes:
     0 - all gates passed
@@ -87,7 +98,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--test-set",
         default="data/eval/test.csv",
-        help="Path to held-out test CSV with columns: text,label.",
+        help="Path to held-out test CSV with columns: text,level1_label.",
     )
     parser.add_argument(
         "--output",
@@ -104,6 +115,15 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=16,
         help="Inference batch size.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["model", "pipeline"],
+        default="model",
+        help=(
+            "model = raw DistilBERT classifier only (default); "
+            "pipeline = full inference pipeline (model + heuristics)."
+        ),
     )
     return parser.parse_args()
 
@@ -206,6 +226,53 @@ def predict_batch(
     return np.array(all_preds), np.array(all_confidences)
 
 
+def predict_batch_pipeline(
+    texts: List[str],
+    model: AutoModelForSequenceClassification,
+    tokenizer: AutoTokenizer,
+    device: str,
+    batch_size: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Run the full inference pipeline (model + heuristics) on a list of texts.
+
+    Uses ScamClassifier from app.inference so that the labels returned here
+    match exactly what the FastAPI /predict endpoint would return for the
+    same input — including any heuristic overrides that floor P(malicious)
+    at MALICIOUS_HEURISTIC_FLOOR when a strong rule fires (spoofed domain,
+    brand impersonation, suspicious TLD, etc.).
+
+    `batch_size` is accepted for API symmetry with predict_batch() but is
+    ignored: ScamClassifier.predict() is single-text because the heuristic
+    layer operates per-message.
+    """
+    # Imported lazily so that --mode model runs don't require a working
+    # heuristic layer or any of its dependencies.
+    from app.inference import ScamClassifier
+
+    classifier = ScamClassifier(model=model, tokenizer=tokenizer)
+
+    preds: List[int] = []
+    confidences: List[float] = []
+
+    for text in texts:
+        result = classifier.predict(text)
+        label_name = result["label"]
+        if label_name not in LABEL2ID:
+            raise ValueError(
+                f"ScamClassifier returned unknown label {label_name!r}; "
+                f"expected one of {sorted(LABEL2ID.keys())}"
+            )
+        preds.append(LABEL2ID[label_name])
+        # ScamClassifier returns probability_score as the score of the
+        # *predicted* class in most implementations; fall back to 0.0 if
+        # the key is missing so a heuristic-only path doesn't crash the
+        # whole eval run.
+        score = result.get("probability_score", result.get("confidence_score", 0.0))
+        confidences.append(float(score))
+
+    return np.array(preds), np.array(confidences)
+
+
 def _preview(text: str, length: int = 60) -> str:
     """Truncate text for compact table display."""
     text = text.replace("\n", " ")
@@ -238,6 +305,7 @@ def evaluate_regression_suite(
     tokenizer: AutoTokenizer,
     device: str,
     batch_size: int,
+    mode: str = "model",
 ) -> Dict[str, Any]:
     """Run the regression suite and summarize pass/fail counts and failures.
 
@@ -247,9 +315,21 @@ def evaluate_regression_suite(
     (a known past failure, an adversarial domain pair, a legit OTP, or a
     brand-impersonation case) is unacceptable regardless of aggregate
     accuracy.
+
+    `mode` selects which prediction path is exercised:
+      - "model"    : raw DistilBERT classifier only
+      - "pipeline" : full ScamClassifier pipeline (model + heuristics)
     """
     texts = [ex["text"] for ex in examples]
-    preds, confidences = predict_batch(texts, model, tokenizer, device, batch_size)
+
+    if mode == "pipeline":
+        preds, confidences = predict_batch_pipeline(
+            texts, model, tokenizer, device, batch_size
+        )
+    else:
+        preds, confidences = predict_batch(
+            texts, model, tokenizer, device, batch_size
+        )
 
     total = len(examples)
     correct = 0
@@ -284,6 +364,7 @@ def evaluate_regression_suite(
             )
 
     return {
+        "mode": mode,
         "total": total,
         "correct": correct,
         "must_not_flip_total": must_not_flip_total,
@@ -300,7 +381,7 @@ def print_regression_report(result: Dict[str, Any]) -> None:
     mnf_correct = result["must_not_flip_correct"]
 
     print("\n" + "=" * 78)
-    print("REGRESSION SUITE")
+    print(f"REGRESSION SUITE  (mode={result.get('mode', 'model')})")
     print("=" * 78)
     pct = correct / total if total else 0.0
     print(f"Overall:        {correct}/{total} correct ({pct:.1%})")
@@ -372,11 +453,20 @@ def evaluate_test_set(
     tokenizer: AutoTokenizer,
     device: str,
     batch_size: int,
+    mode: str = "model",
 ) -> Dict[str, Any]:
     """Run inference on the held-out test set and compute classification metrics."""
     texts = df["text"].astype(str).tolist()
     y_true = df["label"].to_numpy()
-    y_pred, _confidences = predict_batch(texts, model, tokenizer, device, batch_size)
+
+    if mode == "pipeline":
+        y_pred, _confidences = predict_batch_pipeline(
+            texts, model, tokenizer, device, batch_size
+        )
+    else:
+        y_pred, _confidences = predict_batch(
+            texts, model, tokenizer, device, batch_size
+        )
 
     labels_sorted = sorted(ID2LABEL.keys())
     target_names = [ID2LABEL[i] for i in labels_sorted]
@@ -405,6 +495,7 @@ def evaluate_test_set(
     )
 
     return {
+        "mode": mode,
         "metrics": {
             "n_examples": int(len(df)),
             "accuracy": accuracy,
@@ -423,7 +514,7 @@ def print_test_set_report(result: Dict[str, Any]) -> None:
     """Print accuracy, macro/per-class F1, and confusion matrix for the test set."""
     m = result["metrics"]
     print("\n" + "=" * 78)
-    print("HELD-OUT TEST SET")
+    print(f"HELD-OUT TEST SET  (mode={result.get('mode', 'model')})")
     print("=" * 78)
     print(f"n_examples:      {m['n_examples']}")
     print(f"accuracy:        {m['accuracy']:.4f}")
@@ -510,6 +601,7 @@ def print_gate_result(gates: Dict[str, Any]) -> None:
 
 def build_report(
     model_path: str,
+    mode: str,
     regression_result: Dict[str, Any],
     test_result: Dict[str, Any],
     gates: Dict[str, Any],
@@ -518,6 +610,7 @@ def build_report(
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "model_path": model_path,
+        "mode": mode,
         "gates": gates,
         "regression_suite": regression_result,
         "test_set": test_result,
@@ -572,18 +665,24 @@ def main() -> int:
         )
         return 2
 
+    print(f"Mode: {args.mode}")
+
     regression_result = evaluate_regression_suite(
-        regression_examples, model, tokenizer, device, args.batch_size
+        regression_examples, model, tokenizer, device, args.batch_size, mode=args.mode
     )
     print_regression_report(regression_result)
 
-    test_result = evaluate_test_set(test_df, model, tokenizer, device, args.batch_size)
+    test_result = evaluate_test_set(
+        test_df, model, tokenizer, device, args.batch_size, mode=args.mode
+    )
     print_test_set_report(test_result)
 
     gates = check_gates(regression_result, test_result)
     print_gate_result(gates)
 
-    report = build_report(args.model_path, regression_result, test_result, gates)
+    report = build_report(
+        args.model_path, args.mode, regression_result, test_result, gates
+    )
     output_path = Path(args.output)
     write_report(report, output_path)
     print(f"\nReport written to {output_path}")

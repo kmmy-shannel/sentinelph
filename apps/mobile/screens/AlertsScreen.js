@@ -35,6 +35,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import api, { OfflineError } from '../lib/api';
 import { getAllReports } from '../db/sqlite';
 import { UNCLASSIFIED_REGION } from '../lib/regionResolver';
+import { useTheme, spacing as S } from '../theme/ThemeContext';
 
 // Enable LayoutAnimation on Android — required for the read-state
 // transition to animate there. Safe no-op on iOS.
@@ -47,19 +48,35 @@ if (
 
 const SEEN_STATE_KEY = '@sentinelph_alerts_seen_state';
 
-function Badge({ label, color }) {
+function Badge({ label, color, theme }) {
   const palette = {
-    rose: { text: '#f43f5e', bg: 'rgba(244,63,94,0.12)', border: 'rgba(244,63,94,0.25)' },
-    amber: { text: '#f59e0b', bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.25)' },
-    emerald: { text: '#10b981', bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.25)' },
-    indigo: { text: '#818cf8', bg: 'rgba(79,70,229,0.12)', border: 'rgba(79,70,229,0.25)' },
+    rose: {
+      text: theme.rose,
+      bg: theme.roseTint,
+      border: theme.roseTintBorder,
+    },
+    amber: {
+      text: theme.amber,
+      bg: 'rgba(245,158,11,0.12)',
+      border: 'rgba(245,158,11,0.25)',
+    },
+    emerald: {
+      text: theme.emerald,
+      bg: 'rgba(16,185,129,0.12)',
+      border: 'rgba(16,185,129,0.25)',
+    },
+    indigo: {
+      text: theme.primarySoft,
+      bg: theme.primaryTint,
+      border: theme.primaryTintBorder,
+    },
   };
   const s = palette[color] || palette.indigo;
   return (
     <View
       style={{
-        paddingHorizontal: 8,
-        paddingVertical: 3,
+        paddingHorizontal: 10,
+        paddingVertical: 4,
         borderRadius: 999,
         backgroundColor: s.bg,
         borderWidth: 1,
@@ -67,7 +84,7 @@ function Badge({ label, color }) {
         alignSelf: 'flex-start',
       }}
     >
-      <Text style={{ color: s.text, fontSize: 10, fontWeight: '600' }}>
+      <Text style={{ color: s.text, fontSize: 10, fontWeight: '700', letterSpacing: 0.3 }}>
         {label}
       </Text>
     </View>
@@ -139,7 +156,7 @@ function reviewStatusToAlert(report) {
 //     reads `isRead` from the parent so a "Mark all read" tap re-renders
 //     it as read. When `isRead` flips, the dot fades out with a spring
 //     and the title/body unbold. ─────────────────────────────────────
-function AlertRow({ item, isRead, onPress }) {
+function AlertRow({ item, isRead, onPress, theme }) {
   const dotOpacity = useRef(new Animated.Value(isRead ? 0 : 1)).current;
 
   React.useEffect(() => {
@@ -151,8 +168,8 @@ function AlertRow({ item, isRead, onPress }) {
   }, [isRead, dotOpacity]);
 
   const titleWeight = isRead ? '500' : '700';
-  const titleColor = isRead ? '#94a3b8' : '#e2e8f0';
-  const bodyColor = isRead ? '#475569' : '#64748b';
+  const titleColor = isRead ? theme.textDim : theme.text;
+  const bodyColor = isRead ? theme.textFaint : theme.textMuted;
 
   return (
     <TouchableOpacity
@@ -160,24 +177,22 @@ function AlertRow({ item, isRead, onPress }) {
       onPress={onPress}
       style={{
         flexDirection: 'row',
-        gap: 12,
-        paddingHorizontal: 16,
+        gap: S.md,
+        paddingHorizontal: S.lg,
         paddingVertical: 14,
         borderBottomWidth: 1,
-        borderBottomColor: 'rgba(148,163,184,0.07)',
-        backgroundColor: isRead
-          ? 'transparent'
-          : 'rgba(79,70,229,0.04)',
+        borderBottomColor: theme.borderSoft,
+        backgroundColor: isRead ? 'transparent' : theme.primaryFaint,
       }}
     >
       {/* Unread dot — fades out when read */}
-      <View style={{ paddingTop: 5, width: 8 }}>
+      <View style={{ paddingTop: 6, width: 8 }}>
         <Animated.View
           style={{
             width: 8,
             height: 8,
             borderRadius: 4,
-            backgroundColor: '#818cf8',
+            backgroundColor: theme.primarySoft,
             opacity: dotOpacity,
           }}
         />
@@ -189,7 +204,7 @@ function AlertRow({ item, isRead, onPress }) {
             flexDirection: 'row',
             alignItems: 'flex-start',
             justifyContent: 'space-between',
-            gap: 8,
+            gap: S.sm,
             marginBottom: 4,
           }}
         >
@@ -199,33 +214,35 @@ function AlertRow({ item, isRead, onPress }) {
               fontSize: 13,
               fontWeight: titleWeight,
               flex: 1,
+              lineHeight: 18,
             }}
             numberOfLines={2}
           >
             {item.title}
           </Text>
-          <Text style={{ color: '#334155', fontSize: 10 }}>
+          <Text style={{ color: theme.textFaint, fontSize: 10, marginTop: 2 }}>
             {formatRelative(item.when)}
           </Text>
         </View>
         <Text
           style={{
             color: bodyColor,
-            fontSize: 11,
-            lineHeight: 16,
+            fontSize: 12,
+            lineHeight: 17,
           }}
+          numberOfLines={3}
         >
           {item.body}
         </Text>
         <View
           style={{
-            marginTop: 8,
+            marginTop: 10,
             flexDirection: 'row',
             alignItems: 'center',
-            gap: 8,
+            gap: S.sm,
           }}
         >
-          <Badge label={item.badgeLabel} color={item.level} />
+          <Badge label={item.badgeLabel} color={item.level} theme={theme} />
         </View>
       </View>
     </TouchableOpacity>
@@ -234,6 +251,7 @@ function AlertRow({ item, isRead, onPress }) {
 
 export default function AlertsScreen() {
   const navigation = useNavigation();
+  const { theme } = useTheme();
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [personalAlerts, setPersonalAlerts] = useState([]);
@@ -253,8 +271,6 @@ export default function AlertsScreen() {
       if (raw) {
         const parsed = JSON.parse(raw);
         // Backwards-compat: older builds stored { seen, dismissed }.
-        // Migrate any dismissed keys into readIds so users who already
-        // tapped Dismiss / Mark all read don't see them unread again.
         persistedRead = parsed.read || {};
         if (parsed.dismissed) {
           persistedRead = { ...persistedRead, ...parsed.dismissed };
@@ -314,7 +330,6 @@ export default function AlertsScreen() {
         err?.response?.status === 403 ||
         err?.response?.status === 404
       ) {
-        // Not available — silent.
         setNearbyAlerts([]);
       } else {
         console.warn(
@@ -352,14 +367,10 @@ export default function AlertsScreen() {
     }
   }, []);
 
-  // Marks a single alert as read. Animates the row, keeps it visible.
   const markOneRead = useCallback(
     async (alertId) => {
       if (readIds[alertId]) return;
 
-      // Animate the layout change on the row so the dot fades and the
-      // font weight change is smooth on Android (iOS handles it via the
-      // Animated.Value inside AlertRow).
       LayoutAnimation.configureNext(
         LayoutAnimation.Presets.easeInEaseOut
       );
@@ -371,13 +382,9 @@ export default function AlertsScreen() {
     [readIds, persistRead]
   );
 
-  // Marks every personal alert as read. Keeps them in the list; the
-  // badge counter drops to zero and each row dims + unbolds.
   const markAllRead = useCallback(async () => {
     if (personalAlerts.length === 0) return;
 
-    // LayoutAnimation makes the font-weight change feel less abrupt on
-    // Android. On iOS the dot fade is animated by Animated in AlertRow.
     LayoutAnimation.configureNext(
       LayoutAnimation.Presets.easeInEaseOut
     );
@@ -389,7 +396,6 @@ export default function AlertsScreen() {
     await persistRead(next);
   }, [personalAlerts, readIds, persistRead]);
 
-  // ── Compose sections ─────────────────────────────────────────────
   const sections = useMemo(() => {
     const out = [];
     if (personalAlerts.length > 0) {
@@ -409,7 +415,6 @@ export default function AlertsScreen() {
     return out;
   }, [personalAlerts, nearbyAlerts]);
 
-  // Unread = personal alerts whose id is not in readIds.
   const totalUnread = useMemo(
     () => personalAlerts.filter((a) => !readIds[a.id]).length,
     [personalAlerts, readIds]
@@ -420,44 +425,52 @@ export default function AlertsScreen() {
   return (
     <SafeAreaView
       edges={['top']}
-      style={{ flex: 1, backgroundColor: '#0a1120' }}
+      style={{ flex: 1, backgroundColor: theme.bg }}
     >
+      {/* Header */}
       <View
         style={{
           flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'space-between',
-          paddingHorizontal: 16,
-          paddingTop: 12,
-          paddingBottom: 8,
-          gap: 12,
+          paddingHorizontal: S.lg,
+          paddingTop: 14,
+          paddingBottom: 10,
+          gap: S.md,
         }}
       >
         <View
           style={{
             flexDirection: 'row',
             alignItems: 'center',
-            gap: 8,
+            gap: S.sm,
             flexShrink: 1,
           }}
         >
-          <Text style={{ color: '#e2e8f0', fontSize: 15, fontWeight: '600' }}>
+          <Text
+            style={{
+              color: theme.text,
+              fontSize: 20,
+              fontWeight: '700',
+              letterSpacing: -0.3,
+            }}
+          >
             Alerts
           </Text>
           {totalUnread > 0 && (
             <View
               style={{
-                minWidth: 18,
-                height: 18,
-                paddingHorizontal: 5,
-                borderRadius: 9,
+                minWidth: 22,
+                height: 22,
+                paddingHorizontal: 6,
+                borderRadius: 11,
                 alignItems: 'center',
                 justifyContent: 'center',
-                backgroundColor: '#f43f5e',
+                backgroundColor: theme.rose,
               }}
             >
               <Text
-                style={{ fontSize: 10, color: 'white', fontWeight: '700' }}
+                style={{ fontSize: 11, color: 'white', fontWeight: '700' }}
               >
                 {totalUnread}
               </Text>
@@ -468,13 +481,14 @@ export default function AlertsScreen() {
           <TouchableOpacity
             onPress={markAllRead}
             disabled={!hasUnread}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            style={{ paddingVertical: 4, paddingHorizontal: 4 }}
           >
             <Text
               style={{
-                color: hasUnread ? '#4f46e5' : '#334155',
+                color: hasUnread ? theme.primarySoft : theme.textFaint,
                 fontSize: 12,
-                fontWeight: '500',
+                fontWeight: '600',
               }}
             >
               Mark all read
@@ -487,7 +501,7 @@ export default function AlertsScreen() {
         <View
           style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}
         >
-          <ActivityIndicator color="#4f46e5" />
+          <ActivityIndicator color={theme.primary} />
         </View>
       ) : sections.length === 0 ? (
         <View
@@ -497,25 +511,40 @@ export default function AlertsScreen() {
             justifyContent: 'center',
             paddingHorizontal: 32,
             paddingBottom: 64,
+            gap: 10,
           }}
         >
+          <View
+            style={{
+              width: 56,
+              height: 56,
+              borderRadius: 18,
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: theme.primaryFaint,
+              borderWidth: 1,
+              borderColor: theme.primaryTintBorder,
+            }}
+          >
+            <Text style={{ color: theme.primarySoft, fontSize: 22 }}>🔔</Text>
+          </View>
           <Text
             style={{
-              color: '#64748b',
-              fontSize: 14,
-              fontWeight: '500',
-              marginBottom: 8,
+              color: theme.text,
+              fontSize: 15,
+              fontWeight: '600',
+              marginTop: 4,
             }}
           >
             No alerts yet
           </Text>
           <Text
             style={{
-              color: '#334155',
-              fontSize: 11,
+              color: theme.textMuted,
+              fontSize: 12,
               textAlign: 'center',
               maxWidth: 280,
-              lineHeight: 16,
+              lineHeight: 18,
             }}
           >
             When officers review your reports or a scam is confirmed near
@@ -530,22 +559,22 @@ export default function AlertsScreen() {
             <RefreshControl
               refreshing={refreshing}
               onRefresh={onRefresh}
-              tintColor="#818cf8"
+              tintColor={theme.primarySoft}
             />
           }
           contentContainerStyle={{ paddingBottom: 24 }}
           renderSectionHeader={({ section }) => (
             <View
               style={{
-                paddingHorizontal: 16,
-                paddingTop: 16,
-                paddingBottom: 8,
+                paddingHorizontal: S.lg,
+                paddingTop: S.lg,
+                paddingBottom: S.sm,
               }}
             >
               <Text
                 style={{
-                  color: '#475569',
-                  fontSize: 10,
+                  color: theme.textDim,
+                  fontSize: 11,
                   fontWeight: '700',
                   letterSpacing: 1.2,
                 }}
@@ -555,27 +584,25 @@ export default function AlertsScreen() {
             </View>
           )}
           renderItem={({ item, section }) => {
-            // Nearby scams are informational only — they don't have a
-            // read/unread state. Personal alerts do.
             if (!section.isPersonal) {
               return (
                 <View
                   style={{
                     flexDirection: 'row',
-                    gap: 12,
-                    paddingHorizontal: 16,
+                    gap: S.md,
+                    paddingHorizontal: S.lg,
                     paddingVertical: 14,
                     borderBottomWidth: 1,
-                    borderBottomColor: 'rgba(148,163,184,0.07)',
+                    borderBottomColor: theme.borderSoft,
                   }}
                 >
-                  <View style={{ paddingTop: 5, width: 8 }}>
+                  <View style={{ paddingTop: 6, width: 8 }}>
                     <View
                       style={{
                         width: 8,
                         height: 8,
                         borderRadius: 4,
-                        backgroundColor: '#f43f5e',
+                        backgroundColor: theme.rose,
                       }}
                     />
                   </View>
@@ -585,36 +612,38 @@ export default function AlertsScreen() {
                         flexDirection: 'row',
                         alignItems: 'flex-start',
                         justifyContent: 'space-between',
-                        gap: 8,
+                        gap: S.sm,
                         marginBottom: 4,
                       }}
                     >
                       <Text
                         style={{
-                          color: '#e2e8f0',
+                          color: theme.text,
                           fontSize: 13,
                           fontWeight: '600',
                           flex: 1,
+                          lineHeight: 18,
                         }}
                         numberOfLines={2}
                       >
                         {item.title}
                       </Text>
-                      <Text style={{ color: '#334155', fontSize: 10 }}>
+                      <Text style={{ color: theme.textFaint, fontSize: 10, marginTop: 2 }}>
                         {formatRelative(item.when)}
                       </Text>
                     </View>
                     <Text
                       style={{
-                        color: '#475569',
-                        fontSize: 11,
-                        lineHeight: 16,
+                        color: theme.textMuted,
+                        fontSize: 12,
+                        lineHeight: 17,
                       }}
+                      numberOfLines={3}
                     >
                       {item.body}
                     </Text>
-                    <View style={{ marginTop: 8 }}>
-                      <Badge label={item.badgeLabel} color={item.level} />
+                    <View style={{ marginTop: 10 }}>
+                      <Badge label={item.badgeLabel} color={item.level} theme={theme} />
                     </View>
                   </View>
                 </View>
@@ -626,9 +655,8 @@ export default function AlertsScreen() {
               <AlertRow
                 item={item}
                 isRead={isRead}
+                theme={theme}
                 onPress={() => {
-                  // Tapping a row marks it read (Messenger-style). It
-                  // still navigates so the user can inspect the report.
                   if (!isRead) markOneRead(item.id);
                   if (item.reportLocalId) {
                     navigation.navigate('MyReports');

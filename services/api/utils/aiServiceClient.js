@@ -41,13 +41,16 @@ async function getAiScamAssessment({ text, imageBase64, reportId } = {}) {
     available: false,
     probabilityScore: null,
     label: 'unavailable',
+    subtype: null,                        // NEW
+    subtypeConfidence: null,              // NEW
+    subtypeModelVersion: null,            // NEW
     isScam: null,
     confidenceScore: null,
     riskLevel: 'UNKNOWN',
     explanationReasons: [],
     ocrUsed: false,
-    ocrText: null,               // NEW — stable shape for consumers
-    ocrExtractedChars: 0,        // NEW
+    ocrText: null,
+    ocrExtractedChars: 0,
     modelVersion: null,
     advisoryOnly: true,
     checkedAt: new Date().toISOString(),
@@ -63,17 +66,20 @@ async function getAiScamAssessment({ text, imageBase64, reportId } = {}) {
 
     const data = response.data;
 
-    return {
+        return {
       available: true,
       probabilityScore: data.probability_score,
       label: data.label,
+      subtype: data.subtype ?? null,                              // NEW
+      subtypeConfidence: data.subtype_confidence ?? null,         // NEW
+      subtypeModelVersion: data.subtype_model_version ?? null,    // NEW
       isScam: data.is_scam,
       confidenceScore: data.confidence_score,
       riskLevel: data.risk_level,
       explanationReasons: data.explanation_reasons || [],
       ocrUsed: data.ocr_used,
-      ocrText: data.ocr_text || null,                       // NEW
-      ocrExtractedChars: data.ocr_extracted_chars ?? 0,     // NEW
+      ocrText: data.ocr_text || null,
+      ocrExtractedChars: data.ocr_extracted_chars ?? 0,
       modelVersion: data.model_version,
       advisoryOnly: data.advisory_only === true,
       checkedAt: new Date().toISOString(),

@@ -16,6 +16,30 @@ const CloseIcon = ({ color }) => (
   </svg>
 );
 
+const EyeIcon = ({ color = "#60a5fa", size = 11 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
+
+const ACTION_BTN_VIEW = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "5px",
+  padding: "5px 11px",
+  borderRadius: "7px",
+  fontSize: "11px",
+  fontWeight: 600,
+  cursor: "pointer",
+  background: "rgba(59,130,246,0.10)",
+  border: "1px solid rgba(59,130,246,0.35)",
+  color: "#60a5fa",
+  transition: "background 0.12s ease",
+  whiteSpace: "nowrap",
+  fontFamily: "'Inter', system-ui, sans-serif",
+};
+
 function formatTimestamp(value) {
   if (!value) return "—";
   const d = new Date(value);
@@ -148,24 +172,36 @@ export default function BlacklistRegistry() {
         <div style={{ padding: "12px 20px", borderBottom: "1px solid #1a1a2a" }}>
           <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff" }}>Blacklist Registry</div>
           <div style={{ fontSize: "11px", marginTop: "2px", color: "#4b5563" }}>
-            {loading ? "Loading…" : `${filtered.length} entries · Click any row for details`}
+            {loading ? "Loading…" : `${filtered.length} entries · Click "View" for details`}
           </div>
         </div>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ borderBottom: "1px solid #1a1a2a" }}>
-              {["BLOCK ID","NUMBER","SCAM TYPE","REPORTS","STATUS","APPROVING OFFICERS","DECISION DATE"].map((h) => (
-                <th key={h} style={{ padding: "12px 20px", textAlign: "left", fontSize: "9px", fontWeight: 500, color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>{h}</th>
+              {["BLOCK ID","NUMBER","SCAM TYPE","REPORTS","STATUS","APPROVING OFFICERS","DECISION DATE","ACTION"].map((h, i) => (
+                <th
+                  key={h}
+                  style={{
+                    padding: "12px 20px",
+                    textAlign: i === 7 ? "center" : "left",
+                    fontSize: "9px",
+                    fontWeight: 500,
+                    color: "#4b5563",
+                    fontFamily: "'JetBrains Mono',monospace",
+                    letterSpacing: "0.06em",
+                  }}
+                >
+                  {h}
+                </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan={7} style={{ padding: "40px", textAlign: "center", color: "#4b5563", fontSize: "12px" }}>Loading registry…</td></tr>}
-            {!loading && filtered.length === 0 && <tr><td colSpan={7} style={{ padding: "40px", textAlign: "center", color: "#4b5563", fontSize: "12px" }}>No entries in this view.</td></tr>}
+            {loading && <tr><td colSpan={8} style={{ padding: "40px", textAlign: "center", color: "#4b5563", fontSize: "12px" }}>Loading registry…</td></tr>}
+            {!loading && filtered.length === 0 && <tr><td colSpan={8} style={{ padding: "40px", textAlign: "center", color: "#4b5563", fontSize: "12px" }}>No entries in this view.</td></tr>}
             {!loading && filtered.map((row) => (
               <tr key={row.number}
-                onClick={() => setSelectedCase(row)}
-                style={{ borderBottom: "1px solid #13131e", cursor: "pointer" }}
+                style={{ borderBottom: "1px solid #13131e" }}
                 onMouseEnter={(e) => e.currentTarget.style.background = "#111120"}
                 onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
                 <td style={{ padding: "12px 20px", fontSize: "12px", color: "#3b82f6", fontFamily: "'JetBrains Mono',monospace" }}>{row.id}</td>
@@ -180,6 +216,16 @@ export default function BlacklistRegistry() {
                 </td>
                 <td style={{ padding: "12px 20px", fontSize: "12px", color: "#6b7280" }}>{row.officers}</td>
                 <td style={{ padding: "12px 20px", fontSize: "12px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace" }}>{row.date}</td>
+                <td style={{ padding: "12px 20px", verticalAlign: "middle", textAlign: "center" }}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setSelectedCase(row); }}
+                    style={ACTION_BTN_VIEW}
+                    onMouseEnter={(e) => e.currentTarget.style.background = "rgba(59,130,246,0.22)"}
+                    onMouseLeave={(e) => e.currentTarget.style.background = "rgba(59,130,246,0.10)"}
+                  >
+                    <EyeIcon color="#60a5fa" size={11} /> View
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -191,7 +237,6 @@ export default function BlacklistRegistry() {
           <div style={{ width: "100%", maxWidth: "560px", maxHeight: "90vh", borderRadius: "20px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a", display: "flex", flexDirection: "column", overflow: "hidden" }}>
             <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: `linear-gradient(90deg,transparent,#ef4444,transparent)` }} />
 
-            {/* Header */}
             <div style={{ padding: "24px 28px 16px", borderBottom: "1px solid #13131e" }}>
               <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "16px" }}>
                 <div>
@@ -207,9 +252,7 @@ export default function BlacklistRegistry() {
               </div>
             </div>
 
-            {/* Scrollable body */}
             <div style={{ padding: "20px 28px 24px", overflowY: "auto" }}>
-              {/* Summary fields */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px 24px", marginBottom: "20px" }}>
                 {[
                   { l: "SCAM TYPE", v: selectedCase.type },
@@ -224,27 +267,20 @@ export default function BlacklistRegistry() {
                 ))}
               </div>
 
-              {/* Block hash */}
               <div style={{ padding: "12px 16px", borderRadius: "10px", marginBottom: "16px", background: "#080810", border: "1px solid #13131e" }}>
                 <div style={{ fontSize: "9px", fontWeight: 500, marginBottom: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>BLOCK HASH</div>
                 <div style={{ fontSize: "12px", color: "#3b82f6", fontFamily: "'JetBrains Mono',monospace", wordBreak: "break-all" }}>{selectedCase.hash}</div>
               </div>
 
-              {/* Screenshot evidence */}
               {selectedCase.evidenceImage && (
                 <div style={{ marginBottom: "20px" }}>
                   <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.06em", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", marginBottom: "8px" }}>SCREENSHOT EVIDENCE</div>
                   <div style={{ borderRadius: "10px", overflow: "hidden", background: "#080810", border: "1px solid #13131e", display: "flex", justifyContent: "center", maxHeight: "320px" }}>
-                    <img
-                      src={selectedCase.evidenceImage}
-                      alt="Scam evidence"
-                      style={{ maxWidth: "100%", maxHeight: "320px", objectFit: "contain" }}
-                    />
+                    <img src={selectedCase.evidenceImage} alt="Scam evidence" style={{ maxWidth: "100%", maxHeight: "320px", objectFit: "contain" }} />
                   </div>
                 </div>
               )}
 
-              {/* Officer reasoning — per officer */}
               {selectedCase.votes.length > 0 && (
                 <div style={{ marginBottom: "16px" }}>
                   <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.06em", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", marginBottom: "8px" }}>
@@ -274,7 +310,6 @@ export default function BlacklistRegistry() {
                 </div>
               )}
 
-              {/* Fallback if no votes exist */}
               {selectedCase.votes.length === 0 && (
                 <div style={{ padding: "14px 16px", borderRadius: "10px", marginBottom: "16px", background: "#080810", border: "1px solid #13131e" }}>
                   <div style={{ fontSize: "9px", fontWeight: 500, marginBottom: "6px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>OFFICER NOTES</div>
@@ -283,7 +318,6 @@ export default function BlacklistRegistry() {
               )}
             </div>
 
-            {/* Footer */}
             <div style={{ padding: "16px 28px 24px", borderTop: "1px solid #13131e" }}>
               <button onClick={() => setSelectedCase(null)}
                 style={{ width: "100%", padding: "12px", borderRadius: "12px", fontSize: "13px", fontWeight: 700, border: "none", background: "#1a1a2a", color: "#fff", cursor: "pointer" }}>
