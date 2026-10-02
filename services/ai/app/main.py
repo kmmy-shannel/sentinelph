@@ -115,10 +115,15 @@ app.add_middleware(
 def health() -> HealthResponse:
     clf = get_classifier()
     if clf.loaded:
+        metadata = clf.metadata or {}
         return HealthResponse(
             status="ok",
             model_loaded=True,
             model_version=clf.model_version,
+            test_accuracy=metadata.get("test_accuracy") or metadata.get("test_metrics", {}).get("accuracy"),
+            precision=metadata.get("precision") or metadata.get("test_metrics", {}).get("precision"),
+            recall=metadata.get("recall") or metadata.get("test_metrics", {}).get("recall"),
+            f1=metadata.get("f1_macro") or metadata.get("test_metrics", {}).get("f1"),
         )
     return HealthResponse(
         status="degraded",

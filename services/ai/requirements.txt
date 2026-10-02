@@ -8,6 +8,8 @@ python-multipart==0.0.12
 # ML & Transformer Pipeline (SRS 5.1)
 transformers==4.46.3
 huggingface_hub==0.26.3
+# Required by the Level 1 and Level 2 transformer inference paths.
+torch>=2.4.0
 scikit-learn>=1.5.2
 pandas==2.2.3
 numpy==1.26.4

@@ -1,5 +1,5 @@
 // apps/web/src/pages/Admin-Tabs/Account.jsx
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   KeyRound,
   UserCircle,
@@ -173,6 +173,7 @@ function PasswordStrengthMeter({ value }) {
 
 export default function AdminAccount({ user }) {
   const accentColor = "#f97316"; // orange — admin accent
+  const [profile, setProfile] = useState(null);
 
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw]         = useState("");
@@ -186,13 +187,22 @@ export default function AdminAccount({ user }) {
   const [showSuccess, setShowSuccess] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
+  useEffect(() => {
+    let active = true;
+    apiClient.get('/api/v1/admin/profile')
+      .then((response) => { if (active) setProfile(response.data?.data || null); })
+      .catch(() => { if (active) setProfile(null); });
+    return () => { active = false; };
+  }, []);
+
+  const adminUser = profile || user;
   const fields = [
-    { l: "BADGE / ID",     v: user?.badge ?? "NTC-ADM-0001" },
-    { l: "ORGANIZATION",   v: user?.agency ?? "NTC Regional Operations" },
-    { l: "REGION SCOPE",   v: user?.regionScope ?? "National" },
-    { l: "ROLE",           v: user?.roleLabel ?? "Agency Administrator" },
-    { l: "ACCOUNT STATUS", v: user?.statusLabel ?? "Active" },
-    { l: "LAST LOGIN",     v: user?.lastLogin ?? "—" },
+    { l: "BADGE / ID",     v: adminUser?.badgeId ?? adminUser?.badge ?? "—" },
+    { l: "ORGANIZATION",   v: adminUser?.agency ?? "—" },
+    { l: "REGION SCOPE",   v: adminUser?.jurisdiction ?? adminUser?.regionScope ?? "—" },
+    { l: "ROLE",           v: adminUser?.roleLabel ?? (adminUser?.role === 'admin' ? 'Agency Administrator' : '—') },
+    { l: "ACCOUNT STATUS", v: adminUser?.statusLabel ?? adminUser?.status ?? "—" },
+    { l: "LAST LOGIN",     v: adminUser?.lastLogin ?? "—" },
   ];
 
   const card   = { borderRadius: "12px", padding: "24px", marginBottom: "20px", background: "#0e0e18", border: "1px solid #1a1a2a" };
@@ -320,14 +330,14 @@ export default function AdminAccount({ user }) {
               border: `1.5px solid ${accentColor}40`,
             }}
           >
-            {user?.initials ?? "AD"}
+            {(adminUser?.fullName || adminUser?.name || 'AD').split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase()}
           </div>
           <div>
             <div style={{ fontWeight: 700, color: "#fff" }}>
-              {user?.name ?? "Agency Administrator"}
+              {adminUser?.fullName ?? adminUser?.name ?? "Agency Administrator"}
             </div>
             <div style={{ fontSize: "12px", marginTop: "2px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace" }}>
-              {user?.email ?? "—"}
+              {adminUser?.email ?? "—"}
             </div>
           </div>
         </div>

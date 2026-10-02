@@ -10,6 +10,7 @@ const AuditLog = require('../models/AuditLog');
 const AdminAiReview = require('../models/AdminAiReview');
 const PasswordResetToken = require('../models/PasswordResetToken');
 const { sendActivationEmail } = require('../utils/email');
+const { checkAiHealth } = require('../utils/aiServiceClient');
 const { PH_REGIONS, isValidRegion } = require('../../../shared/regions');
 
 const router = express.Router();
@@ -100,7 +101,20 @@ function getModelMetrics(reviews) {
   const precision = tp + fp ? tp / (tp + fp) : null;
   const recall = tp + fn ? tp / (tp + fn) : null;
   const f1 = precision !== null && recall !== null && precision + recall ? (2 * precision * recall) / (precision + recall) : null;
-  return { accuracy, precision, recall, f1, sampleSize: judged.length };
+  return { accuracy, precision, recall, f1, sampleSize: judged.length, source: 'reviewed' };
+}
+
+function getValidationMetrics(health) {
+  if (!health?.model_loaded || typeof health.test_accuracy !== 'number') return null;
+  return {
+    accuracy: health.test_accuracy,
+    precision: typeof health.precision === 'number' ? health.precision : null,
+    recall: typeof health.recall === 'number' ? health.recall : null,
+    f1: typeof health.f1 === 'number' ? health.f1 : null,
+    sampleSize: null,
+    source: 'validation',
+    modelVersion: health.model_version || null,
+  };
 }
 
 function getMetricTrend(reviews) {
@@ -442,7 +456,7 @@ router.get('/dashboard', async (req, res) => {
     const aiCandidateMatch = Object.keys(scope).length
       ? { $and: [scope, { 'aiFlag.label': { $in: ['uncertain', 'grey_area'] } }] }
       : { 'aiFlag.label': { $in: ['uncertain', 'grey_area'] } };
-    const [totalReports, openReports, blacklisted, officers, trendRows, regions, categories, flagged, aiReviews] = await Promise.all([
+    const [totalReports, openReports, blacklisted, officers, trendRows, regions, categories, flagged, aiReviews, aiHealth] = await Promise.all([
       Report.countDocuments(scope),
       Report.countDocuments(Object.keys(scope).length ? { $and: [scope, { status: { $in: ['pending', 'under_review', 'one_approval', 'two_approvals'] } }] } : { status: { $in: ['pending', 'under_review', 'one_approval', 'two_approvals'] } }),
       Report.countDocuments(Object.keys(scope).length ? { $and: [scope, { status: { $in: ['blacklisted', 'approved'] } }] } : { status: { $in: ['blacklisted', 'approved'] } }),
@@ -468,8 +482,9 @@ router.get('/dashboard', async (req, res) => {
         .select('reportId reportedNumber aiFlag')
         .lean(),
       AdminAiReview.find({ agency: req.adminProfile.agency }).select('originalLabel selectedLabel').lean(),
+      checkAiHealth(),
     ]);
-    const modelMetrics = getModelMetrics(aiReviews);
+    const modelMetrics = getModelMetrics(aiReviews) || getValidationMetrics(aiHealth);
     return res.json({
       success: true,
       data: {
@@ -492,6 +507,10 @@ router.get('/dashboard', async (req, res) => {
           number: report.reportedNumber,
           label: report.aiFlag?.label || 'unavailable',
           confidence: report.aiFlag?.confidenceScore ?? report.aiFlag?.probabilityScore ?? null,
+          subtype: report.aiFlag?.subtype ?? null,
+          subtypeConfidence: report.aiFlag?.subtypeConfidence ?? null,
+          subtypeModelVersion: report.aiFlag?.subtypeModelVersion ?? null,
+          modelVersion: report.aiFlag?.modelVersion ?? null,
         })),
       },
     });
@@ -513,7 +532,7 @@ router.get('/ai-insights', async (req, res) => {
     const trendMatch = Object.keys(scope).length
       ? { $and: [scope, { createdAt: { $gte: since30d } }, { 'aiFlag.available': true }] }
       : { createdAt: { $gte: since30d }, 'aiFlag.available': true };
-    const [analyzed, candidates, reviews, trendRows] = await Promise.all([
+    const [analyzed, candidates, reviews, trendRows, aiHealth] = await Promise.all([
       Report.countDocuments(scopedMatch),
       Report.find(candidatesMatch).sort({ createdAt: -1 }).limit(100).select('reportId reportedNumber aiFlag location jurisdiction createdAt').lean(),
       AdminAiReview.find({ agency: req.adminProfile.agency }).select('reportId originalLabel selectedLabel reviewedAt').lean(),
@@ -522,14 +541,19 @@ router.get('/ai-insights', async (req, res) => {
         { $group: { _id: { $dateToString: { format: '%b %d', date: '$createdAt', timezone: 'Asia/Manila' } }, analyzed: { $sum: 1 }, uncertain: { $sum: { $cond: [{ $in: ['$aiFlag.label', ['uncertain', 'grey_area']] }, 1, 0] } } } },
         { $sort: { _id: 1 } },
       ]),
+      checkAiHealth(),
     ]);
     const reviewByReport = new Map(reviews.map((review) => [review.reportId, review]));
-    const modelMetrics = getModelMetrics(reviews);
+    const modelMetrics = getModelMetrics(reviews) || getValidationMetrics(aiHealth);
     const items = candidates.map((report) => ({
       id: report.reportId,
       number: report.reportedNumber,
       label: report.aiFlag?.label || 'unavailable',
       confidence: report.aiFlag?.confidenceScore ?? report.aiFlag?.probabilityScore ?? null,
+      subtype: report.aiFlag?.subtype ?? null,
+      subtypeConfidence: report.aiFlag?.subtypeConfidence ?? null,
+      subtypeModelVersion: report.aiFlag?.subtypeModelVersion ?? null,
+      modelVersion: report.aiFlag?.modelVersion ?? null,
       region: report.location?.region || report.jurisdiction || 'Unknown',
       reviewed: reviewByReport.get(report.reportId) || null,
     }));
@@ -593,18 +617,68 @@ router.get('/reports', async (req, res) => {
     if (from && !start || to && !end) return res.status(400).json({ success: false, error: 'INVALID_DATE', message: 'Dates must be valid ISO dates.' });
     if (start || end) filters.createdAt = { ...(start ? { $gte: start } : {}), ...(end ? { $lte: end } : {}) };
     if (scamType && scamType !== 'all') filters.$or = [{ category: scamType }, { scamType }];
-    const query = Object.keys(scope).length ? { $and: [scope, filters] } : filters;
-    const rows = await Report.aggregate([
-      { $match: query },
-      { $group: {
-        _id: { $ifNull: ['$location.region', '$jurisdiction'] },
-        reports: { $sum: 1 },
-        topScamType: { $last: '$category' },
-        latestReportAt: { $max: '$createdAt' },
-      } },
-      { $sort: { reports: -1 } }, { $limit: 100 },
+    const buildQuery = (extraFilters = {}) => {
+      const combinedFilters = { ...filters, ...extraFilters };
+      if (!Object.keys(scope).length) return combinedFilters;
+      return Object.keys(combinedFilters).length ? { $and: [scope, combinedFilters] } : scope;
+    };
+    const query = buildQuery();
+    const regionExpression = { $ifNull: ['$location.region', '$jurisdiction'] };
+    const [reportData, currentWeek, previousWeek] = await Promise.all([
+      Report.aggregate([
+        { $match: query },
+        { $facet: {
+          totals: [
+            { $group: { _id: regionExpression, reports: { $sum: 1 }, latestReportAt: { $max: '$createdAt' } } },
+            { $sort: { reports: -1 } },
+          ],
+          scamTypes: [
+            { $group: { _id: { region: regionExpression, scamType: { $ifNull: ['$category', '$scamType'] } }, reports: { $sum: 1 } } },
+            { $sort: { reports: -1, '_id.scamType': 1 } },
+            { $group: { _id: '$_id.region', topScamType: { $first: '$_id.scamType' } } },
+          ],
+          numbers: [
+            { $match: { reportedNumber: { $nin: [null, ''] } } },
+            { $group: { _id: { region: regionExpression, number: '$reportedNumber' }, reports: { $sum: 1 } } },
+            { $sort: { reports: -1, '_id.number': 1 } },
+            { $group: { _id: '$_id.region', topNumber: { $first: '$_id.number' }, topNumberReports: { $first: '$reports' } } },
+          ],
+        } },
+      ]),
+      Report.aggregate([
+        { $match: buildQuery({ createdAt: { $gte: start || new Date(Date.now() - 6 * 24 * 60 * 60 * 1000), $lte: end || new Date() } }) },
+        { $group: { _id: regionExpression, reports: { $sum: 1 } } },
+      ]),
+      Report.aggregate([
+        { $match: buildQuery((() => {
+          const currentEnd = end || new Date();
+          const currentStart = start || new Date(currentEnd.getTime() - 6 * 24 * 60 * 60 * 1000);
+          const duration = currentEnd.getTime() - currentStart.getTime() + 1;
+          return { createdAt: { $gte: new Date(currentStart.getTime() - duration), $lt: currentStart } };
+        })()) },
+        { $group: { _id: regionExpression, reports: { $sum: 1 } } },
+      ]),
     ]);
-    return res.json({ success: true, data: rows.map((row) => ({ region: row._id || 'Unknown', reports: row.reports, topScamType: row.topScamType || 'UNKNOWN', latestReportAt: row.latestReportAt })) });
+    const { totals = [], scamTypes = [], numbers = [] } = reportData[0] || {};
+    const typesByRegion = new Map(scamTypes.map((row) => [row._id || 'Unknown', row.topScamType || 'UNKNOWN']));
+    const numbersByRegion = new Map(numbers.map((row) => [row._id || 'Unknown', row]));
+    const currentByRegion = new Map(currentWeek.map((row) => [row._id || 'Unknown', row.reports]));
+    const previousByRegion = new Map(previousWeek.map((row) => [row._id || 'Unknown', row.reports]));
+    const rows = totals.slice(0, 100).map((row) => {
+      const regionName = row._id || 'Unknown';
+      const previousReports = previousByRegion.get(regionName) || 0;
+      const currentReports = currentByRegion.get(regionName) || 0;
+      return {
+        region: regionName,
+        reports: row.reports,
+        topScamType: typesByRegion.get(regionName) || 'UNKNOWN',
+        topNumber: numbersByRegion.get(regionName)?.topNumber || null,
+        topNumberReports: numbersByRegion.get(regionName)?.topNumberReports || 0,
+        weekOverWeek: previousReports > 0 ? ((currentReports - previousReports) / previousReports) : null,
+        latestReportAt: row.latestReportAt,
+      };
+    });
+    return res.json({ success: true, data: rows });
   } catch (err) {
     console.error('[admin.reports]', err);
     return res.status(500).json({ success: false, error: 'REPORTS_FAILED', message: 'Could not generate the regional report.' });

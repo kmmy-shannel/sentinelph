@@ -57,6 +57,19 @@ export default function Officers() {
     setTimeout(() => setToast(null), 4000);
   }, []);
 
+  const changeOfficerStatus = useCallback(async (officer) => {
+    const nextStatus = officer.status === 'active' ? 'suspended' : 'active';
+    try {
+      const response = await apiClient.patch(`/api/v1/admin/officers/${officer._id}`, { status: nextStatus });
+      const updated = response.data?.user;
+      setOfficers((previous) => previous.map((item) => item._id === officer._id ? { ...item, ...updated } : item));
+      setToast(`${officer.fullName || officer.email} is now ${nextStatus}.`);
+      setTimeout(() => setToast(null), 4000);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to update officer access.');
+    }
+  }, []);
+
   const statusLabel = (status) => {
     if (status === 'active') return 'Active';
     if (status === 'pending_activation') return 'Pending';
@@ -70,7 +83,7 @@ export default function Officers() {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div>
           <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff", marginBottom: "4px" }}>Officers</div>
-          <div style={{ fontSize: "11px", color: "#4b5563" }}>Manage officer access across all regions</div>
+          <div style={{ fontSize: "11px", color: "#4b5563" }}>Manage officers within your agency</div>
         </div>
         <button
           onClick={() => setIsModalOpen(true)}
@@ -97,16 +110,16 @@ export default function Officers() {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr>
-              {["NAME", "EMAIL", "BADGE ID", "AGENCY", "REGION", "STATUS"].map((h) => (
+              {["NAME", "EMAIL", "BADGE ID", "AGENCY", "REGION", "STATUS", "ACCESS"].map((h) => (
                 <th key={h} style={thS}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6} style={{ ...tdS, textAlign: "center", color: "#4b5563", padding: "24px 0" }}>Loading officers…</td></tr>
+              <tr><td colSpan={7} style={{ ...tdS, textAlign: "center", color: "#4b5563", padding: "24px 0" }}>Loading officers…</td></tr>
             ) : officers.length === 0 ? (
-              <tr><td colSpan={6} style={{ ...tdS, textAlign: "center", color: "#4b5563", padding: "24px 0" }}>No officers yet. Click "Invite Officer" to add one.</td></tr>
+              <tr><td colSpan={7} style={{ ...tdS, textAlign: "center", color: "#4b5563", padding: "24px 0" }}>No officers yet. Click "Add Officer" to add one.</td></tr>
             ) : (
               officers.map((o) => (
                 <tr key={o._id || o.email}>
@@ -120,6 +133,15 @@ export default function Officers() {
                       <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: o.status === "active" ? "#22c55e" : "#f59e0b", display: "inline-block" }} />
                       {statusLabel(o.status)}
                     </span>
+                  </td>
+                  <td style={tdS}>
+                    <button
+                      onClick={() => changeOfficerStatus(o)}
+                      disabled={o.status === 'pending_activation' || o.status === 'disabled'}
+                      style={{ background: 'none', border: 'none', color: o.status === 'active' ? '#f59e0b' : '#22c55e', cursor: o.status === 'pending_activation' || o.status === 'disabled' ? 'not-allowed' : 'pointer', opacity: o.status === 'pending_activation' || o.status === 'disabled' ? .45 : 1, fontSize: '11px', fontWeight: 600 }}
+                    >
+                      {o.status === 'active' ? 'Suspend' : 'Activate'}
+                    </button>
                   </td>
                 </tr>
               ))

@@ -157,4 +157,11 @@ class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     model_loaded: bool
     model_version: Optional[str] = None
+    # Validation metrics are model metadata, not live operational accuracy.
+    # They allow clients to show the deployed model's validated performance
+    # before enough human-reviewed reports exist for a rolling metric.
+    test_accuracy: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    precision: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    recall: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    f1: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     message: Optional[str] = None

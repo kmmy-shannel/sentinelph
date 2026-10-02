@@ -31,7 +31,6 @@ const INITIAL_FORM = {
   fullName: '',
   email: '',
   badgeId: '',
-  agency: '',
   jurisdiction: '',
 };
 
@@ -174,14 +173,9 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
                 required
                 disabled={isSubmitting}
               />
-              <Field
-                label="Agency"
-                value={form.agency}
-                onChange={handleChange('agency')}
-                placeholder="Philippine National Police"
-                required
-                disabled={isSubmitting}
-              />
+              <div className="rounded-lg px-3 py-2 text-xs" style={{ backgroundColor: '#111120', border: '1px solid #1a1a2a', color: '#94a3b8' }}>
+                The officer will be assigned to your agency automatically.
+              </div>
                           <label className="block">
                 <span className="block text-xs font-medium mb-1.5" style={{ color: '#94a3b8' }}>
                   Region / Jurisdiction
