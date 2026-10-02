@@ -18,6 +18,8 @@ const REQUIRED_FIELDS = ['email', 'fullName', 'badgeId', 'jurisdiction'];
 
 // Invite activation links expire in 15 minutes, same as web forgot-password.
 const ACTIVATION_TOKEN_TTL_MINUTES = 15;
+
+// (Kept for the deprecated /ai-insights/:reportId/review endpoint below.)
 const AI_REVIEW_LABELS = [
   'OTP Phishing',
   'Bank Impersonation',
@@ -29,6 +31,46 @@ const AI_REVIEW_LABELS = [
   'Uncertain',
   'Unknown',
 ];
+
+// ─── Effective-category fallback chain ───────────────────────────────
+// The citizen app always sends scamType = 'UNKNOWN' — real classification
+// only happens inside the AI. Officer verdicts override the AI once
+// 2-of-3 consensus is reached. This chain picks the best available label
+// for display in the Admin "Top Scam Types" panel.
+//
+// Priority (highest first):
+//   1. officerSubtypeAggregated   (2-of-3 officer correction, terminal)
+//   2. officerSubtype             (single officer's verdict, in-flight)
+//   3. aiFlag.subtype             (Level 2 AI classification)
+//   4. aiFlag.label               (Level 1 AI tier)
+//   5. category | scamType        (citizen-declared, usually UNKNOWN)
+//   6. "UNCLASSIFIED"             (nothing is available)
+const EFFECTIVE_CATEGORY_STAGE = {
+  $ifNull: [
+    '$officerSubtypeAggregated',
+    {
+      $ifNull: [
+        '$officerSubtype',
+        {
+          $ifNull: [
+            '$aiFlag.subtype',
+            {
+              $ifNull: [
+                '$aiFlag.label',
+                {
+                  $ifNull: [
+                    '$category',
+                    { $ifNull: ['$scamType', 'UNCLASSIFIED'] },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
 
 router.use(verifyFirebaseToken);
 router.use(requireRole('admin'));
@@ -83,37 +125,102 @@ function auditAdminAction(req, action, metadata) {
 
 function normalizeAiLabel(label) {
   const value = String(label || '').trim().toLowerCase();
-  if (['likely_scam', 'malicious', 'otp phishing', 'bank impersonation', 'parcel/delivery', 'investment scam', "gov't impersonation"].includes(value)) return 'scam';
-  if (['likely_legitimate', 'legitimate'].includes(value)) return 'legitimate';
+  if (['likely_scam', 'malicious', 'otp phishing', 'bank impersonation', 'parcel/delivery', 'investment scam', "gov't impersonation", 'phishing_link', 'fake_prize_lottery', 'wrong_number_baiting', 'urgent_fine_toll', 'impersonation_family'].includes(value)) return 'scam';
+  if (['likely_legitimate', 'legitimate', 'personal_conversational', 'two_factor_auth', 'appointment_reminder', 'delivery_tracking', 'bank_activity_alert'].includes(value)) return 'legitimate';
   return 'unknown';
 }
 
-function getModelMetrics(reviews) {
-  const judged = reviews
-    .map((review) => ({ predicted: normalizeAiLabel(review.originalLabel), actual: normalizeAiLabel(review.selectedLabel) }))
-    .filter((review) => review.predicted !== 'unknown' && review.actual !== 'unknown');
+// ─── Metrics: computed from officer verdicts (ground truth) ──────────
+//
+// The pipeline that writes to AdminAiReview is deprecated. The real
+// ground-truth signal comes from officer votes, which land in
+// `Report.officerSubtypeAggregated` after 2-of-3 consensus.
+//
+// To keep the UI functioning during the transition, we merge both
+// sources: `AdminAiReview` docs (if any exist historically) AND
+// officer-verdict reports. Rows are deduped by reportId.
+function buildReviewSignals(adminReviews, officerVerdictReports) {
+  const signals = [];
+  const seen = new Set();
+
+  for (const r of adminReviews || []) {
+    if (!r.reportId || seen.has(r.reportId)) continue;
+    seen.add(r.reportId);
+    signals.push({
+      reportId: r.reportId,
+      predicted: r.originalLabel || 'unavailable',
+      actual: r.selectedLabel || 'unavailable',
+      reviewedAt: r.reviewedAt,
+    });
+  }
+
+  for (const r of officerVerdictReports || []) {
+    if (!r.reportId || seen.has(r.reportId)) continue;
+    // Predicted = the AI's own subtype (or label as fallback) at submission
+    const predicted = r.aiFlag?.subtype || r.aiFlag?.label || 'unavailable';
+    // Actual = the 2-of-3 officer consensus
+    const actual = r.officerSubtypeAggregated || 'unavailable';
+    signals.push({
+      reportId: r.reportId,
+      predicted,
+      actual,
+      reviewedAt: r.officerSubtypeFinalizedAt || r.resolvedAt || r.createdAt,
+    });
+  }
+
+  return signals;
+}
+
+function getModelMetrics(signals) {
+  const judged = signals
+    .map((s) => ({
+      predicted: normalizeAiLabel(s.predicted),
+      actual: normalizeAiLabel(s.actual),
+    }))
+    .filter((s) => s.predicted !== 'unknown' && s.actual !== 'unknown');
+
   if (!judged.length) return null;
-  const tp = judged.filter((item) => item.predicted === 'scam' && item.actual === 'scam').length;
-  const fp = judged.filter((item) => item.predicted === 'scam' && item.actual !== 'scam').length;
-  const fn = judged.filter((item) => item.predicted !== 'scam' && item.actual === 'scam').length;
-  const accuracy = judged.filter((item) => item.predicted === item.actual).length / judged.length;
+
+  const tp = judged.filter((i) => i.predicted === 'scam' && i.actual === 'scam').length;
+  const fp = judged.filter((i) => i.predicted === 'scam' && i.actual !== 'scam').length;
+  const fn = judged.filter((i) => i.predicted !== 'scam' && i.actual === 'scam').length;
+  const accuracy = judged.filter((i) => i.predicted === i.actual).length / judged.length;
   const precision = tp + fp ? tp / (tp + fp) : null;
   const recall = tp + fn ? tp / (tp + fn) : null;
-  const f1 = precision !== null && recall !== null && precision + recall ? (2 * precision * recall) / (precision + recall) : null;
+  const f1 = precision !== null && recall !== null && precision + recall
+    ? (2 * precision * recall) / (precision + recall)
+    : null;
+
   return { accuracy, precision, recall, f1, sampleSize: judged.length };
 }
 
-function getMetricTrend(reviews) {
-  const ordered = [...reviews].filter((review) => review.reviewedAt).sort((a, b) => new Date(a.reviewedAt) - new Date(b.reviewedAt));
+function getMetricTrend(signals) {
+  const ordered = [...signals]
+    .filter((s) => s.reviewedAt)
+    .sort((a, b) => new Date(a.reviewedAt) - new Date(b.reviewedAt));
+
   const history = [];
-  let currentDay = null;
-  for (let index = 0; index < ordered.length; index += 1) {
-    const day = new Date(ordered[index].reviewedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    const isLastForDay = index === ordered.length - 1 || new Date(ordered[index + 1].reviewedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) !== day;
-    currentDay = day;
+  for (let i = 0; i < ordered.length; i += 1) {
+    const day = new Date(ordered[i].reviewedAt).toLocaleDateString('en-US', {
+      month: 'short', day: 'numeric',
+    });
+    const isLastForDay =
+      i === ordered.length - 1 ||
+      new Date(ordered[i + 1].reviewedAt).toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric',
+      }) !== day;
     if (!isLastForDay) continue;
-    const metrics = getModelMetrics(ordered.slice(0, index + 1));
-    if (metrics) history.push({ date: currentDay, acc: metrics.accuracy * 100, prec: metrics.precision === null ? null : metrics.precision * 100, recall: metrics.recall === null ? null : metrics.recall * 100, f1: metrics.f1 === null ? null : metrics.f1 * 100 });
+
+    const metrics = getModelMetrics(ordered.slice(0, i + 1));
+    if (metrics) {
+      history.push({
+        date: day,
+        acc: metrics.accuracy * 100,
+        prec: metrics.precision === null ? null : metrics.precision * 100,
+        recall: metrics.recall === null ? null : metrics.recall * 100,
+        f1: metrics.f1 === null ? null : metrics.f1 * 100,
+      });
+    }
   }
   return history;
 }
@@ -128,25 +235,12 @@ function getAllowedDomains() {
 function isDomainAllowed(email) {
   const domain = email.split('@')[1]?.toLowerCase();
   if (!domain) return false;
-
-  // Always allow any subdomain of .gov.ph (e.g. pnp.gov.ph, ndrrmc.gov.ph)
-  if (domain.endsWith('.gov.ph') || domain === 'gov.ph') {
-    return true;
-  }
-
-  const allowedDomains = getAllowedDomains();
-  return allowedDomains.includes(domain);
+  if (domain.endsWith('.gov.ph') || domain === 'gov.ph') return true;
+  return getAllowedDomains().includes(domain);
 }
 
 /**
  * POST /api/v1/admin/invite-officer
- * Restricted to admin / superadmin. Provisions a passwordless Firebase
- * account, saves a pending_activation profile in MongoDB, and emails the
- * invitee a single-use activation link pointing at our own ResetPassword
- * page with ?mode=activate.
- *
- * Uses the same custom-token system as /auth/request-password-reset so
- * the frontend's confirm-password-reset handler needs no changes.
  */
 router.post(
   '/invite-officer',
@@ -165,9 +259,6 @@ router.post(
       }
 
       const normalizedEmail = String(email).trim().toLowerCase();
-
-      // Region whitelist — must be one of the canonical Roman-numeral
-      // names in shared/regions.js.
       const normalizedJurisdiction = String(jurisdiction).trim();
       if (!isValidRegion(normalizedJurisdiction)) {
         return res.status(400).json({
@@ -196,14 +287,11 @@ router.post(
 
       const admin = initFirebase();
 
-      // Fetch or create the Firebase Auth account.
       let firebaseUser;
       try {
         firebaseUser = await admin.auth().getUserByEmail(normalizedEmail);
       } catch (lookupErr) {
-        if (lookupErr.code !== 'auth/user-not-found') {
-          throw lookupErr;
-        }
+        if (lookupErr.code !== 'auth/user-not-found') throw lookupErr;
         firebaseUser = await admin.auth().createUser({
           email: normalizedEmail,
           displayName: fullName,
@@ -211,33 +299,17 @@ router.post(
         });
       }
 
-      // Tag the new officer with a role claim so verifyFirebaseToken
-      // recognizes them once they authenticate.
       await admin.auth().setCustomUserClaims(firebaseUser.uid, {
         role: 'officer',
         agency,
         jurisdiction: normalizedJurisdiction,
       });
 
-      // ─── Build a custom activation link (NOT a Firebase link) ────────
-      // Same token mechanics as /auth/request-password-reset:
-      //   • 32-byte random token emailed to the officer
-      //   • sha256(token) stored in PasswordResetToken
-      //   • confirm-password-reset verifies the hash and updates the
-      //     Firebase password — no changes needed on that endpoint.
       const rawToken = crypto.randomBytes(32).toString('hex');
-      const tokenHash = crypto
-        .createHash('sha256')
-        .update(rawToken)
-        .digest('hex');
+      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+      const expiresAt = new Date(Date.now() + ACTIVATION_TOKEN_TTL_MINUTES * 60 * 1000);
 
-      const expiresAt = new Date(
-        Date.now() + ACTIVATION_TOKEN_TTL_MINUTES * 60 * 1000
-      );
-
-      // One live token per user — clear any stale invite/reset tokens.
       await PasswordResetToken.deleteMany({ firebaseUid: firebaseUser.uid });
-
       await PasswordResetToken.create({
         firebaseUid: firebaseUser.uid,
         email: normalizedEmail,
@@ -253,7 +325,6 @@ router.post(
         'http://localhost:5173';
 
       const activationLink = `${webOrigin.replace(/\/$/, '')}/reset-password?mode=activate&token=${rawToken}`;
-      // ─────────────────────────────────────────────────────────────────
 
       const newUser = await User.create({
         firebaseUid: firebaseUser.uid,
@@ -292,7 +363,6 @@ router.post(
       });
     } catch (err) {
       console.error('[admin.invite-officer] Unexpected error:', err);
-
       if (err.code === 'auth/email-already-exists') {
         return res.status(409).json({
           success: false,
@@ -300,7 +370,6 @@ router.post(
           message: 'A Firebase account with this email already exists.',
         });
       }
-
       return res.status(500).json({
         success: false,
         error: 'INVITE_FAILED',
@@ -312,49 +381,40 @@ router.post(
 
 /**
  * GET /api/v1/admin/officers
- * Lists all officer-role users (across every region), sorted newest first.
- * Restricted to admin/superadmin.
  */
-router.get(
-  '/officers',
-  async (req, res) => {
-    try {
-      // Agency Admins were explicitly configured to monitor every registered
-      // officer, including officers from other agencies.
-      const officers = await User.find({ role: 'officer' })
-        .sort({ createdAt: -1 })
-        .limit(500)
-        .lean();
+router.get('/officers', async (req, res) => {
+  try {
+    const officers = await User.find({ role: 'officer' })
+      .sort({ createdAt: -1 })
+      .limit(500)
+      .lean();
 
-      return res.status(200).json({
-        success: true,
-        officers: officers.map((o) => ({
-          _id: o._id,
-          firebaseUid: o.firebaseUid,
-          email: o.email,
-          fullName: o.fullName,
-          role: o.role,
-          badgeId: o.badgeId,
-          agency: o.agency,
-          jurisdiction: o.jurisdiction,
-          status: o.status,
-          createdAt: o.createdAt,
-          updatedAt: o.updatedAt,
-        })),
-      });
-    } catch (err) {
-      console.error('[admin.officers] Unexpected error:', err);
-      return res.status(500).json({
-        success: false,
-        error: 'LIST_FAILED',
-        message: 'Failed to list officers.',
-      });
-    }
+    return res.status(200).json({
+      success: true,
+      officers: officers.map((o) => ({
+        _id: o._id,
+        firebaseUid: o.firebaseUid,
+        email: o.email,
+        fullName: o.fullName,
+        role: o.role,
+        badgeId: o.badgeId,
+        agency: o.agency,
+        jurisdiction: o.jurisdiction,
+        status: o.status,
+        createdAt: o.createdAt,
+        updatedAt: o.updatedAt,
+      })),
+    });
+  } catch (err) {
+    console.error('[admin.officers] Unexpected error:', err);
+    return res.status(500).json({
+      success: false,
+      error: 'LIST_FAILED',
+      message: 'Failed to list officers.',
+    });
   }
-);
+});
 
-// Admin-only equivalent of /auth/me. Keeping this inside the Admin API means
-// each Admin screen reads its data through one consistent endpoint family.
 router.get('/profile', async (req, res) => {
   const profile = req.adminProfile;
   return res.json({
@@ -376,7 +436,6 @@ router.get('/profile', async (req, res) => {
 
 /**
  * PATCH /api/v1/admin/officers/:id
- * An Agency Admin may only change an officer within the Admin's own agency.
  */
 router.patch('/officers/:id', async (req, res) => {
   try {
@@ -410,8 +469,6 @@ router.patch('/officers/:id', async (req, res) => {
       jurisdiction: nextJurisdiction ? String(nextJurisdiction).trim() : officer.jurisdiction,
     });
     if (nextStatus) {
-      // Suspending or disabling access takes effect at Firebase too; revoking
-      // refresh tokens prevents the old web session from silently persisting.
       await firebase.auth().updateUser(officer.firebaseUid, { disabled: nextStatus !== 'active' });
       if (nextStatus !== 'active') await firebase.auth().revokeRefreshTokens(officer.firebaseUid);
     }
@@ -432,16 +489,26 @@ router.patch('/officers/:id', async (req, res) => {
   }
 });
 
-/** Live agency overview. Counts only reports in the Admin's assigned region;
- * a National / Regional Admin receives a national view. */
+/** Live agency overview. */
 router.get('/dashboard', async (req, res) => {
   try {
     const scope = reportScope(req.adminProfile);
     const since7d = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000);
     const reportMatch = Object.keys(scope).length ? { $and: [scope, { createdAt: { $gte: since7d } }] } : { createdAt: { $gte: since7d } };
+
     const aiCandidateMatch = Object.keys(scope).length
-      ? { $and: [scope, { 'aiFlag.label': { $in: ['uncertain', 'grey_area'] } }] }
-      : { 'aiFlag.label': { $in: ['uncertain', 'grey_area'] } };
+      ? {
+          $and: [
+            scope,
+            { 'aiFlag.available': true },
+            { 'aiFlag.label': { $in: ['legitimate', 'grey_area', 'malicious', 'uncertain'] } },
+          ],
+        }
+      : {
+          'aiFlag.available': true,
+          'aiFlag.label': { $in: ['legitimate', 'grey_area', 'malicious', 'uncertain'] },
+        };
+
     const [totalReports, openReports, blacklisted, officers, trendRows, regions, categories, flagged, aiReviews] = await Promise.all([
       Report.countDocuments(scope),
       Report.countDocuments(Object.keys(scope).length ? { $and: [scope, { status: { $in: ['pending', 'under_review', 'one_approval', 'two_approvals'] } }] } : { status: { $in: ['pending', 'under_review', 'one_approval', 'two_approvals'] } }),
@@ -459,17 +526,38 @@ router.get('/dashboard', async (req, res) => {
       ]),
       Report.aggregate([
         ...(Object.keys(scope).length ? [{ $match: scope }] : []),
-        { $group: { _id: { $ifNull: ['$category', '$scamType'] }, reports: { $sum: 1 } } },
+        {
+          $group: {
+            _id: EFFECTIVE_CATEGORY_STAGE,
+            reports: { $sum: 1 },
+          },
+        },
         { $sort: { reports: -1 } }, { $limit: 5 },
       ]),
       Report.find(aiCandidateMatch)
         .sort({ createdAt: -1 })
-        .limit(4)
-        .select('reportId reportedNumber aiFlag')
+        .limit(10)
+        .select('reportId reportedNumber aiFlag location jurisdiction createdAt status officerSubtypeAggregated officerSubtypeAgreement officerSubtypeFinalizedAt')
         .lean(),
-      AdminAiReview.find({ agency: req.adminProfile.agency }).select('originalLabel selectedLabel').lean(),
+      AdminAiReview.find({ agency: req.adminProfile.agency }).select('reportId originalLabel selectedLabel reviewedAt').lean(),
     ]);
-    const modelMetrics = getModelMetrics(aiReviews);
+
+    // Officer-verdict reports for the metrics — combined with adminReviews.
+    const officerVerdicts = await Report.find(
+      Object.keys(scope).length
+        ? { $and: [scope, { officerSubtypeAggregated: { $ne: null } }] }
+        : { officerSubtypeAggregated: { $ne: null } }
+    )
+      .select('reportId aiFlag officerSubtypeAggregated officerSubtypeFinalizedAt resolvedAt createdAt')
+      .lean();
+
+    const signals = buildReviewSignals(aiReviews, officerVerdicts);
+    const modelMetrics = getModelMetrics(signals);
+
+    const aiReviewIds = new Set(aiReviews.map((r) => r.reportId));
+    const officerReviewedIds = new Set(officerVerdicts.map((r) => r.reportId));
+    const reviewedIds = new Set([...aiReviewIds, ...officerReviewedIds]);
+
     return res.json({
       success: true,
       data: {
@@ -477,7 +565,7 @@ router.get('/dashboard', async (req, res) => {
         kpis: {
           totalReports,
           aiModelAccuracy: modelMetrics?.accuracy ?? null,
-          flaggedForReview: flagged.length,
+          flaggedForReview: flagged.filter((r) => !reviewedIds.has(r.reportId)).length,
           scamTypesTracked: categories.length,
           openReports,
           blacklisted,
@@ -486,13 +574,30 @@ router.get('/dashboard', async (req, res) => {
         modelMetrics,
         trend: trendRows.map((row) => ({ day: row._id, sms: row.reports, calls: 0 })),
         heatmap: regions.map((row) => ({ region: row._id || 'Unknown', reports: row.reports })),
-        patterns: categories.map((row) => ({ category: row._id || 'UNKNOWN', reports: row.reports })),
-        flagged: flagged.map((report) => ({
-          id: report.reportId,
-          number: report.reportedNumber,
-          label: report.aiFlag?.label || 'unavailable',
-          confidence: report.aiFlag?.confidenceScore ?? report.aiFlag?.probabilityScore ?? null,
-        })),
+        patterns: categories.map((row) => ({ category: row._id || 'UNCLASSIFIED', reports: row.reports })),
+        flagged: flagged.map((report) => {
+          const officerVerdict = report.officerSubtypeAggregated || null;
+          const aiSubtype = report.aiFlag?.subtype || null;
+          let agreementStatus = 'pending';
+          if (officerVerdict) {
+            agreementStatus = officerVerdict === aiSubtype ? 'confirmed' : 'corrected';
+          }
+          return {
+            id: report.reportId,
+            number: report.reportedNumber,
+            label: report.aiFlag?.label || 'unavailable',
+            subtype: aiSubtype,
+            subtypeConfidence: report.aiFlag?.subtypeConfidence ?? null,
+            confidence: report.aiFlag?.confidenceScore ?? report.aiFlag?.probabilityScore ?? null,
+            riskLevel: report.aiFlag?.riskLevel || 'UNKNOWN',
+            region: report.location?.region || report.jurisdiction || 'Unknown',
+            status: report.status,
+            officerVerdict,
+            officerAgreement: report.officerSubtypeAgreement || 0,
+            agreementStatus,
+            reviewed: reviewedIds.has(report.reportId),
+          };
+        }),
       },
     });
   } catch (err) {
@@ -504,43 +609,103 @@ router.get('/dashboard', async (req, res) => {
 router.get('/ai-insights', async (req, res) => {
   try {
     const scope = reportScope(req.adminProfile);
-    const scopedMatch = Object.keys(scope).length ? { $and: [scope, { 'aiFlag.available': true }] } : { 'aiFlag.available': true };
-    // The AI Insights table must show all actual AI-scored reports. Limiting
-    // it to grey-area labels hid malicious and legitimate classifications and
-    // made the Admin screen appear empty despite stored AI data.
-    const candidatesMatch = scopedMatch;
+    const scopedMatch = Object.keys(scope).length
+      ? { $and: [scope, { 'aiFlag.available': true }] }
+      : { 'aiFlag.available': true };
     const since30d = new Date(Date.now() - 29 * 24 * 60 * 60 * 1000);
     const trendMatch = Object.keys(scope).length
       ? { $and: [scope, { createdAt: { $gte: since30d } }, { 'aiFlag.available': true }] }
       : { createdAt: { $gte: since30d }, 'aiFlag.available': true };
-    const [analyzed, candidates, reviews, trendRows] = await Promise.all([
+
+    const [analyzed, candidates, adminReviews, officerVerdicts, trendRows] = await Promise.all([
       Report.countDocuments(scopedMatch),
-      Report.find(candidatesMatch).sort({ createdAt: -1 }).limit(100).select('reportId reportedNumber aiFlag location jurisdiction createdAt').lean(),
-      AdminAiReview.find({ agency: req.adminProfile.agency }).select('reportId originalLabel selectedLabel reviewedAt').lean(),
+      Report.find(scopedMatch)
+        .sort({ createdAt: -1 })
+        .limit(100)
+        .select('reportId reportedNumber aiFlag location jurisdiction createdAt status officerSubtypeAggregated officerSubtypeAgreement officerSubtypeFinalizedAt resolvedAt')
+        .lean(),
+      AdminAiReview.find({ agency: req.adminProfile.agency })
+        .select('reportId originalLabel selectedLabel reviewedAt')
+        .lean(),
+      Report.find(
+        Object.keys(scope).length
+          ? { $and: [scope, { officerSubtypeAggregated: { $ne: null } }] }
+          : { officerSubtypeAggregated: { $ne: null } }
+      )
+        .select('reportId aiFlag officerSubtypeAggregated officerSubtypeFinalizedAt resolvedAt createdAt')
+        .lean(),
       Report.aggregate([
         { $match: trendMatch },
-        { $group: { _id: { $dateToString: { format: '%b %d', date: '$createdAt', timezone: 'Asia/Manila' } }, analyzed: { $sum: 1 }, uncertain: { $sum: { $cond: [{ $in: ['$aiFlag.label', ['uncertain', 'grey_area']] }, 1, 0] } } } },
+        {
+          $group: {
+            _id: { $dateToString: { format: '%b %d', date: '$createdAt', timezone: 'Asia/Manila' } },
+            analyzed: { $sum: 1 },
+            uncertain: { $sum: { $cond: [{ $in: ['$aiFlag.label', ['uncertain', 'grey_area']] }, 1, 0] } },
+          },
+        },
         { $sort: { _id: 1 } },
       ]),
     ]);
-    const reviewByReport = new Map(reviews.map((review) => [review.reportId, review]));
-    const modelMetrics = getModelMetrics(reviews);
-    const items = candidates.map((report) => ({
-      id: report.reportId,
-      number: report.reportedNumber,
-      label: report.aiFlag?.label || 'unavailable',
-      confidence: report.aiFlag?.confidenceScore ?? report.aiFlag?.probabilityScore ?? null,
-      region: report.location?.region || report.jurisdiction || 'Unknown',
-      reviewed: reviewByReport.get(report.reportId) || null,
-    }));
+
+    // Ground-truth signal = officer verdicts (primary) + historical adminReviews
+    const signals = buildReviewSignals(adminReviews, officerVerdicts);
+    const modelMetrics = getModelMetrics(signals);
+    const metricTrend = getMetricTrend(signals);
+
+    // Per-report review lookup (officer verdict wins over admin review).
+    const officerVerdictByReport = new Map();
+    for (const r of officerVerdicts) {
+      officerVerdictByReport.set(r.reportId, {
+        verdict: r.officerSubtypeAggregated,
+        agreement: r.officerSubtypeAgreement || 0,
+        finalizedAt: r.officerSubtypeFinalizedAt || r.resolvedAt || null,
+      });
+    }
+    const adminReviewByReport = new Map(adminReviews.map((r) => [r.reportId, r]));
+
+    const items = candidates.map((report) => {
+      const aiSubtype = report.aiFlag?.subtype || null;
+      const officer = officerVerdictByReport.get(report.reportId) || null;
+      const adminReview = adminReviewByReport.get(report.reportId) || null;
+
+      let agreementStatus = 'pending';
+      if (officer?.verdict) {
+        agreementStatus = officer.verdict === aiSubtype ? 'confirmed' : 'corrected';
+      } else if (adminReview) {
+        agreementStatus = 'admin-reviewed';
+      }
+
+      return {
+        id: report.reportId,
+        number: report.reportedNumber,
+        region: report.location?.region || report.jurisdiction || 'Unknown',
+        aiLabel: report.aiFlag?.label || 'unavailable',
+        aiSubtype,
+        aiSubtypeConfidence: report.aiFlag?.subtypeConfidence ?? null,
+        aiConfidence: report.aiFlag?.confidenceScore ?? report.aiFlag?.probabilityScore ?? null,
+        riskLevel: report.aiFlag?.riskLevel || 'UNKNOWN',
+        status: report.status,
+        officerVerdict: officer?.verdict || null,
+        officerAgreement: officer?.agreement || 0,
+        officerFinalizedAt: officer?.finalizedAt || null,
+        adminReview: adminReview
+          ? { selectedLabel: adminReview.selectedLabel, reviewedAt: adminReview.reviewedAt }
+          : null,
+        agreementStatus,
+      };
+    });
+
+    const pendingReview = items.filter((i) => i.agreementStatus === 'pending').length;
+    const reviewed = items.filter((i) => i.agreementStatus !== 'pending').length;
+
     return res.json({
       success: true,
       data: {
         analyzed,
-        pendingReview: items.filter((item) => !item.reviewed).length,
-        reviewed: reviews.length,
+        pendingReview,
+        reviewed,
         modelMetrics,
-        metricTrend: getMetricTrend(reviews),
+        metricTrend,
         items,
         trend: trendRows.map((row) => ({ date: row._id, analyzed: row.analyzed, uncertain: row.uncertain })),
       },
@@ -551,33 +716,22 @@ router.get('/ai-insights', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────
+// DEPRECATED — POST /api/v1/admin/ai-insights/:reportId/review
+//
+// The admin-classification flow was removed by design: report review is
+// the officer's job (they see the full evidence, they hold the domain
+// expertise). This endpoint is retained for backward compatibility but
+// is no longer called by any frontend. Remove once you're sure nothing
+// depends on it.
+// ─────────────────────────────────────────────────────────────────────
 router.post('/ai-insights/:reportId/review', async (req, res) => {
-  try {
-    const selectedLabel = String(req.body?.selectedLabel || '').trim();
-    if (!AI_REVIEW_LABELS.includes(selectedLabel)) {
-      return res.status(400).json({ success: false, error: 'INVALID_LABEL', message: 'Select a valid classification label.' });
-    }
-    const scope = reportScope(req.adminProfile);
-    const query = Object.keys(scope).length ? { $and: [scope, { reportId: req.params.reportId }] } : { reportId: req.params.reportId };
-    const report = await Report.findOne(query).select('reportId aiFlag location jurisdiction').lean();
-    if (!report) return res.status(404).json({ success: false, error: 'REPORT_NOT_FOUND', message: 'Report not found in your scope.' });
-
-    const existing = await AdminAiReview.findOne({ reportId: report.reportId }).lean();
-    if (existing) return res.status(409).json({ success: false, error: 'ALREADY_REVIEWED', message: 'This report already has an immutable AI review.' });
-    const review = await AdminAiReview.create({
-      reportId: report.reportId,
-      agency: req.adminProfile.agency,
-      jurisdiction: report.location?.region || report.jurisdiction || null,
-      originalLabel: report.aiFlag?.label || 'unavailable',
-      selectedLabel,
-      reviewedBy: req.user.uid,
-    });
-    await auditAdminAction(req, 'AI_CLASSIFICATION_REVIEWED', { reportId: report.reportId, selectedLabel });
-    return res.status(201).json({ success: true, review });
-  } catch (err) {
-    console.error('[admin.ai-review]', err);
-    return res.status(500).json({ success: false, error: 'AI_REVIEW_FAILED', message: 'Could not save the AI review.' });
-  }
+  return res.status(410).json({
+    success: false,
+    error: 'ENDPOINT_DEPRECATED',
+    message:
+      'Admin classification of AI verdicts was removed. Report review is performed by officers through the Review Queue.',
+  });
 });
 
 router.get('/reports', async (req, res) => {
@@ -592,19 +746,38 @@ router.get('/reports', async (req, res) => {
     const end = parseDate(to, true);
     if (from && !start || to && !end) return res.status(400).json({ success: false, error: 'INVALID_DATE', message: 'Dates must be valid ISO dates.' });
     if (start || end) filters.createdAt = { ...(start ? { $gte: start } : {}), ...(end ? { $lte: end } : {}) };
-    if (scamType && scamType !== 'all') filters.$or = [{ category: scamType }, { scamType }];
+    if (scamType && scamType !== 'all') {
+      filters.$or = [
+        { officerSubtypeAggregated: scamType },
+        { officerSubtype: scamType },
+        { 'aiFlag.subtype': scamType },
+        { 'aiFlag.label': scamType },
+        { category: scamType },
+        { scamType },
+      ];
+    }
     const query = Object.keys(scope).length ? { $and: [scope, filters] } : filters;
     const rows = await Report.aggregate([
       { $match: query },
-      { $group: {
-        _id: { $ifNull: ['$location.region', '$jurisdiction'] },
-        reports: { $sum: 1 },
-        topScamType: { $last: '$category' },
-        latestReportAt: { $max: '$createdAt' },
-      } },
+      {
+        $group: {
+          _id: { $ifNull: ['$location.region', '$jurisdiction'] },
+          reports: { $sum: 1 },
+          topScamType: { $last: EFFECTIVE_CATEGORY_STAGE },
+          latestReportAt: { $max: '$createdAt' },
+        },
+      },
       { $sort: { reports: -1 } }, { $limit: 100 },
     ]);
-    return res.json({ success: true, data: rows.map((row) => ({ region: row._id || 'Unknown', reports: row.reports, topScamType: row.topScamType || 'UNKNOWN', latestReportAt: row.latestReportAt })) });
+    return res.json({
+      success: true,
+      data: rows.map((row) => ({
+        region: row._id || 'Unknown',
+        reports: row.reports,
+        topScamType: row.topScamType || 'UNCLASSIFIED',
+        latestReportAt: row.latestReportAt,
+      })),
+    });
   } catch (err) {
     console.error('[admin.reports]', err);
     return res.status(500).json({ success: false, error: 'REPORTS_FAILED', message: 'Could not generate the regional report.' });

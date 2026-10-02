@@ -1,6 +1,7 @@
 // apps/web/src/pages/SuperAdmin-Tabs/UsersRBAC.jsx
 import React, { useState, useEffect, useCallback } from "react";
 import apiClient from "../../lib/api";
+import InviteUserModal from '../../components/InviteUserModal';
 
 const A = "#22c55e";
 const label = { fontSize: "9px", fontWeight: 500, color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em", marginBottom: "6px" };
@@ -49,6 +50,7 @@ export default function UsersRBAC() {
   const [search, setSearch]             = useState("");
   const [detailUser, setDetailUser]     = useState(null);
   const [showProvision, setShowProvision] = useState(false);
+  const [showInvite, setShowInvite]     = useState(false);
   const [showRoleModal, setShowRoleModal] = useState(null);
   const [showSuspendModal, setShowSuspendModal] = useState(null);
   const [showDisableModal, setShowDisableModal] = useState(null);
@@ -196,7 +198,40 @@ export default function UsersRBAC() {
     }
   }
 
-  // Provision
+  // Invite (NEW)
+  function openInvite() {
+    setShowInvite(true);
+  }
+
+  const handleInvited = useCallback((newUser) => {
+    // Optimistically prepend the new user so the table updates instantly.
+    // loadUsers() reconciles with the server shortly after.
+    if (newUser) {
+      setUsers((prev) => [
+        {
+          id: newUser.id,
+          uid: newUser.uid,
+          name: newUser.name,
+          email: newUser.email,
+          role: newUser.role,
+          agency: newUser.agency,
+          scope: newUser.scope,
+          badge_id: newUser.badge_id,
+          status: newUser.status ?? "Pending",
+          raw_status: newUser.raw_status ?? "pending_activation",
+          suspendedUntil: null,
+          suspendReason: null,
+          last_login_at: newUser.last_login_at,
+        },
+        ...prev,
+      ]);
+      showToast(`Invitation sent to ${newUser.email}.`);
+    }
+    setShowInvite(false);
+    loadUsers();
+  }, [loadUsers]);
+
+  // Provision (kept for temp-password flow)
   function openProvision() {
     setPForm({
       fullName: "", email: "", badgeId: "", agency: "",
@@ -294,10 +329,16 @@ export default function UsersRBAC() {
             {f === "all" ? "All Status" : f.charAt(0).toUpperCase() + f.slice(1)}
           </button>
         ))}
-        <button onClick={openProvision}
-          style={{ marginLeft: "auto", padding: "8px 18px", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer", background: A, border: "none", color: "#fff" }}>
-          + Provision Account
-        </button>
+        <div style={{ marginLeft: "auto", display: "flex", gap: "8px" }}>
+          <button onClick={openInvite}
+            style={{ padding: "8px 18px", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer", background: A, border: "none", color: "#08200f" }}>
+            + Add User
+          </button>
+          <button onClick={openProvision}
+            style={{ padding: "8px 18px", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer", background: "transparent", border: "1px solid #1a1a2a", color: "#9ca3af" }}>
+            + Provision with Temp Password
+          </button>
+        </div>
       </div>
 
       <div style={{ borderRadius: "12px", overflow: "hidden", background: "#0e0e18", border: "1px solid #1a1a2a" }}>
@@ -691,6 +732,13 @@ export default function UsersRBAC() {
           </div>
         </div>
       )}
+
+      {/* Invite User modal (NEW) */}
+      <InviteUserModal
+        isOpen={showInvite}
+        onClose={() => setShowInvite(false)}
+        onInvited={handleInvited}
+      />
 
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>

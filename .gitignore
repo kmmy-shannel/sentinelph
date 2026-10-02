@@ -83,3 +83,23 @@ services/ai/models/**/*.bin
 services/ai/models/**/*.pt
 services/ai/models/**/*.pth
 services/ai/models/**/*.safetensors
+
+# Diagnostic scripts — contain credentials, never commit
+check_oplog.js
+check_users.js
+
+# Firebase re-seed script (contains UIDs)
+services/api/scripts/seedFromFirebase.js
+
+# AI model weights — hosted on Hugging Face Hub, too large for git
+services/ai/models/subtype_legit/
+services/ai/models/subtype_malicious/
+services/ai/models/transformer/
+services/ai/models/transformer_v001/
+
+# Temporary batch files
+services/ai/batch_*.txt
+services/ai/batch_*.csv
+
+# Backup files
+*.bak

@@ -1,5 +1,5 @@
 // apps/web/src/pages/Admin-Tabs/Account.jsx
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import {
   KeyRound,
   UserCircle,
@@ -7,8 +7,13 @@ import {
   EyeOff,
   Check,
   X,
+  Mail,
+  RotateCw,
 } from 'lucide-react';
-import apiClient, { changePassword } from "../../lib/api";
+import apiClient, {
+  changePassword,
+  requestPasswordChangeOtp,
+} from "../../lib/api";
 
 // Maximum password length. Must match the server-side cap in
 // routes/account.js (change-password) — both must agree or the
@@ -17,8 +22,6 @@ import apiClient, { changePassword } from "../../lib/api";
 const MAX_PW_LENGTH = 64;
 
 // ─── Eye-toggle password input ────────────────────────────────────────
-// Owns its own visible/hidden state so toggling one field never reveals
-// the others.
 function PasswordInput({
   value,
   onChange,
@@ -26,6 +29,7 @@ function PasswordInput({
   autoComplete = "new-password",
   inputStyle,
   hasError = false,
+  disabled = false,
 }) {
   const [visible, setVisible] = useState(false);
 
@@ -38,17 +42,21 @@ function PasswordInput({
         placeholder={placeholder}
         autoComplete={autoComplete}
         spellCheck={false}
+        disabled={disabled}
         maxLength={MAX_PW_LENGTH}
         style={{
           ...inputStyle,
           paddingRight: "42px",
           borderColor: hasError ? "#ef4444" : inputStyle.border,
+          opacity: disabled ? 0.5 : 1,
+          cursor: disabled ? "not-allowed" : "text",
         }}
       />
       <button
         type="button"
         onClick={() => setVisible((v) => !v)}
         tabIndex={-1}
+        disabled={disabled}
         aria-label={visible ? "Hide password" : "Show password"}
         style={{
           position: "absolute",
@@ -58,11 +66,12 @@ function PasswordInput({
           background: "transparent",
           border: "none",
           padding: "4px",
-          cursor: "pointer",
+          cursor: disabled ? "not-allowed" : "pointer",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
           color: "#4b5563",
+          opacity: disabled ? 0.4 : 1,
         }}
       >
         {visible ? <EyeOff size={14} /> : <Eye size={14} />}
@@ -72,14 +81,10 @@ function PasswordInput({
 }
 
 // ─── Password strength scoring ────────────────────────────────────────
-// Returns { score: 0-5, label, color }. Score = number of satisfied
-// criteria (length tiers + character classes). Higher length tiers
-// reward longer passphrases so a 32-char sentence still scores well.
 function scorePassword(pw) {
   if (!pw) return { score: 0, label: "", color: "#374151" };
 
   let score = 0;
-  // Length tiers scaled for the 8–64 range:
   if (pw.length >= 8) score += 1;
   if (pw.length >= 12) score += 1;
   if (pw.length >= 20) score += 1;
@@ -107,15 +112,7 @@ function PasswordStrengthMeter({ value }) {
 
   return (
     <div style={{ marginTop: "8px" }}>
-      {/* 5-segment bar */}
-      <div
-        style={{
-          display: "flex",
-          gap: "4px",
-          height: "4px",
-          marginBottom: "6px",
-        }}
-      >
+      <div style={{ display: "flex", gap: "4px", height: "4px", marginBottom: "6px" }}>
         {[0, 1, 2, 3, 4].map((i) => (
           <div
             key={i}
@@ -129,7 +126,6 @@ function PasswordStrengthMeter({ value }) {
         ))}
       </div>
 
-      {/* Label + per-criterion checklist */}
       <div
         style={{
           display: "flex",
@@ -171,20 +167,112 @@ function PasswordStrengthMeter({ value }) {
   );
 }
 
+// ─── 6-digit OTP input ────────────────────────────────────────────────
+function OtpInput({ value, onChange, disabled, inputStyle }) {
+  const refs = useRef([]);
+  const digits = (value + "      ").slice(0, 6).split("");
+
+  const handleChange = (idx, char) => {
+    if (char && !/^\d$/.test(char)) return;
+    const next = (value + "      ").slice(0, 6).split("");
+    next[idx] = char || " ";
+    onChange(next.join("").trimEnd());
+    if (char && idx < 5) refs.current[idx + 1]?.focus();
+  };
+
+  const handleKeyDown = (idx, e) => {
+    if (e.key === "Backspace") {
+      if (digits[idx].trim()) {
+        const next = (value + "      ").slice(0, 6).split("");
+        next[idx] = " ";
+        onChange(next.join("").trimEnd());
+      } else if (idx > 0) {
+        refs.current[idx - 1]?.focus();
+        const next = (value + "      ").slice(0, 6).split("");
+        next[idx - 1] = " ";
+        onChange(next.join("").trimEnd());
+      }
+    } else if (e.key === "ArrowLeft" && idx > 0) {
+      refs.current[idx - 1]?.focus();
+    } else if (e.key === "ArrowRight" && idx < 5) {
+      refs.current[idx + 1]?.focus();
+    }
+  };
+
+  const handlePaste = (e) => {
+    const pasted = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 6);
+    if (pasted) {
+      e.preventDefault();
+      onChange(pasted);
+      refs.current[Math.min(pasted.length, 5)]?.focus();
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", gap: "8px", justifyContent: "center" }}>
+      {[0, 1, 2, 3, 4, 5].map((i) => (
+        <input
+          key={i}
+          ref={(el) => (refs.current[i] = el)}
+          type="text"
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          maxLength={1}
+          value={digits[i].trim()}
+          onChange={(e) => handleChange(i, e.target.value)}
+          onKeyDown={(e) => handleKeyDown(i, e)}
+          onPaste={handlePaste}
+          disabled={disabled}
+          style={{
+            ...inputStyle,
+            width: "48px",
+            height: "56px",
+            padding: 0,
+            textAlign: "center",
+            fontSize: "22px",
+            fontWeight: 700,
+            fontFamily: "'JetBrains Mono',monospace",
+            color: "#f97316",
+            opacity: disabled ? 0.5 : 1,
+            cursor: disabled ? "not-allowed" : "text",
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 export default function AdminAccount({ user }) {
   const accentColor = "#f97316"; // orange — admin accent
 
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw]         = useState("");
   const [confirmPw, setConfirmPw] = useState("");
+  const [otp, setOtp]             = useState("");
+
+  // Step 1 = collecting new password. Step 2 = OTP was sent, waiting
+  // for the code.
+  const [step, setStep] = useState(1);
+
+  // Countdown for the cooldown between OTP requests
+  const [cooldown, setCooldown] = useState(0);
 
   const [pwError, setPwError] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({
     newPw: null,
     confirmPw: null,
+    otp: null,
   });
   const [showSuccess, setShowSuccess] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [sendingOtp, setSendingOtp] = useState(false);
+
+  // Cooldown countdown ticker
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const id = setInterval(() => setCooldown((c) => Math.max(0, c - 1)), 1000);
+    return () => clearInterval(id);
+  }, [cooldown]);
 
   const fields = [
     { l: "BADGE / ID",     v: user?.badge ?? "NTC-ADM-0001" },
@@ -199,8 +287,6 @@ export default function AdminAccount({ user }) {
   const label  = { fontSize: "9px", fontWeight: 500, marginBottom: "4px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" };
   const inputS = { width: "100%", padding: "10px 14px", borderRadius: "10px", fontSize: "13px", background: "#080810", border: "1px solid #1a1a2a", color: "#e2e8f0", outline: "none", boxSizing: "border-box" };
 
-  // 64-character cap. The server-side route also caps at 64 (see
-  // routes/account.js's WEAK_PASSWORD validator) — keep both in sync.
   const sanitizePw = (value) => value.replace(/\s/g, "").slice(0, MAX_PW_LENGTH);
 
   function validatePassword(pw) {
@@ -244,7 +330,8 @@ export default function AdminAccount({ user }) {
     }));
   }
 
-  async function handleUpdatePassword() {
+  // ── Step 1: request the OTP ────────────────────────────────────────
+  async function handleRequestOtp() {
     if (!currentPw || !newPw || !confirmPw) {
       setPwError("Please fill in all fields.");
       return;
@@ -256,26 +343,75 @@ export default function AdminAccount({ user }) {
       return;
     }
     if (newPw !== confirmPw) {
-      setFieldErrors((prev) => ({
-        ...prev,
-        confirmPw: "Passwords do not match.",
-      }));
+      setFieldErrors((prev) => ({ ...prev, confirmPw: "Passwords do not match." }));
       setPwError("New passwords do not match.");
       return;
     }
 
     setPwError(null);
-    setFieldErrors({ newPw: null, confirmPw: null });
+    setFieldErrors({ newPw: null, confirmPw: null, otp: null });
+    setSendingOtp(true);
+    try {
+      await requestPasswordChangeOtp({ currentPassword: currentPw });
+      setStep(2);
+      setCooldown(60);
+    } catch (err) {
+      let message = err?.response?.data?.message;
+      if (!message) {
+        if (err?.code === 'ECONNABORTED') {
+          message = 'The server took too long to respond. Please try again in a moment.';
+        } else if (err?.code === 'ERR_NETWORK') {
+          message = 'Could not reach the server. Check your connection and try again.';
+        } else {
+          message = 'Could not send the verification code. Please try again.';
+        }
+      }
+      setPwError(message);
+    } finally {
+      setSendingOtp(false);
+    }
+  }
+
+  // ── Step 2: resend the OTP ─────────────────────────────────────────
+  async function handleResendOtp() {
+    if (cooldown > 0) return;
+    setPwError(null);
+    setSendingOtp(true);
+    try {
+      await requestPasswordChangeOtp({ currentPassword: currentPw });
+      setOtp("");
+      setCooldown(60);
+    } catch (err) {
+      setPwError(err?.response?.data?.message || 'Could not resend the code.');
+    } finally {
+      setSendingOtp(false);
+    }
+  }
+
+  // ── Step 2: submit with the OTP ────────────────────────────────────
+  async function handleConfirmChange() {
+    if (otp.length !== 6) {
+      setFieldErrors((prev) => ({ ...prev, otp: "Enter the 6-digit code." }));
+      return;
+    }
+
+    setPwError(null);
+    setFieldErrors((prev) => ({ ...prev, otp: null }));
     setSubmitting(true);
     try {
       await changePassword({
         currentPassword: currentPw,
         newPassword: newPw,
         confirmPassword: confirmPw,
+        otpCode: otp,
       });
+      // Reset the whole flow
       setCurrentPw("");
       setNewPw("");
       setConfirmPw("");
+      setOtp("");
+      setStep(1);
+      setCooldown(0);
       setShowSuccess(true);
       setTimeout(() => setShowSuccess(false), 4000);
     } catch (err) {
@@ -290,9 +426,23 @@ export default function AdminAccount({ user }) {
         }
       }
       setPwError(message);
+
+      // If the OTP was the problem, clear it so the user retypes.
+      const code = err?.response?.data?.error;
+      if (code === 'INVALID_OTP' || code === 'OTP_NOT_FOUND' || code === 'OTP_EXPIRED') {
+        setOtp("");
+        setFieldErrors((prev) => ({ ...prev, otp: message }));
+      }
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function handleCancelOtp() {
+    setStep(1);
+    setOtp("");
+    setPwError(null);
+    setFieldErrors({ newPw: null, confirmPw: null, otp: null });
   }
 
   return (
@@ -349,114 +499,207 @@ export default function AdminAccount({ user }) {
         <div style={{ ...label, marginBottom: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
           <KeyRound size={14} color="#4b5563" /> CHANGE PASSWORD
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
 
-          {/* Current password */}
-          <div>
-            <div style={label}>CURRENT PASSWORD</div>
-            <PasswordInput
-              value={currentPw}
-              onChange={(e) => {
-                setCurrentPw(sanitizePw(e.target.value));
-                if (pwError) setPwError(null);
-              }}
-              inputStyle={inputS}
-              autoComplete="current-password"
-            />
+        {/* Step indicator */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "20px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "10px", fontFamily: "'JetBrains Mono',monospace", color: step === 1 ? accentColor : "#22c55e", fontWeight: 700 }}>
+            <span style={{ width: "18px", height: "18px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: step === 1 ? "#4a2500" : "#0a1a12", border: `1px solid ${step === 1 ? accentColor : "#22c55e"}`, color: step === 1 ? accentColor : "#22c55e" }}>
+              {step === 2 ? <Check size={10} /> : "1"}
+            </span>
+            NEW PASSWORD
           </div>
-
-          {/* New password */}
-          <div>
-            <div style={label}>NEW PASSWORD</div>
-            <PasswordInput
-              value={newPw}
-              onChange={(e) => handleNewPwChange(e.target.value)}
-              inputStyle={inputS}
-              hasError={Boolean(fieldErrors.newPw)}
-            />
-            {fieldErrors.newPw ? (
-              <div style={{ fontSize: "10px", color: "#ef4444", marginTop: "4px", fontFamily: "'JetBrains Mono',monospace", display: "flex", alignItems: "center", gap: "4px" }}>
-                <X size={10} /> {fieldErrors.newPw}
-              </div>
-            ) : newPw ? (
-              <PasswordStrengthMeter value={newPw} />
-            ) : (
-              <div style={{ fontSize: "10px", color: "#4b5563", marginTop: "4px", fontFamily: "'JetBrains Mono',monospace" }}>
-                8–{MAX_PW_LENGTH} characters · Letters + Numbers + Special (!@#$%^&*) · No spaces
-              </div>
-            )}
+          <div style={{ flex: 1, height: "1px", background: step === 2 ? "#22c55e" : "#1a1a2a" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "10px", fontFamily: "'JetBrains Mono',monospace", color: step === 2 ? "#22c55e" : "#4b5563", fontWeight: 700 }}>
+            <span style={{ width: "18px", height: "18px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: step === 2 ? "#0a1a12" : "#080810", border: `1px solid ${step === 2 ? "#22c55e" : "#1a1a2a"}`, color: step === 2 ? "#22c55e" : "#4b5563" }}>
+              2
+            </span>
+            VERIFY CODE
           </div>
-
-          {/* Confirm password */}
-          <div>
-            <div style={label}>CONFIRM NEW PASSWORD</div>
-            <PasswordInput
-              value={confirmPw}
-              onChange={(e) => handleConfirmPwChange(e.target.value)}
-              inputStyle={inputS}
-              hasError={Boolean(fieldErrors.confirmPw)}
-            />
-            {fieldErrors.confirmPw ? (
-              <div style={{ fontSize: "10px", color: "#ef4444", marginTop: "4px", fontFamily: "'JetBrains Mono',monospace", display: "flex", alignItems: "center", gap: "4px" }}>
-                <X size={10} /> {fieldErrors.confirmPw}
-              </div>
-            ) : confirmPw && newPw === confirmPw ? (
-              <div style={{ fontSize: "10px", color: "#22c55e", marginTop: "4px", fontFamily: "'JetBrains Mono',monospace", display: "flex", alignItems: "center", gap: "4px" }}>
-                <Check size={10} /> Passwords match
-              </div>
-            ) : null}
-          </div>
-
-          {/* Top-level error (server response / network failure) */}
-          {pwError && (
-            <div style={{ padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#ef444420", border: "1px solid #ef444430", color: "#ef4444" }}>
-              {pwError}
-            </div>
-          )}
-
-          {/* Success banner */}
-          {showSuccess && (
-            <div style={{ padding: "12px 16px", borderRadius: "10px", fontSize: "13px", fontWeight: 500, background: "#0a1a12", border: "1px solid #22c55e40", color: "#22c55e", display: "flex", alignItems: "center", gap: "10px" }}>
-              <Check size={16} />
-              Password updated successfully.
-            </div>
-          )}
-
-          <button
-            onClick={handleUpdatePassword}
-            disabled={submitting}
-            style={{
-              alignSelf: "flex-start",
-              padding: "10px 20px",
-              borderRadius: "10px",
-              fontSize: "12px",
-              fontWeight: 600,
-              background: submitting ? "#2a2a3a" : accentColor,
-              color: "#fff",
-              border: "none",
-              cursor: submitting ? "not-allowed" : "pointer",
-              marginTop: "4px",
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-            }}
-          >
-            {submitting && (
-              <span
-                style={{
-                  width: "12px",
-                  height: "12px",
-                  borderRadius: "50%",
-                  border: "2px solid rgba(255,255,255,0.3)",
-                  borderTopColor: "#fff",
-                  animation: "spin 0.7s linear infinite",
-                  display: "inline-block",
-                }}
-              />
-            )}
-            {submitting ? "Updating…" : "Update Password"}
-          </button>
         </div>
+
+        {step === 1 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            <div>
+              <div style={label}>CURRENT PASSWORD</div>
+              <PasswordInput
+                value={currentPw}
+                onChange={(e) => {
+                  setCurrentPw(sanitizePw(e.target.value));
+                  if (pwError) setPwError(null);
+                }}
+                inputStyle={inputS}
+                autoComplete="current-password"
+              />
+            </div>
+
+            <div>
+              <div style={label}>NEW PASSWORD</div>
+              <PasswordInput
+                value={newPw}
+                onChange={(e) => handleNewPwChange(e.target.value)}
+                inputStyle={inputS}
+                hasError={Boolean(fieldErrors.newPw)}
+              />
+              {fieldErrors.newPw ? (
+                <div style={{ fontSize: "10px", color: "#ef4444", marginTop: "4px", fontFamily: "'JetBrains Mono',monospace", display: "flex", alignItems: "center", gap: "4px" }}>
+                  <X size={10} /> {fieldErrors.newPw}
+                </div>
+              ) : newPw ? (
+                <PasswordStrengthMeter value={newPw} />
+              ) : (
+                <div style={{ fontSize: "10px", color: "#4b5563", marginTop: "4px", fontFamily: "'JetBrains Mono',monospace" }}>
+                  8–{MAX_PW_LENGTH} characters · Letters + Numbers + Special (!@#$%^&*) · No spaces
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div style={label}>CONFIRM NEW PASSWORD</div>
+              <PasswordInput
+                value={confirmPw}
+                onChange={(e) => handleConfirmPwChange(e.target.value)}
+                inputStyle={inputS}
+                hasError={Boolean(fieldErrors.confirmPw)}
+              />
+              {fieldErrors.confirmPw ? (
+                <div style={{ fontSize: "10px", color: "#ef4444", marginTop: "4px", fontFamily: "'JetBrains Mono',monospace", display: "flex", alignItems: "center", gap: "4px" }}>
+                  <X size={10} /> {fieldErrors.confirmPw}
+                </div>
+              ) : confirmPw && newPw === confirmPw ? (
+                <div style={{ fontSize: "10px", color: "#22c55e", marginTop: "4px", fontFamily: "'JetBrains Mono',monospace", display: "flex", alignItems: "center", gap: "4px" }}>
+                  <Check size={10} /> Passwords match
+                </div>
+              ) : null}
+            </div>
+
+            {pwError && (
+              <div style={{ padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#ef444420", border: "1px solid #ef444430", color: "#ef4444" }}>
+                {pwError}
+              </div>
+            )}
+
+            <button
+              onClick={handleRequestOtp}
+              disabled={sendingOtp}
+              style={{
+                alignSelf: "flex-start",
+                padding: "10px 20px",
+                borderRadius: "10px",
+                fontSize: "12px",
+                fontWeight: 600,
+                background: sendingOtp ? "#2a2a3a" : accentColor,
+                color: "#fff",
+                border: "none",
+                cursor: sendingOtp ? "not-allowed" : "pointer",
+                marginTop: "4px",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+              }}
+            >
+              {sendingOtp ? (
+                <span style={{ width: "12px", height: "12px", borderRadius: "50%", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", animation: "spin 0.7s linear infinite", display: "inline-block" }} />
+              ) : (
+                <Mail size={14} />
+              )}
+              {sendingOtp ? "Sending code…" : "Send verification code"}
+            </button>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+            <div style={{ padding: "12px 14px", borderRadius: "10px", background: "#2a1a00", border: "1px solid #f9731630", fontSize: "12px", color: "#fdba74", lineHeight: 1.6 }}>
+              We sent a 6-digit code to <strong style={{ color: "#fff" }}>{user?.email ?? "your email"}</strong>. It expires in 5 minutes.
+            </div>
+
+            <OtpInput value={otp} onChange={setOtp} disabled={submitting} inputStyle={inputS} />
+
+            {fieldErrors.otp && (
+              <div style={{ fontSize: "10px", color: "#ef4444", textAlign: "center", fontFamily: "'JetBrains Mono',monospace", display: "flex", alignItems: "center", justifyContent: "center", gap: "4px" }}>
+                <X size={10} /> {fieldErrors.otp}
+              </div>
+            )}
+
+            {pwError && (
+              <div style={{ padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#ef444420", border: "1px solid #ef444430", color: "#ef4444" }}>
+                {pwError}
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+              <button
+                onClick={handleConfirmChange}
+                disabled={submitting || otp.length !== 6}
+                style={{
+                  padding: "10px 20px",
+                  borderRadius: "10px",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  background: submitting || otp.length !== 6 ? "#2a2a3a" : "#22c55e",
+                  color: submitting || otp.length !== 6 ? "#6b7280" : "#08200f",
+                  border: "none",
+                  cursor: submitting || otp.length !== 6 ? "not-allowed" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                }}
+              >
+                {submitting ? (
+                  <span style={{ width: "12px", height: "12px", borderRadius: "50%", border: "2px solid rgba(8,32,15,0.3)", borderTopColor: "#08200f", animation: "spin 0.7s linear infinite", display: "inline-block" }} />
+                ) : (
+                  <Check size={14} />
+                )}
+                {submitting ? "Updating…" : "Confirm & Update Password"}
+              </button>
+
+              <button
+                onClick={handleResendOtp}
+                disabled={cooldown > 0 || sendingOtp}
+                style={{
+                  padding: "10px 16px",
+                  borderRadius: "10px",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  background: "transparent",
+                  border: "1px solid #1a1a2a",
+                  color: cooldown > 0 ? "#4b5563" : "#9ca3af",
+                  cursor: cooldown > 0 || sendingOtp ? "not-allowed" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                }}
+              >
+                <RotateCw size={12} />
+                {cooldown > 0 ? `Resend in ${cooldown}s` : "Resend code"}
+              </button>
+
+              <button
+                onClick={handleCancelOtp}
+                disabled={submitting}
+                style={{
+                  padding: "10px 16px",
+                  borderRadius: "10px",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  background: "transparent",
+                  border: "none",
+                  color: "#6b7280",
+                  cursor: submitting ? "not-allowed" : "pointer",
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {showSuccess && (
+          <div style={{ marginTop: "16px", padding: "12px 16px", borderRadius: "10px", fontSize: "13px", fontWeight: 500, background: "#0a1a12", border: "1px solid #22c55e40", color: "#22c55e", display: "flex", alignItems: "center", gap: "10px" }}>
+            <Check size={16} />
+            Password updated successfully.
+          </div>
+        )}
       </div>
 
       <style>{`
