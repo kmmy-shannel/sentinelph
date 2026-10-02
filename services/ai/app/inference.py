@@ -112,7 +112,9 @@ _ANY_URL_PATTERN = re.compile(r"https?://([a-z0-9\-\.]+\.[a-z]{2,})", re.IGNOREC
 _URL_HOST_PATTERN = re.compile(r"(?:https?://|www\.)([a-z0-9\-\.]+\.[a-z]{2,})", re.IGNORECASE)
 
 _BARE_HOST_PATTERN = re.compile(
-    r"(?<![\w.\-])([a-z0-9\-]+\.(?:click|info|life|xyz|top|icu|tv|bid|buzz|loan|website|digital|eu|ca|de|uk|pw|cn|online|site|club|shop|store))(?=[/\s,;!?]|$)",
+    # Lookbehind relaxed to allow dots (subdomains) but not word chars,
+    # so "globe.dgdfhgfjh.icu" is captured whole instead of rejected.
+    r"(?<![a-z0-9])([a-z0-9\-]+(?:\.[a-z0-9\-]+)*\.(?:click|info|life|xyz|top|icu|tv|bid|buzz|loan|website|digital|eu|ca|de|uk|pw|cn|online|site|club|shop|store))(?=[/\s,;!?]|$)",
     re.IGNORECASE,
 )
 
@@ -256,28 +258,47 @@ def extract_scam_explanations(text: str) -> List[Dict[str, str]]:
     reasons: List[Dict[str, str]] = []
     lower = text.lower()
 
-    matched_shorteners = [d for d in _SHORTENER_DOMAINS if d in lower]
+    # ─── OCR-linebreak-tolerant views ────────────────────────────────
+    # OCR frequently splits "https://\nhost.tld" across two lines. Every
+    # URL regex below assumes single-line URLs, so we compute a
+    # whitespace-stripped copy for URL scanning while preserving the
+    # space-bearing original for phrase-level checks.
+    lower_flat = re.sub(r"\s+", "", lower)
+
+    # Also keep a version where OCR line breaks inside a URL are rejoined
+    # but sentence spaces are preserved, so `_URL_PATTERN.search(...)`
+    # below still sees a valid URL token.
+    lower_rejoined = re.sub(r"(https?://)\s*\n\s*", r"\1", lower)
+    lower_rejoined = re.sub(r"([a-z0-9\-]+)\s*\n\s*\.([a-z]{2,})", r"\1.\2", lower_rejoined)
+
+    matched_shorteners = [d for d in _SHORTENER_DOMAINS if d in lower_flat]
     if matched_shorteners:
         reasons.append({
             "category": "Malicious Link",
             "description": f"Contains a link shortener ({matched_shorteners[0]}) "
                             "commonly used to hide scam destinations.",
         })
-    if _IP_URL_PATTERN.search(text):
+    if _IP_URL_PATTERN.search(lower_rejoined):
         reasons.append({
             "category": "Malicious Link",
             "description": "Contains a raw IP-address link, a common phishing technique.",
         })
-    spoofed_match = _SPOOFED_DOMAIN_PATTERN.search(lower)
+
+    # Spoofed-brand pattern: scan the whitespace-stripped view so
+    # "gcash-secure.icu" is caught even if OCR split it.
+    spoofed_match = _SPOOFED_DOMAIN_PATTERN.search(lower_flat)
     if spoofed_match:
         reasons.append({
             "category": "Malicious Link",
             "description": f"Contains a domain ('{spoofed_match.group(0)}') that "
                             "impersonates a known financial brand.",
         })
-    urls_in_text = _ANY_URL_PATTERN.findall(lower)
+
+    # URL extraction now runs on the whitespace-stripped view.
+    urls_in_text = _ANY_URL_PATTERN.findall(lower_flat)
+
     for brand in _BRAND_NAMES:
-        if brand in lower and urls_in_text:
+        if brand in lower_flat and urls_in_text:
             real_domains = _KNOWN_BRAND_DOMAINS.get(brand, ())
             for url_domain in urls_in_text:
                 if real_domains and not any(real in url_domain for real in real_domains):
@@ -298,6 +319,34 @@ def extract_scam_explanations(text: str) -> List[Dict[str, str]]:
                 })
                 break
 
+    # ─── Fallback A: brand + suspicious TLD, regardless of URL shape ──
+    # OCR may split the URL such that _ANY_URL_PATTERN never matched. If
+    # a known brand appears anywhere in the message AND any suspicious
+    # TLD appears anywhere else, treat it as brand impersonation. This
+    # catches "Globe ... globe.dgdfhgfjh.icu/ph" even when the URL is
+    # broken across lines.
+    has_malicious_reason = any(r["category"] == "Malicious Link" for r in reasons)
+    if not has_malicious_reason and any(_has_term(lower, b) for b in _BRAND_NAMES):
+        for tld in (".icu", ".xyz", ".top", ".life", ".click", ".buzz", ".cfd", ".pw", ".bid"):
+            if tld in lower_flat:
+                reasons.append({
+                    "category": "Malicious Link",
+                    "description": f"Brand name paired with suspicious TLD '{tld}' in the message.",
+                })
+                break
+
+    # ─── Fallback B: bare suspicious domain (allows subdomains) ───────
+    # _BARE_HOST_PATTERN rejects subdomains via its (?<![\w.\-]) lookbehind.
+    # This looser check catches "globe.dgdfhgfjh.icu" style hosts.
+    if not any(r["category"] == "Malicious Link" for r in reasons):
+        for tld in (".icu", ".xyz", ".top", ".life", ".click", ".buzz", ".cfd", ".pw", ".bid"):
+            if re.search(r"[a-z0-9\-\.]+\." + re.escape(tld.lstrip(".")) + r"(?:/|\b)", lower_flat):
+                reasons.append({
+                    "category": "Malicious Link",
+                    "description": f"Contains a domain ending in '{tld}', commonly used in phishing.",
+                })
+                break
+
     matched_urgency = [p for p in _URGENCY_PHRASES if p in lower]
     if matched_urgency:
         sample = ", ".join(f"'{p}'" for p in matched_urgency[:3])
@@ -306,11 +355,11 @@ def extract_scam_explanations(text: str) -> List[Dict[str, str]]:
             "description": f"Uses urgent or threatening language ({sample}).",
         })
 
-    matched_brands = [b for b in _BRAND_NAMES if b in lower]
+    matched_brands = [b for b in _BRAND_NAMES if _has_term(lower, b)]
     only_official_links = bool(urls_in_text) and all(_is_official_domain(d) for d in urls_in_text)
-    has_link_or_action = (bool(_URL_PATTERN.search(text)) and not only_official_links) \
+    has_link_or_action = (bool(_URL_PATTERN.search(lower_rejoined)) and not only_official_links) \
         or bool(matched_shorteners) \
-        or bool(_IP_URL_PATTERN.search(text)) or bool(spoofed_match)
+        or bool(_IP_URL_PATTERN.search(lower_rejoined)) or bool(spoofed_match)
     if matched_brands and (has_link_or_action or matched_urgency):
         reasons.append({
             "category": "Brand Impersonation",
@@ -327,8 +376,8 @@ def extract_scam_explanations(text: str) -> List[Dict[str, str]]:
     rule_a_brand = next((b for b in _BRAND_NAMES if _has_term(lower, b)), None)
     if rule_a_brand:
         rule_a_hit = None
-        hosts = _URL_HOST_PATTERN.findall(lower)
-        hosts += _BARE_HOST_PATTERN.findall(lower)
+        hosts = _URL_HOST_PATTERN.findall(lower_flat)
+        hosts += _BARE_HOST_PATTERN.findall(lower_flat)
         for host in hosts:
             tld = next((t for t in _RULE_A_TLDS if host.endswith(t)), None)
             if tld:
@@ -341,14 +390,14 @@ def extract_scam_explanations(text: str) -> List[Dict[str, str]]:
             })
 
     if (any(_has_term(lower, b) for b in _RULE_B_BANKS)
-            and any(p in lower for p in _RULE_B_TXN_PHRASES)
-            and "http" not in lower):
+            and any(p in lower_flat for p in _RULE_B_TXN_PHRASES)
+            and "http" not in lower_flat):
         reasons.append({
             "category": "Legitimate Transaction Notice",
             "description": "Real bank transaction format with no link",
         })
 
-    if _GOV_PH_PATTERN.search(lower):
+    if _GOV_PH_PATTERN.search(lower_flat):
         reasons.append({
             "category": "Official Government Domain",
             "description": "Contains a verified .gov.ph domain",
