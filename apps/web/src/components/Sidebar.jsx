@@ -193,7 +193,7 @@ export default function Sidebar({ isOpen, onClose }) {
           <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 10px", borderRadius: "8px", background: `${roleColor}12`, border: `1px solid ${roleColor}25` }}>
             <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: roleColor, flexShrink: 0 }} />
             <span style={{ fontSize: "10px", fontWeight: 700, color: roleColor, fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.05em" }}>
-              {role === ROLES.OFFICER ? "NBI CCRU" : role === ROLES.ADMIN ? "AGENCY ADMIN" : "SUPER ADMIN"}
+              {role === ROLES.OFFICER ? "OFFICER" : role === ROLES.ADMIN ? "AGENCY ADMIN" : "SUPER ADMIN"}
             </span>
           </div>
         </div>

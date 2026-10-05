@@ -50,6 +50,31 @@ const ACTION_BTN_BLUE = {
 const ACTION_BTN_BLUE_HOVER = { background: "rgba(59,130,246,0.22)" };
 // ─────────────────────────────────────────────────────────────────────
 
+// ─── TIER TAXONOMY (Level 1) — mirrors inference.py ──────────────────
+// inference.py emits: 'legitimate' | 'grey_area' | 'malicious' (plus
+// 'uncertain' / 'unavailable' as fallbacks). We render each as a
+// color-coded chip so the TYPE column shows the AI's tier, not the
+// raw scamType string.
+const TIER_STYLES = {
+  malicious:   { dot: '#f43f5e', text: '#fb7185', bg: 'rgba(244,63,94,0.06)',   border: 'rgba(244,63,94,0.25)',   label: 'Malicious' },
+  grey_area:   { dot: '#eab308', text: '#facc15', bg: 'rgba(234,179,8,0.06)',   border: 'rgba(234,179,8,0.25)',   label: 'Grey Area' },
+  legitimate:  { dot: '#10b981', text: '#34d399', bg: 'rgba(16,185,129,0.06)',  border: 'rgba(16,185,129,0.25)',  label: 'Legitimate' },
+  uncertain:   { dot: '#94a3b8', text: '#94a3b8', bg: 'rgba(148,163,184,0.06)', border: 'rgba(148,163,184,0.20)', label: 'Uncertain' },
+  unavailable: { dot: '#64748b', text: '#64748b', bg: 'rgba(100,116,139,0.06)', border: 'rgba(100,116,139,0.20)', label: 'Unavailable' },
+};
+
+// Normalize whatever the backend sends (case/underscore variants) into
+// a key that exists in TIER_STYLES.
+function normalizeTierKey(raw) {
+  if (!raw) return 'unavailable';
+  const s = String(raw).toLowerCase().trim();
+  if (s === 'malicious') return 'malicious';
+  if (s === 'grey_area' || s === 'grey area' || s === 'greyarea' || s === 'gray_area' || s === 'gray area') return 'grey_area';
+  if (s === 'legitimate') return 'legitimate';
+  if (s === 'uncertain') return 'uncertain';
+  return 'unavailable';
+}
+
 // ─── SUBTYPE TAXONOMY (Level 2) ──────────────────────────────────────
 const SUBTYPES_BY_TIER = {
   legitimate: [
@@ -83,11 +108,10 @@ const SUBTYPE_LABELS = {
   impersonation_family: 'Impersonation (Family)',
 };
 
-const RISK_TIER_STYLES = {
-  malicious: { dot: '#f43f5e', text: '#fb7185', bg: 'rgba(244,63,94,0.06)', border: 'rgba(244,63,94,0.25)' },
-  grey_area: { dot: '#eab308', text: '#facc15', bg: 'rgba(234,179,8,0.06)', border: 'rgba(234,179,8,0.25)' },
-  legitimate: { dot: '#10b981', text: '#34d399', bg: 'rgba(16,185,129,0.06)', border: 'rgba(16,185,129,0.25)' },
-};
+function labelSubtype(st) {
+  if (!st) return '—';
+  return SUBTYPE_LABELS[st] || st;
+}
 
 // ─── SVG ICONS ───────────────────────────────────────────────────────
 const CheckIcon = ({ color, size = 14 }) => (
@@ -173,9 +197,27 @@ function mapReportToRow(r, currentUid) {
     rawStatus === "rejected"       ? "Rejected" :
     rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1);
 
+  // ── AI tier ──────────────────────────────────────────────────────
+  // inference.py emits `label` on aiFlag. Fall back through a few
+  // alternative field names in case this report was ingested through
+  // an older pipeline. Never fall back to `scamType` — that is a
+  // subtype string, not a tier, and showing it as the tier would be
+  // misleading.
+  const rawTier =
+    ai.label ||
+    ai.tier ||
+    r.aiLabel ||
+    null;
+  const tierKey = normalizeTierKey(rawTier);
+
+  // ── Subtype ──────────────────────────────────────────────────────
+  const aiSubtype = ai.subtype || r.aiSubtype || null;
+
   return {
     id: String(id),
     number: r.sender || r.scammerNumber || r.reportedNumber || "Unknown",
+    // `type` is retained for backward compatibility (CSV export, search),
+    // but the table now renders the tier chip instead.
     type: r.scamType || r.category || "UNKNOWN",
     reports: r.reportCount ?? r.reports ?? 1,
     channel: r.channel || "SMS",
@@ -194,7 +236,10 @@ function mapReportToRow(r, currentUid) {
     evidenceText: r.evidenceText || r.content || r.textData || "",
     evidenceImage: r.evidenceImage || null,
     evidenceFiles: Array.isArray(r.evidenceFiles) ? r.evidenceFiles : [],
-    aiLabel: ai.label || "unavailable",
+    // Tier fields (new)
+    aiTier: tierKey,
+    aiLabel: tierKey,           // keep the old field name populated for the modal
+    aiRawLabel: rawTier,        // the raw string, for the modal's small text
     aiRiskLevel: ai.riskLevel || "UNKNOWN",
     aiConfidence: typeof ai.confidenceScore === "number" ? ai.confidenceScore : null,
     nullifierHash: r.nullifierHash || r.nullifier || null,
@@ -203,7 +248,7 @@ function mapReportToRow(r, currentUid) {
     reporterName: r.reporterName || null,
     reporterEmail: r.reporterEmail || null,
     reporterShared: Boolean(r.reporterShared),
-    aiSubtype: ai.subtype || r.aiSubtype || null,
+    aiSubtype,
     aiSubtypeConfidence: typeof ai.subtypeConfidence === "number"
       ? ai.subtypeConfidence
       : (typeof r.aiSubtypeConfidence === "number" ? r.aiSubtypeConfidence : null),
@@ -240,7 +285,6 @@ export default function ReviewQueue() {
   const [isEditMode, setIsEditMode] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
 
-  // ─── SUBTYPE VERIFICATION STATE (continuous learning) ─────────────
   const [subtypeAction, setSubtypeAction] = useState(null);
   const [correctedSubtype, setCorrectedSubtype] = useState(null);
   const [isHighValue, setIsHighValue] = useState(false);
@@ -359,6 +403,13 @@ export default function ReviewQueue() {
 
       const freshMyVote = (full?.votes || []).find(v => v.userId === user?.uid);
 
+      const rawTier =
+        full?.aiFlag?.label ||
+        full?.aiFlag?.tier ||
+        full?.aiLabel ||
+        row.aiRawLabel ||
+        null;
+
       setVoteModal({
         ...row,
         evidenceImage: full?.evidenceImage || null,
@@ -371,6 +422,9 @@ export default function ReviewQueue() {
         reporterName: full?.reporterName ?? row.reporterName ?? null,
         reporterEmail: full?.reporterEmail ?? row.reporterEmail ?? null,
         reporterShared: Boolean(full?.reporterShared ?? row.reporterShared),
+        aiTier: normalizeTierKey(rawTier),
+        aiLabel: normalizeTierKey(rawTier),
+        aiRawLabel: rawTier,
         aiSubtype: full?.aiFlag?.subtype || full?.aiSubtype || row.aiSubtype || null,
         aiSubtypeConfidence:
           (typeof full?.aiFlag?.subtypeConfidence === "number" ? full.aiFlag.subtypeConfidence : null) ??
@@ -415,7 +469,9 @@ export default function ReviewQueue() {
         r.id.toLowerCase().includes(q) ||
         r.number.toLowerCase().includes(q) ||
         r.type.toLowerCase().includes(q) ||
+        (r.aiLabel || "").toLowerCase().includes(q) ||
         (r.aiSubtype || "").toLowerCase().includes(q) ||
+        labelSubtype(r.aiSubtype).toLowerCase().includes(q) ||
         (r.reporterName || "").toLowerCase().includes(q) ||
         (r.reporterEmail || "").toLowerCase().includes(q)
       );
@@ -572,7 +628,7 @@ export default function ReviewQueue() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search ID, number, type, subtype…"
+            placeholder="Search ID, number, tier, subtype…"
             style={{ width: "100%", padding: "8px 12px 8px 30px", borderRadius: "8px", fontSize: "12px", background: "#0e0e18", border: "1px solid #1a1a2a", color: "#e2e8f0", outline: "none", boxSizing: "border-box" }}
           />
         </div>
@@ -649,7 +705,8 @@ export default function ReviewQueue() {
                 </thead>
                 <tbody>
                   {group.items.map((row) => {
-                    const tier = RISK_TIER_STYLES[row.aiLabel] || null;
+                    // TYPE column → AI tier chip (from inference.py Level 1)
+                    const tier = TIER_STYLES[row.aiTier] || TIER_STYLES.unavailable;
                     return (
                       <tr
                         key={row.id}
@@ -662,16 +719,36 @@ export default function ReviewQueue() {
                       >
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#3b82f6", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.id.slice(0, 12)}</td>
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#fff", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.number}</td>
-                        <td style={{ padding: "12px 20px", fontSize: "12px", color: "#9ca3af", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.type}</td>
-                        <td style={{ padding: "12px 20px", fontSize: "11px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {row.aiSubtype ? (
-                            <span style={{ padding: "2px 8px", borderRadius: "6px", fontFamily: "'JetBrains Mono',monospace", color: tier ? tier.text : "#a5b4fc", background: tier ? tier.bg : "rgba(79,70,229,0.08)", border: `1px solid ${tier ? tier.border : "rgba(79,70,229,0.2)"}` }}>
-                              {row.aiSubtype}
-                            </span>
-                          ) : (
-                            <span style={{ color: "#4b5563" }}>—</span>
-                          )}
+
+                        {/* TYPE — Level 1 tier chip */}
+                        <td style={{ padding: "12px 20px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "5px",
+                              padding: "3px 9px",
+                              borderRadius: "6px",
+                              fontSize: "10px",
+                              fontWeight: 700,
+                              fontFamily: "'JetBrains Mono',monospace",
+                              textTransform: "uppercase",
+                              letterSpacing: "0.04em",
+                              color: tier.text,
+                              background: tier.bg,
+                              border: `1px solid ${tier.border}`,
+                            }}
+                          >
+                            <span style={{ width: "5px", height: "5px", borderRadius: "50%", background: tier.dot, display: "inline-block" }} />
+                            {tier.label}
+                          </span>
                         </td>
+
+                        {/* SUBTYPE — Level 2 label (matches Blacklist Registry) */}
+                        <td style={{ padding: "12px 20px", fontSize: "11px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: row.aiSubtype ? "#cbd5e1" : "#4b5563" }}>
+                          {labelSubtype(row.aiSubtype)}
+                        </td>
+
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#9ca3af", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           {row.reporterShared && row.reporterName
                             ? row.reporterName
@@ -749,74 +826,79 @@ export default function ReviewQueue() {
                 </div>
               )}
 
-              {/* ─── AI CLASSIFICATION (Level 1 + Level 2) ─────────────── */}
+              {/* AI CLASSIFICATION — Level 1 tier + Level 2 subtype */}
               <div style={{ marginBottom: "16px" }}>
                 <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "8px", fontFamily: "'JetBrains Mono',monospace" }}>
                   AI CLASSIFICATION
                 </div>
 
-                {voteModal.aiSubtype ? (
-                  (() => {
-                    const tier = RISK_TIER_STYLES[voteModal.aiLabel] || RISK_TIER_STYLES.grey_area;
+                {(() => {
+                  const tier = TIER_STYLES[voteModal.aiTier] || TIER_STYLES.unavailable;
+                  const hasAny = voteModal.aiSubtype || voteModal.aiTier !== 'unavailable';
+                  if (!hasAny) {
                     return (
-                      <div style={{ padding: "14px 16px", borderRadius: "10px", background: tier.bg, border: `1px solid ${tier.border}` }}>
-                        <div style={{ display: "flex", gap: "20px", alignItems: "flex-start", marginBottom: voteModal.aiExplanationReasons?.length > 0 ? "12px" : 0 }}>
-                          <div style={{ flex: "0 0 auto", minWidth: "110px" }}>
-                            <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>RISK TIER</div>
-                            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: tier.dot }} />
-                              <span style={{ fontSize: "12px", fontWeight: 700, color: tier.text, fontFamily: "'JetBrains Mono',monospace", textTransform: "uppercase" }}>
-                                {voteModal.aiRiskLevel}
-                              </span>
-                            </div>
-                            <div style={{ fontSize: "10px", color: "#64748b", marginTop: "4px" }}>{voteModal.aiLabel}</div>
-                          </div>
-
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>SUBTYPE</div>
-                            <div style={{ fontSize: "13px", fontWeight: 700, color: "#e2e8f0", fontFamily: "'JetBrains Mono',monospace", marginBottom: "4px", wordBreak: "break-word" }}>
-                              {voteModal.aiSubtype}
-                            </div>
-                            <div style={{ fontSize: "10px", color: "#64748b" }}>
-                              {voteModal.aiSubtypeConfidence != null
-                                ? `${(voteModal.aiSubtypeConfidence * 100).toFixed(1)}% confidence`
-                                : "confidence unavailable"}
-                              {voteModal.aiSubtypeModelVersion && (
-                                <span style={{ marginLeft: "8px" }}>· {voteModal.aiSubtypeModelVersion}</span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        {voteModal.aiExplanationReasons?.length > 0 && (
-                          <div style={{ paddingTop: "12px", borderTop: "1px solid rgba(148,163,184,0.08)" }}>
-                            <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "8px" }}>
-                              WHY THE AI FLAGGED THIS
-                            </div>
-                            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                              {voteModal.aiExplanationReasons.map((reason, i) => (
-                                <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
-                                  <span style={{ fontSize: "10px", color: "#818cf8", fontWeight: 700, marginTop: "1px", flexShrink: 0 }}>{i + 1}.</span>
-                                  <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ fontSize: "11px", fontWeight: 600, color: "#cbd5e1" }}>{reason.category}</div>
-                                    <div style={{ fontSize: "10px", color: "#64748b", lineHeight: 1.4 }}>{reason.description}</div>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
+                      <div style={{ padding: "12px 14px", borderRadius: "10px", background: "rgba(148,163,184,0.03)", border: "1px solid rgba(148,163,184,0.08)", fontSize: "11px", color: "#64748b", fontStyle: "italic" }}>
+                        No AI classification available for this report.
                       </div>
                     );
-                  })()
-                ) : (
-                  <div style={{ padding: "12px 14px", borderRadius: "10px", background: "rgba(148,163,184,0.03)", border: "1px solid rgba(148,163,184,0.08)", fontSize: "11px", color: "#64748b", fontStyle: "italic" }}>
-                    No subtype available for this report (subtype model may not have loaded when it was submitted).
-                  </div>
-                )}
+                  }
+                  return (
+                    <div style={{ padding: "14px 16px", borderRadius: "10px", background: tier.bg, border: `1px solid ${tier.border}` }}>
+                      <div style={{ display: "flex", gap: "20px", alignItems: "flex-start", marginBottom: voteModal.aiExplanationReasons?.length > 0 ? "12px" : 0 }}>
+                        <div style={{ flex: "0 0 auto", minWidth: "110px" }}>
+                          <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>TIER</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: tier.dot }} />
+                            <span style={{ fontSize: "12px", fontWeight: 700, color: tier.text, fontFamily: "'JetBrains Mono',monospace", textTransform: "uppercase" }}>
+                              {tier.label}
+                            </span>
+                          </div>
+                          {voteModal.aiRiskLevel && (
+                            <div style={{ fontSize: "10px", color: "#64748b", marginTop: "4px" }}>
+                              Risk: {voteModal.aiRiskLevel}
+                            </div>
+                          )}
+                        </div>
+
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>SUBTYPE</div>
+                          <div style={{ fontSize: "13px", fontWeight: 700, color: "#e2e8f0", fontFamily: "'JetBrains Mono',monospace", marginBottom: "4px", wordBreak: "break-word" }}>
+                            {labelSubtype(voteModal.aiSubtype)}
+                          </div>
+                          <div style={{ fontSize: "10px", color: "#64748b" }}>
+                            {voteModal.aiSubtypeConfidence != null
+                              ? `${(voteModal.aiSubtypeConfidence * 100).toFixed(1)}% confidence`
+                              : "confidence unavailable"}
+                            {voteModal.aiSubtypeModelVersion && (
+                              <span style={{ marginLeft: "8px" }}>· {voteModal.aiSubtypeModelVersion}</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {voteModal.aiExplanationReasons?.length > 0 && (
+                        <div style={{ paddingTop: "12px", borderTop: "1px solid rgba(148,163,184,0.08)" }}>
+                          <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "8px" }}>
+                            WHY THE AI FLAGGED THIS
+                          </div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                            {voteModal.aiExplanationReasons.map((reason, i) => (
+                              <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
+                                <span style={{ fontSize: "10px", color: "#818cf8", fontWeight: 700, marginTop: "1px", flexShrink: 0 }}>{i + 1}.</span>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontSize: "11px", fontWeight: 600, color: "#cbd5e1" }}>{reason.category}</div>
+                                  <div style={{ fontSize: "10px", color: "#64748b", lineHeight: 1.4 }}>{reason.description}</div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
-              {/* ─── REPORTER IDENTITY ──────────────────────────────────── */}
               <div style={{ padding: "12px 14px", borderRadius: "8px", marginBottom: "16px", background: voteModal.reporterShared ? "rgba(59,130,246,0.06)" : "rgba(148,163,184,0.03)", border: `1px solid ${voteModal.reporterShared ? "rgba(59,130,246,0.25)" : "rgba(148,163,184,0.08)"}` }}>
                 <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px", fontFamily: "'JetBrains Mono',monospace" }}>
                   REPORTED BY
@@ -1029,7 +1111,7 @@ export default function ReviewQueue() {
                               style={{ width: "100%", padding: "10px 32px 10px 12px", borderRadius: "10px", fontSize: "12px", background: "#111118", border: "1px solid #1a1a28", color: "#e2e8f0", outline: "none", cursor: "pointer", appearance: "none", WebkitAppearance: "none", fontFamily: "'JetBrains Mono',monospace" }}
                             >
                               <option value="">— Choose the correct subtype —</option>
-                              {(SUBTYPES_BY_TIER[voteModal.aiLabel] || []).map((st) => (
+                              {(SUBTYPES_BY_TIER[voteModal.aiTier] || SUBTYPES_BY_TIER[voteModal.aiLabel] || []).map((st) => (
                                 <option key={st} value={st}>
                                   {SUBTYPE_LABELS[st] || st}
                                   {st === voteModal.aiSubtype ? '  (current AI pick)' : ''}
@@ -1075,7 +1157,6 @@ export default function ReviewQueue() {
                     </div>
                   )}
 
-                  {/* ─── WHAT DO APPROVE / REJECT MEAN? ──────────────── */}
                   <div style={{
                     marginBottom: "12px",
                     padding: "12px 14px",

@@ -45,7 +45,7 @@ export default function Topbar({ onMenuClick }) {
   const getTitle = () => {
     const path = location.pathname;
 
-    if (path === "/officer/dashboard") return "Jurisdiction Dashboard — NCR";
+    
     if (path === "/officer/queue") return "Review Queue";
     if (path === "/officer/registry") return "Blacklist Registry";
     if (path === "/officer/notifications") return "Notifications";
