@@ -1090,10 +1090,10 @@ export default function ReviewQueue() {
                       Decide whether this report is a genuine scam
                     </div>
                     <div style={{ marginBottom: "4px" }}>
-                      <strong style={{ color: "#22c55e" }}>Approve</strong> — you agree the number/message is a real scam. When two officers approve, the number is added to the blacklist.
+                      <strong style={{ color: "#22c55e" }}>Approve</strong> — you agree the number/message is a real scam. When two out of three officers approve, the number is added to the blacklist.
                     </div>
                     <div>
-                      <strong style={{ color: "#ef4444" }}>Reject</strong> — you believe this is a false alarm or legitimate. When two officers reject, the case is closed as not-a-scam.
+                      <strong style={{ color: "#ef4444" }}>Reject</strong> — you believe this is a false alarm or legitimate. When two out of three officers reject, the case is closed as not-a-scam.
                     </div>
                   </div>
 

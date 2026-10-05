@@ -12,6 +12,9 @@ const { initFirebase } = require('./config/firebase');
 const { globalLimiter } = require('./middleware/rateLimiter');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 
+// ─── Health snapshot poller ───────────────────────────────────
+const { captureHealthSnapshot } = require('./services/healthMonitor');
+
 const healthRoutes        = require('./routes/health');
 const reportRoutes        = require('./routes/reports');
 const blacklistRoutes     = require('./routes/blacklist');
@@ -114,6 +117,46 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 // ------------------------------------------------------------------
+// Health snapshot poller
+// ------------------------------------------------------------------
+// Writes one HealthSnapshot document every 5 minutes. Backs the
+// per-day uptime grid on the SuperAdmin System Health page.
+let healthPollerInterval = null;
+
+async function startHealthPoller() {
+  // Initial snapshot immediately on boot.
+  try {
+    await captureHealthSnapshot();
+    console.log('[health-poller] initial snapshot recorded');
+  } catch (err) {
+    console.warn('[health-poller] initial snapshot failed:', err.message);
+  }
+
+  // Then one every 5 minutes.
+  const FIVE_MIN_MS = 5 * 60 * 1000;
+  healthPollerInterval = setInterval(async () => {
+    try {
+      await captureHealthSnapshot();
+    } catch (err) {
+      console.warn('[health-poller] periodic snapshot failed:', err.message);
+    }
+  }, FIVE_MIN_MS);
+
+  // Do not keep the Node process alive solely for this interval.
+  if (healthPollerInterval.unref) {
+    healthPollerInterval.unref();
+  }
+}
+
+function stopHealthPoller() {
+  if (healthPollerInterval) {
+    clearInterval(healthPollerInterval);
+    healthPollerInterval = null;
+    console.log('[health-poller] stopped');
+  }
+}
+
+// ------------------------------------------------------------------
 // Boot sequence
 // ------------------------------------------------------------------
 async function start() {
@@ -131,6 +174,9 @@ async function start() {
       console.error('[Firebase] Continuing without it. Authenticated routes will return 500 until fixed.');
     }
 
+    // Start the health poller only after MongoDB + Firebase are up.
+    await startHealthPoller();
+
     app.listen(PORT, () => {
       console.log(`[SentinelPH API] Listening on port ${PORT} (${process.env.NODE_ENV || 'development'})`);
       console.log(`[SentinelPH API] Health check: http://localhost:${PORT}/health`);
@@ -140,6 +186,18 @@ async function start() {
     process.exit(1);
   }
 }
+
+// Graceful shutdown so the interval doesn't leak across hot reloads.
+process.on('SIGTERM', () => {
+  console.log('[SentinelPH API] SIGTERM received.');
+  stopHealthPoller();
+  process.exit(0);
+});
+process.on('SIGINT', () => {
+  console.log('[SentinelPH API] SIGINT received.');
+  stopHealthPoller();
+  process.exit(0);
+});
 
 start();
 

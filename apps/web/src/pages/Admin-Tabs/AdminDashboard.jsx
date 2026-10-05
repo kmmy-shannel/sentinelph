@@ -6,7 +6,9 @@ import {
 } from "recharts";
 import apiClient from "../../lib/api";
 
-const A = "#f97316"; // admin accent
+// ─── Admin accent (purple) ────────────────────────────────────────────
+const A = "#a855f7";
+const A_SOFT = "#c084fc";
 
 const card = { background: "#0e0e18", border: "1px solid #1a1a2a", borderRadius: "12px", padding: "20px" };
 const thS = { textAlign: "left", paddingBottom: "8px", fontWeight: 500, color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", fontSize: "9px", letterSpacing: "0.06em" };
@@ -83,7 +85,7 @@ export default function AdminDashboard() {
   if (loading) {
     return (
       <div style={{ padding: "40px", textAlign: "center", color: "#4b5563", fontSize: "13px" }}>
-        Loading agency dashboard…
+        Loading admin dashboard…
       </div>
     );
   }
@@ -121,7 +123,7 @@ export default function AdminDashboard() {
           { l: "TOTAL REPORTS",     v: (kpis.totalReports ?? 0).toLocaleString(), sc: "#22c55e", sub: "All time · agency scope" },
           { l: "AI MODEL ACCURACY", v: kpis.aiModelAccuracy !== null && kpis.aiModelAccuracy !== undefined ? `${(kpis.aiModelAccuracy * 100).toFixed(1)}%` : "—", sc: "#22c55e", sub: modelMetrics ? `${modelMetrics.sampleSize} reviewed` : "No reviews yet" },
           { l: "OPEN REPORTS",      v: (kpis.openReports ?? 0).toLocaleString(), sc: "#f59e0b", sub: "Pending · under review" },
-          { l: "ACTIVE OFFICERS",   v: (kpis.activeOfficers ?? 0).toLocaleString(), sc: "#a855f7", sub: "All regions" },
+          { l: "ACTIVE OFFICERS",   v: (kpis.activeOfficers ?? 0).toLocaleString(), sc: A, sub: "All regions" },
         ].map((s) => (
           <div key={s.l} style={card}>
             <div style={{ fontSize: "10px", marginBottom: "8px", color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.07em" }}>{s.l}</div>
@@ -144,15 +146,22 @@ export default function AdminDashboard() {
             <ResponsiveContainer width="100%" height={180}>
               <AreaChart data={trend} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
                 <defs>
-                  <linearGradient id="adminTrendGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={A} stopOpacity={0.35} />
+                  <linearGradient id="adminTrendGradPurple" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={A} stopOpacity={0.45} />
                     <stop offset="95%" stopColor={A} stopOpacity={0} />
                   </linearGradient>
                 </defs>
                 <XAxis dataKey="day" tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
                 <Tooltip contentStyle={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: "8px", color: "#e2e8f0", fontSize: 12 }} />
-                <Area type="monotone" dataKey="sms" stroke={A} strokeWidth={2} fill="url(#adminTrendGrad)" />
+                <Area
+                  type="monotone"
+                  dataKey="sms"
+                  stroke={A}
+                  strokeWidth={2.5}
+                  fill="url(#adminTrendGradPurple)"
+                  activeDot={{ r: 4, fill: A_SOFT, stroke: "#0e0e18", strokeWidth: 2 }}
+                />
               </AreaChart>
             </ResponsiveContainer>
           )}
@@ -172,7 +181,13 @@ export default function AdminDashboard() {
                 <YAxis dataKey="region" type="category" tick={{ fill: "#6b7280", fontSize: 10 }} axisLine={false} tickLine={false} width={100} />
                 <Tooltip contentStyle={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: "8px", color: "#e2e8f0", fontSize: 12 }} />
                 <Bar dataKey="v" radius={[0, 4, 4, 0]}>
-                  {heatmap.map((_, i) => <Cell key={i} fill={`rgba(249,115,22,${0.9 - i * 0.15})`} />)}
+                  {heatmap.map((_, i) => (
+                    <Cell
+                      key={i}
+                      fill={A}
+                      fillOpacity={Math.max(0.35, 0.95 - i * 0.13)}
+                    />
+                  ))}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
@@ -218,14 +233,14 @@ export default function AdminDashboard() {
                 <div style={{ fontSize: "40px", fontWeight: 800, color: "#fff", fontFamily: "'JetBrains Mono',monospace" }}>
                   {fmtPct(modelMetrics.accuracy)}
                 </div>
-                <span style={{ display: "inline-block", marginTop: "8px", padding: "4px 12px", borderRadius: "999px", fontSize: "11px", fontWeight: 600, background: "#14412a", color: "#22c55e" }}>
+                <span style={{ display: "inline-block", marginTop: "8px", padding: "4px 12px", borderRadius: "999px", fontSize: "11px", fontWeight: 600, background: "rgba(168,85,247,0.12)", color: A, border: `1px solid ${A}40` }}>
                   ● {modelMetrics.sampleSize} reviews
                 </span>
               </div>
               {[
                 { l: "Precision", v: fmtPct(modelMetrics.precision), c: "#3b82f6" },
                 { l: "Recall",    v: fmtPct(modelMetrics.recall),    c: "#22c55e" },
-                { l: "F1 Score",  v: fmtPct(modelMetrics.f1),        c: "#f59e0b" },
+                { l: "F1 Score",  v: fmtPct(modelMetrics.f1),        c: A },
               ].map((m) => (
                 <div key={m.l} style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", marginBottom: "8px" }}>
                   <span style={{ color: "#6b7280" }}>{m.l}</span>

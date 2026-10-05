@@ -50,6 +50,23 @@ const LogoutIcon = ({ color }) => (
   </svg>
 );
 
+// ─── NEW: Person silhouette for the user avatar ───────────────────────
+const PersonIcon = ({ size = 16, color = '#ffffff' }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke={color}
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <circle cx="12" cy="8" r="3.5" />
+    <path d="M5 20c0-3.5 3.1-6 7-6s7 2.5 7 6" />
+  </svg>
+);
+
 export default function Sidebar({ isOpen, onClose }) {
   const { user, role, logout } = useAuth();
   const [activeTab, setActiveTab] = useState("dashboard");
@@ -207,7 +224,23 @@ export default function Sidebar({ isOpen, onClose }) {
 
         <div style={{ padding: "12px", borderTop: "1px solid #0f0f1a" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
-            <div style={{ width: "28px", height: "28px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "11px", fontWeight: 700, flexShrink: 0, background: `${roleColor}25`, color: roleColor, border: `1px solid ${roleColor}40` }}>{user?.initials ?? "SA"}</div>
+            {/* ─── Person icon avatar (replaces initials) ─────────── */}
+            <div
+              style={{
+                width: "32px",
+                height: "32px",
+                borderRadius: "50%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+                background: `${roleColor}20`,
+                border: `1px solid ${roleColor}40`,
+              }}
+              aria-hidden="true"
+            >
+              <PersonIcon size={18} color={roleColor} />
+            </div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: "11px", fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.name ?? "Platform Admin"}</div>
               <div style={{ fontSize: "9px", color: "#374151", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.email ?? "admin@sentinelph.gov.ph"}</div>

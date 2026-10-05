@@ -4,6 +4,19 @@ const crypto = require('crypto');
 
 const { Schema } = mongoose;
 
+/**
+ * Legacy vote-handling model.
+ *
+ * NOTE: This model's voting is RETIRED at the route layer
+ * (POST /api/v1/blacklist/:phoneNumber/vote → 410 Gone). The canonical
+ * voting path is now Report.castVote(). This model is still used as a
+ * read-model for the blacklist registry and is populated by
+ * upsertFromReport() once a Report reaches quorum.
+ *
+ * Its registerVote() logic already implements the correct 2-of-3 quorum
+ * rule (finalize on the 2nd decisive vote; the 3rd is optional), which
+ * matches Report.castVote().
+ */
 const VOTE_DECISIONS = ['approve', 'reject'];
 const STATUSES = ['pending', 'under_review', 'blacklisted', 'rejected'];
 const APPROVALS_REQUIRED = 2;
@@ -89,6 +102,8 @@ BlacklistEntrySchema.methods.registerVote = function registerVote(
   const approvals = this.votes.filter((v) => v.decision === 'approve').length;
   const rejections = this.votes.filter((v) => v.decision === 'reject').length;
 
+  // 2-of-3 quorum: finalize on the 2nd decisive vote. The 3rd vote is
+  // optional and only matters as a tiebreaker when the first two disagree.
   if (approvals >= APPROVALS_REQUIRED) {
     this.status = 'blacklisted';
     this.blacklistedAt = new Date();
@@ -97,6 +112,11 @@ BlacklistEntrySchema.methods.registerVote = function registerVote(
       .map((v) => v.officerId);
   } else if (rejections >= REJECTIONS_REQUIRED) {
     this.status = 'rejected';
+    // Mirror the approvals case: record who voted reject as the
+    // deciding officers so the audit trail is complete.
+    this.approvingOfficers = this.votes
+      .filter((v) => v.decision === 'reject')
+      .map((v) => v.officerId);
   } else if (approvals === 1) {
     this.status = 'under_review';
   }

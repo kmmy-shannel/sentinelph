@@ -5,7 +5,7 @@ import InviteUserModal from '../../components/InviteUserModal';
 
 const A = "#22c55e";
 const label = { fontSize: "9px", fontWeight: 500, color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em", marginBottom: "6px" };
-const ROLE_COLOR = { Officer: "#3b82f6", Admin: "#f59e0b", Superadmin: A };
+const ROLE_COLOR = { Officer: "#3b82f6", Admin: "#d60bf5", Superadmin: A };
 const REASSIGNABLE_ROLES = ["officer", "admin"];
 
 const SUSPEND_DURATIONS = [

@@ -7,7 +7,8 @@ const { Schema } = mongoose;
 
 const OPEN_STATUSES = ['pending', 'under_review', 'one_approval', 'two_approvals'];
 const RESOLVED_STATUSES = ['blacklisted', 'approved', 'rejected'];
-const CONSENSUS_REQUIRED = 3;
+const CONSENSUS_REQUIRED = 3;   // panel size (max officers who may vote)
+const DECISIVE_VOTES = 2;       // quorum: 2-of-3 finalizes immediately
 
 function httpError(statusCode, code, message) {
   const err = new Error(message);
@@ -140,7 +141,7 @@ const ConsensusSchema = new Schema(
   {
     approvals: { type: Number, default: 0 },
     rejections: { type: Number, default: 0 },
-    required: { type: Number, default: 3 },
+    required: { type: Number, default: DECISIVE_VOTES },
   },
   { _id: false }
 );
@@ -302,9 +303,12 @@ const ReportSchema = new Schema(
     // ──────────────────────────────────────────────────────────────
 
     // ---- Workflow state ----
-    // 'pending' → 'under_review' | 'one_approval' → 'blacklisted' | 'rejected'
+    // 'pending' → 'under_review' | 'one_approval'
+    // Once 2 decisive votes are cast → 'blacklisted' | 'rejected' (terminal)
     // 'approved' is retained as an alias for 'blacklisted' so the vote
-    // route can map its decision without loss.
+    // route can map its decision without loss. 'two_approvals' is kept
+    // in the enum for backward-compatibility with older documents but
+    // is no longer produced by the voting pipelines.
     status: {
       type: String,
       enum: [
@@ -392,7 +396,12 @@ ReportSchema.pre('findOneAndDelete', blockDirectMutation);
 ReportSchema.pre('findOneAndRemove', blockDirectMutation);
 
 /**
- * CANONICAL VOTE ENTRY POINT — 3-Officer Consensus (majority 2-of-3)
+ * CANONICAL VOTE ENTRY POINT — 2-of-3 Quorum
+ *
+ * Finalizes IMMEDIATELY once 2 officers agree on the same decision.
+ * The third vote is optional and only relevant as a tiebreaker when
+ * the first two officers disagree.
+ *
  * Accepts optional subtype verification fields (continuous learning).
  */
 ReportSchema.statics.castVote = async function castVote(
@@ -455,17 +464,18 @@ ReportSchema.statics.castVote = async function castVote(
       $set: {
         'consensusState.approvals': { $size: { $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'approve'] } } } },
         'consensusState.rejections': { $size: { $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'reject'] } } } },
-        'consensusState.required': CONSENSUS_REQUIRED,
+        'consensusState.required': DECISIVE_VOTES,
       },
     },
     {
+      // ── FINALIZE AT 2 DECISIVE VOTES ───────────────────────────────
+      // No `$size: '$votes' >= 3` guard. The 3rd officer is optional.
       $set: {
         status: {
           $switch: {
             branches: [
-              { case: { $and: [{ $gte: [{ $size: '$votes' }, 3] }, { $gte: ['$consensusState.approvals', 2] }] }, then: 'blacklisted' },
-              { case: { $and: [{ $gte: [{ $size: '$votes' }, 3] }, { $gte: ['$consensusState.rejections', 2] }] }, then: 'rejected' },
-              { case: { $eq: ['$consensusState.approvals', 2] }, then: 'two_approvals' },
+              { case: { $gte: ['$consensusState.approvals', DECISIVE_VOTES] }, then: 'blacklisted' },
+              { case: { $gte: ['$consensusState.rejections', DECISIVE_VOTES] }, then: 'rejected' },
               { case: { $eq: ['$consensusState.approvals', 1] }, then: 'one_approval' },
             ],
             default: 'under_review',
@@ -474,10 +484,21 @@ ReportSchema.statics.castVote = async function castVote(
       },
     },
     {
+      // resolvedAt fires the moment a decision reaches quorum.
       $set: {
         resolvedAt: {
           $cond: [
-            { $and: [{ $gte: [{ $size: '$votes' }, 3] }, { $or: [{ $gte: ['$consensusState.approvals', 2] }, { $gte: ['$consensusState.rejections', 2] }] }, { $eq: [{ $ifNull: ['$resolvedAt', null] }, null] }] },
+            {
+              $and: [
+                {
+                  $or: [
+                    { $gte: ['$consensusState.approvals', DECISIVE_VOTES] },
+                    { $gte: ['$consensusState.rejections', DECISIVE_VOTES] },
+                  ],
+                },
+                { $eq: [{ $ifNull: ['$resolvedAt', null] }, null] },
+              ],
+            },
             '$$NOW',
             { $ifNull: ['$resolvedAt', null] },
           ],
@@ -524,6 +545,9 @@ ReportSchema.statics.castVote = async function castVote(
  * CHANGE VOTE — Option A (replace-in-place)
  * Edit an existing vote. Preserves votedAt, stamps editedAt, and
  * supports the same subtype verification fields as castVote.
+ *
+ * NOTE: once a report reaches quorum (2 decisive votes), it is terminal
+ * and changeVote will refuse — see REPORT_FINALIZED below.
  */
 ReportSchema.statics.changeVote = async function changeVote(
   reportId,
@@ -601,21 +625,42 @@ ReportSchema.statics.changeVote = async function changeVote(
       $set: {
         'consensusState.approvals': { $size: { $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'approve'] } } } },
         'consensusState.rejections': { $size: { $filter: { input: '$votes', as: 'v', cond: { $eq: ['$$v.decision', 'reject'] } } } },
-        'consensusState.required': CONSENSUS_REQUIRED,
+        'consensusState.required': DECISIVE_VOTES,
       },
     },
     {
+      // ── FINALIZE AT 2 DECISIVE VOTES (same rule as castVote) ───────
       $set: {
         status: {
           $switch: {
             branches: [
-              { case: { $and: [{ $gte: [{ $size: '$votes' }, 3] }, { $gte: ['$consensusState.approvals', 2] }] }, then: 'blacklisted' },
-              { case: { $and: [{ $gte: [{ $size: '$votes' }, 3] }, { $gte: ['$consensusState.rejections', 2] }] }, then: 'rejected' },
-              { case: { $eq: ['$consensusState.approvals', 2] }, then: 'two_approvals' },
+              { case: { $gte: ['$consensusState.approvals', DECISIVE_VOTES] }, then: 'blacklisted' },
+              { case: { $gte: ['$consensusState.rejections', DECISIVE_VOTES] }, then: 'rejected' },
               { case: { $eq: ['$consensusState.approvals', 1] }, then: 'one_approval' },
             ],
             default: 'under_review',
           },
+        },
+      },
+    },
+    {
+      $set: {
+        resolvedAt: {
+          $cond: [
+            {
+              $and: [
+                {
+                  $or: [
+                    { $gte: ['$consensusState.approvals', DECISIVE_VOTES] },
+                    { $gte: ['$consensusState.rejections', DECISIVE_VOTES] },
+                  ],
+                },
+                { $eq: [{ $ifNull: ['$resolvedAt', null] }, null] },
+              ],
+            },
+            '$$NOW',
+            { $ifNull: ['$resolvedAt', null] },
+          ],
         },
       },
     },
@@ -676,5 +721,6 @@ const ReportModel = mongoose.model('Report', ReportSchema);
 ReportModel.OPEN_STATUSES = OPEN_STATUSES;
 ReportModel.RESOLVED_STATUSES = RESOLVED_STATUSES;
 ReportModel.CONSENSUS_REQUIRED = CONSENSUS_REQUIRED;
+ReportModel.DECISIVE_VOTES = DECISIVE_VOTES;
 
 module.exports = ReportModel;

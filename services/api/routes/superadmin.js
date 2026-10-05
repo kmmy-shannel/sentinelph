@@ -12,6 +12,7 @@ const { verifyChain } = require('../services/chainVerifier');
 const User = require('../models/User');
 const AuditLog = require('../models/AuditLog');
 const Report = require('../models/Report');
+const HealthSnapshot = require('../models/HealthSnapshot');
 
 const crypto = require('crypto');
 const PasswordResetToken = require('../models/PasswordResetToken');
@@ -41,6 +42,57 @@ function isDomainAllowed(email) {
   if (!domain) return false;
   if (domain.endsWith('.gov.ph') || domain === 'gov.ph') return true;
   return getAllowedDomains().includes(domain);
+}
+
+// ─── AI service health check ─────────────────────────────────
+// Pings the FastAPI AI microservice's /health endpoint. Returns
+// { status, latency, modelVersion, error }. Uses the global fetch
+// available in Node 18+; falls back to "Unavailable" on timeout.
+async function checkAiServiceHealth() {
+  const baseUrl = process.env.AI_SERVICE_URL;
+  if (!baseUrl) {
+    return {
+      status: 'Unavailable',
+      latency: '—',
+      modelVersion: '—',
+      error: 'AI_SERVICE_URL is not configured',
+    };
+  }
+
+  const start = Date.now();
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/health`, {
+      method: 'GET',
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    const latency = `${Date.now() - start} ms`;
+
+    if (!res.ok) {
+      return { status: 'Degraded', latency, modelVersion: '—', error: `HTTP ${res.status}` };
+    }
+
+    const body = await res.json();
+    return {
+      status: body.model_loaded ? 'Operational' : 'Degraded',
+      latency,
+      modelVersion: body.model_version || 'unknown',
+      error: body.model_loaded ? null : (body.message || 'Model not loaded'),
+    };
+  } catch (err) {
+    const latency = `${Date.now() - start} ms`;
+    const isTimeout = err.name === 'AbortError';
+    return {
+      status: 'Unavailable',
+      latency,
+      modelVersion: '—',
+      error: isTimeout ? 'Request timed out after 5s' : err.message,
+    };
+  }
 }
 
 // ─── GET /chain/status ───────────────────────────────────────
@@ -314,9 +366,6 @@ router.post('/users/:id/enable', async (req, res) => {
 });
 
 // ─── POST /users/provision ───────────────────────────────────
-// Temp-password flow. Same rule as /users/invite — the region is
-// required and validated only when the role is 'officer'. Admins are
-// forced to the National sentinel because they are agency-scoped.
 router.post('/users/provision', async (req, res) => {
   const { fullName, email, badgeId, agency, role, jurisdiction, tempPassword } = req.body || {};
 
@@ -343,7 +392,6 @@ router.post('/users/provision', async (req, res) => {
     });
   }
 
-  // ─── Resolve jurisdiction based on role ─────────────────────
   let normalizedJurisdiction;
   if (role === 'admin') {
     normalizedJurisdiction = ADMIN_SCOPE_SENTINEL;
@@ -364,7 +412,6 @@ router.post('/users/provision', async (req, res) => {
       });
     }
   }
-  // ────────────────────────────────────────────────────────────
 
   const cleanEmail = String(email).trim().toLowerCase();
 
@@ -459,21 +506,9 @@ router.post('/users/provision', async (req, res) => {
 });
 
 // ─── POST /users/invite ──────────────────────────────────────
-// Send an activation email to a new officer OR admin. Uses the same
-// custom-token system as /api/v1/admin/invite-officer and
-// /auth/request-password-reset, so the frontend's existing
-// ResetPassword?mode=activate page handles both roles transparently.
-//
-// Body: { email, fullName, badgeId, agency, jurisdiction, role }
-// role must be 'officer' or 'admin'. Never 'superadmin'.
-//
-// Region rules:
-//   * officer → jurisdiction is REQUIRED and must be a real PH region
-//   * admin   → jurisdiction is IGNORED and forced to the National sentinel
 router.post('/users/invite', async (req, res) => {
   const { email, fullName, badgeId, agency, jurisdiction, role } = req.body || {};
 
-  // Fields required for every role
   const COMMON_REQUIRED = ['email', 'fullName', 'badgeId', 'agency', 'role'];
   const missing = COMMON_REQUIRED.filter(
     (field) => !req.body?.[field] || !String(req.body[field]).trim()
@@ -497,7 +532,6 @@ router.post('/users/invite', async (req, res) => {
 
   const normalizedEmail = String(email).trim().toLowerCase();
 
-  // ─── Resolve jurisdiction based on role ─────────────────────
   let normalizedJurisdiction;
   if (role === 'admin') {
     normalizedJurisdiction = ADMIN_SCOPE_SENTINEL;
@@ -518,7 +552,6 @@ router.post('/users/invite', async (req, res) => {
       });
     }
   }
-  // ────────────────────────────────────────────────────────────
 
   if (!isDomainAllowed(normalizedEmail)) {
     return res.status(400).json({
@@ -766,6 +799,15 @@ router.get('/audit-logs', async (req, res) => {
 });
 
 // ─── GET /system-health ──────────────────────────────────────
+//
+// Returns:
+//   overall         'operational' | 'degraded'
+//   services[]      live status of each platform component
+//   jobs[]          scheduled job history
+//   storage[]       real MongoDB collection stats
+//   sla             rolling 30-day SLA percentage
+//   uptimeHistory[] per-day { date, uptime, total, ok } from HealthSnapshot
+//   aiHealth        { status, latency, modelVersion, error, processedReports }
 router.get('/system-health', async (req, res) => {
   const startedAt = Date.now();
   let dbOk = false;
@@ -779,14 +821,86 @@ router.get('/system-health', async (req, res) => {
     console.error('[superadmin/system-health] Mongo ping failed:', err.message);
   }
 
+  // ── Real storage utilization from MongoDB ────────────────────
+  let storage = [];
+  try {
+    const db = User.db.db;
+    const collections = [
+      { name: 'reports',          label: 'Report Ledger',    quotaGB: 0.5, color: '#3b82f6', displayTotal: '512 MB' },
+      { name: 'auditlogs',        label: 'Audit Log Store',  quotaGB: 0.5, color: '#a855f7', displayTotal: '512 MB' },
+      { name: 'health_snapshots', label: 'Health Snapshots', quotaGB: 0.1, color: '#22c55e', displayTotal: '100 MB' },
+    ];
+
+    const stats = await Promise.all(
+      collections.map(async (c) => {
+        try {
+          const s = await db.command({ collStats: c.name });
+          return {
+            ...c,
+            sizeBytes: s.size || 0,
+            count: s.count || 0,
+          };
+        } catch {
+          return { ...c, sizeBytes: 0, count: 0 };
+        }
+      })
+    );
+
+    storage = stats.map((c) => {
+      const sizeGB = c.sizeBytes / (1024 ** 3);
+      const pct = c.quotaGB > 0
+        ? Math.min(100, Math.round((sizeGB / c.quotaGB) * 100))
+        : 0;
+      return {
+        label: c.label,
+        used: pct,
+        total: c.displayTotal,
+        color: c.color,
+        // Extra detail the frontend can optionally display
+        count: c.count,
+        sizeBytes: c.sizeBytes,
+      };
+    });
+  } catch (err) {
+    console.error('[superadmin/system-health] storage stats failed:', err.message);
+  }
+
+  // ── AI service health (live ping) ────────────────────────────
+  let aiHealth;
+  try {
+    aiHealth = await checkAiServiceHealth();
+  } catch (err) {
+    aiHealth = {
+      status: 'Unavailable',
+      latency: '—',
+      modelVersion: '—',
+      error: err.message,
+    };
+  }
+
+  // ── Platform-wide AI processed count ─────────────────────────
+  let aiProcessedCount = 0;
+  try {
+    aiProcessedCount = await Report.countDocuments({ 'aiFlag.available': true });
+  } catch (err) {
+    console.error('[superadmin/system-health] ai count failed:', err.message);
+  }
+
+  aiHealth.processedReports = aiProcessedCount;
+
+  // ── Build services list (AI uses live status now) ────────────
   const services = [
     { name: 'API Gateway', status: 'Operational', latency: `${Date.now() - startedAt} ms`, uptime: '99.99%', since: 'Jul 1, 2026' },
     { name: 'Report Ledger DB', status: dbOk ? 'Operational' : 'Degraded', latency: dbLatency ?? '—', uptime: '99.97%', since: 'Jul 1, 2026' },
-    { name: 'AI Detector Service', status: 'Operational', latency: '120 ms', uptime: '99.94%', since: 'Jul 1, 2026' },
+    { name: 'AI Detector Service', status: aiHealth.status, latency: aiHealth.latency, uptime: '99.94%', since: 'Jul 1, 2026' },
     { name: 'Chain Verification Engine', status: 'Operational', latency: '—', uptime: '100%', since: 'Jul 1, 2026' },
     { name: 'Auth / KMS Service', status: 'Operational', latency: '18 ms', uptime: '99.99%', since: 'Jul 1, 2026' },
     { name: 'Notification Queue', status: 'Operational', latency: '55 ms', uptime: '99.91%', since: 'Jul 1, 2026' },
   ];
+
+  // Overall reflects both DB and AI health
+  const overall =
+    dbOk && aiHealth.status === 'Operational' ? 'operational' : 'degraded';
 
   const jobs = [
     { name: 'Database Backup', last: 'Aug 28 03:00', result: 'Completed', duration: '22m 11s', next: 'Aug 29 03:00' },
@@ -794,18 +908,46 @@ router.get('/system-health', async (req, res) => {
     { name: 'Log Archival Job', last: 'Aug 28 02:00', result: 'Completed', duration: '1m 44s', next: 'Aug 29 02:00' },
   ];
 
+  // ── Real uptime history from HealthSnapshot ─────────────────
+  let uptimeHistory = [];
+  try {
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const snapshots = await HealthSnapshot.find({
+      timestamp: { $gte: since },
+    })
+      .sort({ timestamp: 1 })
+      .lean();
+
+    const dayMap = {};
+    for (const snap of snapshots) {
+      const key = new Date(snap.timestamp).toISOString().slice(0, 10);
+      if (!dayMap[key]) dayMap[key] = { total: 0, ok: 0 };
+      dayMap[key].total += 1;
+      if (snap.overall === 'operational') dayMap[key].ok += 1;
+    }
+
+    uptimeHistory = Object.entries(dayMap)
+      .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+      .map(([date, { total, ok }]) => ({
+        date,
+        uptime: total > 0 ? Math.round((ok / total) * 100) : 0,
+        total,
+        ok,
+      }));
+  } catch (err) {
+    console.error('[superadmin/system-health] uptime history failed:', err.message);
+  }
+
   return res.json({
     success: true,
     data: {
-      overall: dbOk ? 'operational' : 'degraded',
+      overall,
       services,
       jobs,
-      storage: [
-        { label: 'Report Ledger', used: 68, total: '2 TB', color: '#3b82f6' },
-        { label: 'Audit Log Store', used: 41, total: '500 GB', color: '#a855f7' },
-        { label: 'Backup Volumes', used: 55, total: '4 TB', color: '#22c55e' },
-      ],
+      storage,
       sla: '99.97%',
+      uptimeHistory,
+      aiHealth,
     },
   });
 });
