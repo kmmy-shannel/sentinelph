@@ -50,30 +50,53 @@ const LogoutIcon = ({ color }) => (
   </svg>
 );
 
-// ─── NEW: Person silhouette for the user avatar ───────────────────────
 const PersonIcon = ({ size = 16, color = '#ffffff' }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke={color}
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="12" cy="8" r="3.5" />
     <path d="M5 20c0-3.5 3.1-6 7-6s7 2.5 7 6" />
   </svg>
 );
 
+const ChevronIcon = ({ color = '#e2e8f0', size = 16, style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <polyline points="14 6 8 12 14 18" />
+  </svg>
+);
+
+const COLLAPSE_KEY = 'sentinelph.sidebar.collapsed';
+
+// Longest-prefix match — /officer/queue/anything still highlights "queue",
+// and one and only one tab is ever highlighted.
+function getActiveId(pathname, items) {
+  if (!items.length) return null;
+  const matches = items
+    .filter(item => pathname === item.to || pathname.startsWith(item.to + '/'))
+    .sort((a, b) => b.to.length - a.to.length);
+  return matches[0]?.id ?? null;
+}
+
 export default function Sidebar({ isOpen, onClose }) {
   const { user, role, logout } = useAuth();
-  const [activeTab, setActiveTab] = useState("dashboard");
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [badges, setBadges] = useState({});
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(COLLAPSE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [hoverChevron, setHoverChevron] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }, [collapsed]);
 
   const loadBadges = useCallback(async () => {
     if (!role) return;
@@ -157,31 +180,37 @@ export default function Sidebar({ isOpen, onClose }) {
   };
 
   const NAV = getNavItems();
+  const activeId = getActiveId(location.pathname, NAV);
 
   return (
     <>
       <aside
-        className={`sentinel-sidebar ${isOpen ? 'open' : ''}`}
+        className={`sentinel-sidebar ${isOpen ? 'open' : ''} ${collapsed ? 'collapsed' : ''}`}
         style={{
           background: "#080810",
           borderRight: "1px solid #13131e",
           display: "flex",
           flexDirection: "column",
+          position: "relative",
+          overflow: "visible",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", padding: "18px 16px", borderBottom: "1px solid #0f0f1a" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+        {/* Logo header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", padding: collapsed ? "18px 8px" : "18px 16px", borderBottom: "1px solid #0f0f1a", overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", minWidth: 0 }}>
             <img
               src="/logo.png"
               alt="SentinelPH"
-              style={{ width: "44px", height: "44px", objectFit: "contain", flexShrink: 0 }}
+              style={{ width: "40px", height: "40px", objectFit: "contain", flexShrink: 0 }}
             />
-            <div>
-              <div style={{ fontWeight: 800, color: "#fff", fontSize: "17px", letterSpacing: "-0.01em" }}>SentinelPH</div>
-              <div style={{ fontSize: "9px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.1em", marginTop: "2px" }}>CONTROL CENTER</div>
-            </div>
+            {!collapsed && (
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 800, color: "#fff", fontSize: "16px", letterSpacing: "-0.01em", whiteSpace: "nowrap" }}>SentinelPH</div>
+                <div style={{ fontSize: "9px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.1em", marginTop: "2px", whiteSpace: "nowrap" }}>CONTROL CENTER</div>
+              </div>
+            )}
           </div>
-          <button className="sidebar-close-btn" onClick={onClose} aria-label="Close menu">
+          <button className="sidebar-close-btn" onClick={onClose} aria-label="Close menu" style={{ display: 'none' }}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
@@ -189,78 +218,145 @@ export default function Sidebar({ isOpen, onClose }) {
           </button>
         </div>
 
-        <div style={{ padding: "10px 12px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 10px", borderRadius: "8px", background: `${roleColor}12`, border: `1px solid ${roleColor}25` }}>
+        {/* Collapse chevron */}
+        <button
+          className="sidebar-collapse-btn"
+          onClick={() => setCollapsed(v => !v)}
+          onMouseEnter={() => setHoverChevron(true)}
+          onMouseLeave={() => setHoverChevron(false)}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          style={{
+            position: 'absolute',
+            top: '50%',
+            right: '-14px',
+            transform: 'translateY(-50%)',
+            width: '28px',
+            height: '28px',
+            borderRadius: '50%',
+            background: hoverChevron ? '#14141f' : '#0e0e18',
+            border: `1px solid ${hoverChevron ? '#3b82f6' : '#1a1a2a'}`,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            zIndex: 20,
+            padding: 0,
+            boxShadow: hoverChevron ? '0 0 0 4px rgba(59,130,246,0.08)' : '0 2px 6px rgba(0,0,0,0.4)',
+            transition: 'background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease',
+          }}
+        >
+          <ChevronIcon
+            size={16}
+            color={hoverChevron ? '#3b82f6' : '#94a3b8'}
+            style={{
+              transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), color 0.15s ease',
+              transform: collapsed ? 'rotate(180deg)' : 'rotate(0deg)',
+            }}
+          />
+        </button>
+
+        {/* Role chip */}
+        <div style={{ padding: collapsed ? "10px 8px" : "10px 12px", overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: collapsed ? "center" : "flex-start", gap: "6px", padding: "6px 10px", borderRadius: "8px", background: `${roleColor}12`, border: `1px solid ${roleColor}25` }}>
             <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: roleColor, flexShrink: 0 }} />
-            <span style={{ fontSize: "10px", fontWeight: 700, color: roleColor, fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.05em" }}>
-              {role === ROLES.OFFICER ? "OFFICER" : role === ROLES.ADMIN ? "AGENCY ADMIN" : "SUPER ADMIN"}
-            </span>
+            {!collapsed && (
+              <span style={{ fontSize: "10px", fontWeight: 700, color: roleColor, fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>
+                {role === ROLES.OFFICER ? "OFFICER" : role === ROLES.ADMIN ? "AGENCY ADMIN" : "SUPER ADMIN"}
+              </span>
+            )}
           </div>
         </div>
 
-        <nav style={{ flex: 1, padding: "4px 12px", overflowY: "auto" }}>
-          {NAV.map(item => (
-            <NavLink
-              key={item.id}
-              to={item.to}
-              onClick={() => { setActiveTab(item.id); if (onClose) onClose(); }}
-              style={({ isActive }) => ({
-                width: "100%", display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px", borderRadius: "8px", marginBottom: "2px",
-                background: isActive || activeTab === item.id ? `${roleColor}18` : "transparent",
-                border: isActive || activeTab === item.id ? `1px solid ${roleColor}30` : "1px solid transparent",
-                textDecoration: "none", cursor: "pointer", transition: "all 0.2s ease",
-              })}
-            >
-              <item.Icon color={activeTab === item.id ? roleColor : "#4b5563"} />
-              <span style={{ flex: 1, fontSize: "12px", fontWeight: activeTab === item.id ? 600 : 500, color: activeTab === item.id ? "#fff" : "#6b7280", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
-              {item.badge > 0 && (
-                <span style={{ fontSize: "9px", fontWeight: 700, padding: "2px 5px", borderRadius: "999px", background: "#ef4444", color: "#fff", minWidth: "18px", textAlign: "center" }}>
-                  {item.badge}
+        <nav style={{ flex: 1, padding: collapsed ? "4px 8px" : "4px 12px", overflowY: "auto", overflowX: "hidden" }}>
+          {NAV.map(item => {
+            const isActive = activeId === item.id;
+            return (
+              <NavLink
+                key={item.id}
+                to={item.to}
+                onClick={() => { if (onClose) onClose(); }}
+                title={collapsed ? item.label : undefined}
+                style={{
+                  width: "100%", display: "flex", alignItems: "center",
+                  justifyContent: collapsed ? "center" : "flex-start",
+                  gap: "10px", padding: "10px 12px", borderRadius: "8px", marginBottom: "2px",
+                  background: isActive ? `${roleColor}18` : "transparent",
+                  border: isActive ? `1px solid ${roleColor}30` : "1px solid transparent",
+                  textDecoration: "none", cursor: "pointer", transition: "background 0.2s ease, border-color 0.2s ease",
+                  position: "relative",
+                  minHeight: "40px",
+                }}
+              >
+                <span style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "20px", flexShrink: 0 }}>
+                  <item.Icon color={isActive ? roleColor : "#4b5563"} />
                 </span>
-              )}
-            </NavLink>
-          ))}
+                {!collapsed && (
+                  <span style={{ flex: 1, fontSize: "12px", fontWeight: isActive ? 600 : 500, color: isActive ? "#fff" : "#6b7280", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
+                )}
+                {!collapsed && item.badge > 0 && (
+                  <span style={{ fontSize: "9px", fontWeight: 700, padding: "2px 5px", borderRadius: "999px", background: "#ef4444", color: "#fff", minWidth: "18px", textAlign: "center" }}>
+                    {item.badge}
+                  </span>
+                )}
+                {collapsed && item.badge > 0 && (
+                  <span style={{ position: "absolute", top: "6px", right: "6px", fontSize: "9px", fontWeight: 700, padding: "1px 4px", borderRadius: "999px", background: "#ef4444", color: "#fff", minWidth: "14px", textAlign: "center" }}>
+                    {item.badge > 9 ? '9+' : item.badge}
+                  </span>
+                )}
+              </NavLink>
+            );
+          })}
         </nav>
 
-        <div style={{ padding: "12px", borderTop: "1px solid #0f0f1a" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
-            {/* ─── Person icon avatar (replaces initials) ─────────── */}
+        <div style={{ padding: collapsed ? "12px 8px" : "12px", borderTop: "1px solid #0f0f1a", overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: collapsed ? "center" : "flex-start", gap: "10px", marginBottom: collapsed ? 0 : "8px" }}>
             <div
               style={{
-                width: "32px",
-                height: "32px",
-                borderRadius: "50%",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-                background: `${roleColor}20`,
-                border: `1px solid ${roleColor}40`,
+                width: "32px", height: "32px", borderRadius: "50%",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                flexShrink: 0, background: `${roleColor}20`, border: `1px solid ${roleColor}40`,
               }}
+              title={collapsed ? `${user?.name ?? 'User'} · ${user?.email ?? ''}` : undefined}
               aria-hidden="true"
             >
               <PersonIcon size={18} color={roleColor} />
             </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: "11px", fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.name ?? "Platform Admin"}</div>
-              <div style={{ fontSize: "9px", color: "#374151", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.email ?? "admin@sentinelph.gov.ph"}</div>
-            </div>
+            {!collapsed && (
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.name ?? "Platform Admin"}</div>
+                <div style={{ fontSize: "9px", color: "#374151", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.email ?? "admin@sentinelph.gov.ph"}</div>
+              </div>
+            )}
           </div>
-          <button onClick={() => setShowLogoutConfirm(true)}
-            style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "11px", color: "#374151", background: "none", border: "none", cursor: "pointer", padding: 0 }}
-            onMouseEnter={e => { e.currentTarget.style.color = "#ef4444"; e.currentTarget.querySelector('svg').style.stroke = "#ef4444"; }}
-            onMouseLeave={e => { e.currentTarget.style.color = "#374151"; e.currentTarget.querySelector('svg').style.stroke = "#374151"; }}>
-            <LogoutIcon color="#374151" /> Sign out
-          </button>
+          {!collapsed && (
+            <button onClick={() => setShowLogoutConfirm(true)}
+              style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "11px", color: "#374151", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+              onMouseEnter={e => { e.currentTarget.style.color = "#ef4444"; e.currentTarget.querySelector('svg').style.stroke = "#ef4444"; }}
+              onMouseLeave={e => { e.currentTarget.style.color = "#374151"; e.currentTarget.querySelector('svg').style.stroke = "#374151"; }}>
+              <LogoutIcon color="#374151" /> Sign out
+            </button>
+          )}
         </div>
 
         <style>{`
-          .sentinel-sidebar { width: 240px; height: 100vh; flex-shrink: 0; }
+          .sentinel-sidebar {
+            width: 240px;
+            height: 100vh;
+            flex-shrink: 0;
+            transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            will-change: width;
+          }
+          .sentinel-sidebar.collapsed {
+            width: 64px;
+          }
           .sidebar-close-btn { display: none; color: #4b5563; background: none; border: none; cursor: pointer; padding: 0; }
           @media (max-width: 1024px) {
             .sentinel-sidebar { position: fixed; top: 0; left: 0; z-index: 50; height: 100vh; transform: translateX(-100%); transition: transform 0.3s ease; width: 260px; box-shadow: 4px 0 24px rgba(0,0,0,0.5); }
             .sentinel-sidebar.open { transform: translateX(0); }
+            .sentinel-sidebar.collapsed { width: 260px; }
             .sidebar-close-btn { display: flex; }
+            .sidebar-collapse-btn { display: none !important; }
           }
         `}</style>
       </aside>
