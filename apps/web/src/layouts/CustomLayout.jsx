@@ -15,7 +15,6 @@ export default function CustomLayout() {
         </div>
       </main>
 
-      {/* Add this style for the animation */}
       <style>{`
         @keyframes fadeIn {
           from { opacity: 0; }
