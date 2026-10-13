@@ -1,8 +1,9 @@
 // apps/web/src/App.jsx
-import React from 'react';
+import React, { useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
+import SplashScreen from './components/SplashScreen';
 import Login from './pages/Login';
 
 import Activate from './pages/Activate';
@@ -34,9 +35,31 @@ import SuperAdminAccount from './pages/SuperAdmin-Tabs/Account';
 import CustomLayout from './layouts/CustomLayout';
 
 export default function App() {
+  // Show splash once per browser session (survives refresh, dies on tab close)
+  const [showSplash, setShowSplash] = useState(() => {
+    try {
+      return sessionStorage.getItem('sentinelph.splashShown') !== '1';
+    } catch {
+      return true;
+    }
+  });
+
+  function handleSplashDone() {
+    try {
+      sessionStorage.setItem('sentinelph.splashShown', '1');
+    } catch {
+      /* ignore */
+    }
+    setShowSplash(false);
+  }
+
   return (
     <AuthProvider>
       <BrowserRouter>
+        {showSplash && (
+          <SplashScreen onDone={handleSplashDone} duration={1600} />
+        )}
+
         <Routes>
           <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<Login />} />
@@ -45,7 +68,13 @@ export default function App() {
           <Route path="/unauthorized" element={<Unauthorized />} />
 
           {/* Officer Routes */}
-          <Route element={<ProtectedRoute allowedRoles={['officer']}><CustomLayout /></ProtectedRoute>}>
+          <Route
+            element={
+              <ProtectedRoute allowedRoles={['officer']}>
+                <CustomLayout />
+              </ProtectedRoute>
+            }
+          >
             <Route path="/officer/dashboard" element={<OfficerDashboard />} />
             <Route path="/officer/queue" element={<ReviewQueue />} />
             <Route path="/officer/registry" element={<BlacklistRegistry />} />
@@ -54,7 +83,13 @@ export default function App() {
           </Route>
 
           {/* Agency Admin Routes */}
-          <Route element={<ProtectedRoute allowedRoles={['admin']}><CustomLayout /></ProtectedRoute>}>
+          <Route
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <CustomLayout />
+              </ProtectedRoute>
+            }
+          >
             <Route path="/admin/dashboard" element={<AdminDashboard />} />
             <Route path="/admin/officers" element={<Officers />} />
             <Route path="/admin/model" element={<AIModelInsights />} />
@@ -63,7 +98,13 @@ export default function App() {
           </Route>
 
           {/* Super Admin Routes */}
-          <Route element={<ProtectedRoute allowedRoles={['superadmin']}><CustomLayout /></ProtectedRoute>}>
+          <Route
+            element={
+              <ProtectedRoute allowedRoles={['superadmin']}>
+                <CustomLayout />
+              </ProtectedRoute>
+            }
+          >
             <Route path="/superadmin/dashboard" element={<SuperAdminDashboard />} />
             <Route path="/superadmin/users-rbac" element={<UsersRBAC />} />
             <Route path="/superadmin/chain-integrity" element={<ChainIntegrity />} />
@@ -72,7 +113,7 @@ export default function App() {
             <Route path="/superadmin/account" element={<SuperAdminAccount />} />
           </Route>
 
-          {/* Catch-all: Redirect to Login */}
+          {/* Catch-all */}
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </BrowserRouter>
