@@ -258,7 +258,7 @@ def main():
     model.save_pretrained(TRANSFORMER_OUT_DIR)
     tokenizer.save_pretrained(TRANSFORMER_OUT_DIR)
 
-    version = f"sentinelph-distilbert-3class-{dt.date.today().isoformat()}-v001"
+    version = f"sentinelph-distilbert-3class-{dt.date.today().isoformat()}-v002"
     metadata = {
         "model_type": "transformer",
         "model_name": args.model_name,

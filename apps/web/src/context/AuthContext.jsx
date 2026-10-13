@@ -15,7 +15,6 @@ export const ROLES = {
   SUPERADMIN: 'superadmin',
 };
 
-// 2-minute inactivity timeout
 const INACTIVITY_MS = 5 * 60 * 1000;
 const ACTIVITY_CHECK_INTERVAL_MS = 10 * 1000;
 
@@ -26,14 +25,10 @@ export function AuthProvider({ children }) {
   const [role, setRole] = useState(null);
   const [jurisdiction, setJurisdiction] = useState(null);
   const [loading, setLoading] = useState(true);
-
-  // Controls whether the "logging out" overlay is visible. When it
-  // flips to true, we render the overlay, wait for its fade, then sign out.
   const [loggingOut, setLoggingOut] = useState(false);
 
   const lastActivityRef = useRef(Date.now());
 
-  // Session persistence — survives refresh, dies on tab close.
   useEffect(() => {
     setPersistence(auth, browserSessionPersistence).catch((err) => {
       console.error('[AuthContext] Failed to set persistence:', err);
@@ -58,7 +53,6 @@ export function AuthProvider({ children }) {
         setFirebaseUser(null);
         setRole(null);
         setJurisdiction(null);
-        // If we were mid-logout, reset the flag once the sign-out completes.
         setLoggingOut(false);
       }
       setLoading(false);
@@ -66,14 +60,15 @@ export function AuthProvider({ children }) {
     return unsubscribe;
   }, []);
 
-  // Inactivity watchdog — fires the animated overlay, then signs out.
   useEffect(() => {
     if (!firebaseUser) return;
 
-    const bump = () => { lastActivityRef.current = Date.now(); };
+    const bump = () => {
+      lastActivityRef.current = Date.now();
+    };
 
     const events = ['mousedown', 'keydown', 'scroll', 'mousemove', 'touchstart', 'focus'];
-    events.forEach(evt => window.addEventListener(evt, bump, { passive: true }));
+    events.forEach((evt) => window.addEventListener(evt, bump, { passive: true }));
 
     lastActivityRef.current = Date.now();
 
@@ -82,10 +77,6 @@ export function AuthProvider({ children }) {
       if (idleFor >= INACTIVITY_MS) {
         console.log('[AuthContext] Inactivity timeout — showing logout overlay.');
         setLoggingOut(true);
-
-        // Give the overlay ~2.2s to fade in and be read, then sign out.
-        // signOut triggers onAuthStateChanged → firebaseUser = null →
-        // ProtectedRoute redirects to /login.
         setTimeout(() => {
           signOut(auth).catch((err) => {
             console.error('[AuthContext] Sign-out on inactivity failed:', err);
@@ -95,7 +86,7 @@ export function AuthProvider({ children }) {
     }, ACTIVITY_CHECK_INTERVAL_MS);
 
     return () => {
-      events.forEach(evt => window.removeEventListener(evt, bump));
+      events.forEach((evt) => window.removeEventListener(evt, bump));
       clearInterval(intervalId);
     };
   }, [firebaseUser]);
@@ -135,10 +126,6 @@ export function AuthProvider({ children }) {
   );
 }
 
-// ─── Inactivity overlay ──────────────────────────────────────────────
-// Defined at module scope (not inside AuthProvider) so React never
-// remounts it. Renders a full-screen blur with a spinner and a
-// message, then the caller signs out after ~2.2s.
 function InactivityOverlay() {
   const [visible, setVisible] = useState(false);
 

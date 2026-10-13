@@ -53,7 +53,10 @@ const T = {
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function isPasswordValid(password) {
+  if (typeof password !== 'string') return false;
+  if (/\s/.test(password)) return false;
   if (password.length < 8) return false;
+  if (password.length > 64) return false;
   const hasLetter = /[A-Za-z]/.test(password);
   const hasNumber = /[0-9]/.test(password);
   return hasLetter && hasNumber;
@@ -63,17 +66,35 @@ function getPasswordStrength(password) {
   if (!password) {
     return { score: 0, label: '', color: T.borderMedium };
   }
+
+  const core = password.replace(/\s+/g, '');
+
+  if (core.length === 0) {
+    return { score: 1, label: 'WEAK', color: T.weak };
+  }
+
   let score = 0;
-  if (password.length >= 8) score += 1;
-  if (password.length >= 12) score += 1;
-  if (/[A-Za-z]/.test(password) && /[0-9]/.test(password)) score += 1;
-  if (/[^A-Za-z0-9]/.test(password)) score += 1;
 
-  if (score <= 1) return { score, label: 'WEAK', color: T.weak };
-  if (score <= 2) return { score, label: 'MEDIUM', color: T.medium };
-  return { score, label: 'STRONG', color: T.strong };
+  if (core.length >= 8) score += 1;
+  if (core.length >= 12) score += 1;
+
+  const hasLetter = /[A-Za-z]/.test(core);
+  const hasDigit = /[0-9]/.test(core);
+  const hasSymbol = /[^A-Za-z0-9]/.test(core);
+
+  if (hasLetter && hasDigit) score += 1;
+  if (hasLetter && hasSymbol) score += 1;
+  if (hasDigit && hasSymbol) score += 1;
+
+  if (!(hasLetter && hasDigit)) {
+    score = Math.min(score, 1);
+  }
+
+  if (score <= 1) return { score: 1, label: 'WEAK', color: T.weak };
+  if (score <= 2) return { score: 2, label: 'MEDIUM', color: T.medium };
+  if (score <= 3) return { score: 3, label: 'STRONG', color: T.strong };
+  return { score: 4, label: 'VERY STRONG', color: T.strong };
 }
-
 // ---------------------------------------------------------------------------
 // UI Atoms
 // ---------------------------------------------------------------------------
