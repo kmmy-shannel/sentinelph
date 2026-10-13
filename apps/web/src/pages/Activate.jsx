@@ -43,15 +43,16 @@ export default function Activate() {
   const [showPass, setShowPass] = useState(false);
   const [error, setError] = useState(null);
 
-  const rules = {
-    length: password.length >= 8,
-    upper: /[A-Z]/.test(password),
-    lower: /[a-z]/.test(password),
-    number: /[0-9]/.test(password),
-  };
-  const allRulesMet = Object.values(rules).every(Boolean);
-  const passwordsMatch = password.length > 0 && password === confirmPw;
-  const canSubmit = allRulesMet && passwordsMatch && stage === "ready";
+ const rules = {
+  length: password.length >= 8 && password.length <= 64,
+  upper: /[A-Z]/.test(password),
+  lower: /[a-z]/.test(password),
+  number: /[0-9]/.test(password),
+  noSpaces: password.length > 0 && !/\s/.test(password),
+};
+const allRulesMet = Object.values(rules).every(Boolean);
+const passwordsMatch = password.length > 0 && password === confirmPw;
+const canSubmit = allRulesMet && passwordsMatch && stage === "ready";
 
   useEffect(() => {
     async function checkCode() {
@@ -201,6 +202,7 @@ export default function Activate() {
                 <PasswordRule met={rules.upper} label="One uppercase letter" />
                 <PasswordRule met={rules.lower} label="One lowercase letter" />
                 <PasswordRule met={rules.number} label="One number" />
+                <PasswordRule met={rules.noSpaces} label="No spaces" />
               </div>
 
               <button

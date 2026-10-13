@@ -5,24 +5,60 @@ import { useAuth } from '../context/AuthContext';
 
 const ACCENT = '#6366f1';
 
+// ─── Password rules ──────────────────────────────────────────────────
+// Both helpers reject any whitespace. A string of spaces collapses to
+// an empty core and scores as WEAK, which matches the fact that the
+// backend (routes/account.js + routes/auth.js) also strips/rejects
+// whitespace before saving.
+
 function getPasswordStrength(password) {
   if (!password) return { score: 0, label: '', color: '#1c1c2e' };
-  let score = 0;
-  if (password.length >= 8) score += 1;
-  if (password.length >= 12) score += 1;
-  if (/[A-Za-z]/.test(password) && /[0-9]/.test(password)) score += 1;
-  if (/[^A-Za-z0-9]/.test(password)) score += 1;
 
-  if (score <= 1) return { score, label: 'WEAK', color: '#ef4444' };
-  if (score <= 2) return { score, label: 'MEDIUM', color: '#f59e0b' };
-  if (score <= 3) return { score, label: 'STRONG', color: '#22c55e' };
-  return { score, label: 'VERY STRONG', color: '#22c55e' };
+  // Strip whitespace before scoring — a string of spaces is not a password.
+  const core = password.replace(/\s+/g, '');
+
+  if (core.length === 0) {
+    return { score: 1, label: 'WEAK', color: '#ef4444' };
+  }
+
+  let score = 0;
+
+  // Length tiers — measured on the stripped string.
+  if (core.length >= 8) score += 1;
+  if (core.length >= 12) score += 1;
+
+  const hasLetter = /[A-Za-z]/.test(core);
+  const hasDigit = /[0-9]/.test(core);
+  const hasSymbol = /[^A-Za-z0-9]/.test(core);
+
+  if (hasLetter && hasDigit) score += 1;
+  if (hasLetter && hasSymbol) score += 1;
+  if (hasDigit && hasSymbol) score += 1;
+
+  // A password missing letters or digits can't climb past WEAK.
+  if (!(hasLetter && hasDigit)) {
+    score = Math.min(score, 1);
+  }
+
+  if (score <= 1) return { score: 1, label: 'WEAK', color: '#ef4444' };
+  if (score <= 2) return { score: 2, label: 'MEDIUM', color: '#f59e0b' };
+  if (score <= 3) return { score: 3, label: 'STRONG', color: '#22c55e' };
+  return { score: 4, label: 'VERY STRONG', color: '#22c55e' };
 }
 
 function isPasswordValid(pw) {
   if (typeof pw !== 'string') return false;
+
+  // No whitespace anywhere. Spaces are hard to type reliably, easy to
+  // strip by accident, and never contribute meaningful entropy.
+  if (/\s/.test(pw)) return false;
+
   if (pw.length < 8) return false;
-  return /[A-Za-z]/.test(pw) && /[0-9]/.test(pw);
+  if (pw.length > 64) return false;
+  if (!/[A-Za-z]/.test(pw)) return false;
+  if (!/[0-9]/.test(pw)) return false;
+
+  return true;
 }
 
 export default function ResetPassword() {
@@ -32,9 +68,6 @@ export default function ResetPassword() {
 
   const token = searchParams.get('token') || '';
 
-  // Which flow brought the user here?
-  //   mode=activate  → officer invitation (heading: "Set Your Password")
-  //   (anything else) → forgot-password reset (heading: "Set a New Password")
   const mode = searchParams.get('mode') || '';
   const isActivate = mode === 'activate';
 
@@ -56,21 +89,17 @@ export default function ResetPassword() {
     confirmPassword.length > 0 &&
     !loading;
 
-  // No token → invalid link page
   useEffect(() => {
     if (!token) {
       setError('This reset link is invalid. Please request a new one.');
     }
   }, [token]);
 
-  // Headings driven by the flow
   const heading = isActivate ? 'Set Your Password' : 'Set a New Password';
   const subtitle = isActivate
     ? 'Welcome to SentinelPH. Choose a strong password to activate your officer account.'
     : "Choose a strong password you haven't used before.";
-  const successHeading = isActivate
-    ? 'Account activated'
-    : 'Password updated';
+  const successHeading = isActivate ? 'Account activated' : 'Password updated';
   const successBody = isActivate
     ? 'Your officer account is ready. Redirecting you to sign in…'
     : 'Redirecting you to sign in…';
@@ -180,24 +209,17 @@ export default function ResetPassword() {
           />
 
           <div style={{ marginBottom: '28px', textAlign: 'center' }}>
-            <div
+            <img
+              src="/logo.png"
+              alt="SentinelPH"
               style={{
-                width: '52px',
-                height: '52px',
-                borderRadius: '14px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: 900,
-                fontSize: '22px',
-                color: '#fff',
-                background: 'linear-gradient(135deg,#4f46e5,#7c3aed)',
-                boxShadow: '0 0 20px #4f46e540',
+                width: '72px',
+                height: '72px',
+                objectFit: 'contain',
                 margin: '0 auto 16px',
+                display: 'block',
               }}
-            >
-              S
-            </div>
+            />
             <h2
               style={{
                 fontSize: '22px',
