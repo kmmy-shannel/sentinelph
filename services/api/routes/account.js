@@ -49,8 +49,6 @@ const SPECIAL_CHAR_RE = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/;
  * key, same value as the client's VITE_FIREBASE_API_KEY. Missing key
  * returns a structured 500 CONFIG_ERROR the frontend can show.
  */
-<<<<<<< Updated upstream
-=======
 async function verifyCurrentPassword(email, currentPassword) {
   const apiKey = process.env.FIREBASE_API_KEY;
   if (!apiKey) {
@@ -239,7 +237,6 @@ router.post('/request-password-change-otp', requestOtpLimiter, async (req, res) 
 //
 // Step 2 of 2. Now REQUIRES a valid otpCode issued by the endpoint above.
 // ══════════════════════════════════════════════════════════════════════
->>>>>>> Stashed changes
 router.post('/change-password', changePwLimiter, async (req, res) => {
   try {
     const uid = req.user.uid;
