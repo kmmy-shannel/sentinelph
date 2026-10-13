@@ -1,4 +1,4 @@
-    // services/api/utils/email.js
+// services/api/utils/email.js
     'use strict';
 
     const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
@@ -292,6 +292,14 @@
       });
     }
 
+    async function sendPasswordChangeOtpEmail(toEmail, fullName, otp, expiresInMinutes = 5) {
+      return sendViaAppsScript({
+        to: toEmail,
+        subject: 'SentinelPH — Your Password Change Code',
+        html: buildOtpEmailHtml({ fullName, otp, expiresInMinutes }),
+      });
+    }
+
     function getTransporter() {
       return { sendViaAppsScript };
     }
@@ -300,5 +308,6 @@
       sendActivationEmail,
       sendPasswordResetEmail,
       sendPasswordResetOtpEmail,
+      sendPasswordChangeOtpEmail,
       getTransporter,
     };
