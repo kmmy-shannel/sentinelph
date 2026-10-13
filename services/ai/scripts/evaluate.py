@@ -238,24 +238,33 @@ def predict_batch_pipeline(
     Uses ScamClassifier from app.inference so that the labels returned here
     match exactly what the FastAPI /predict endpoint would return for the
     same input — including any heuristic overrides that floor P(malicious)
-    at MALICIOUS_HEURISTIC_FLOOR when a strong rule fires (spoofed domain,
-    brand impersonation, suspicious TLD, etc.).
+    at MALICIOUS_HEURISTIC_FLOOR when a strong rule fires, and any force-
+    legitimate overrides from Anti-Scam PSA / Official Government Domain /
+    Legitimate Transaction Notice rules.
 
-    `batch_size` is accepted for API symmetry with predict_batch() but is
-    ignored: ScamClassifier.predict() is single-text because the heuristic
-    layer operates per-message.
+    Notes:
+      - ScamClassifier loads its own copy of the model from disk. The
+        `model` and `tokenizer` arguments are accepted for API symmetry
+        with predict_batch() but are not used by the pipeline path. This
+        is intentional: the pipeline MUST exercise the same code path
+        (including the same local weights, same device selection, same
+        metadata gate) as the production FastAPI service.
+      - `batch_size` is ignored: ScamClassifier.analyze() is single-text
+        because the heuristic layer operates per-message.
+
+    Import is done lazily so that --mode model runs don't require a
+    working heuristic layer or its dependencies.
     """
-    # Imported lazily so that --mode model runs don't require a working
-    # heuristic layer or any of its dependencies.
     from app.inference import ScamClassifier
 
-    classifier = ScamClassifier(model=model, tokenizer=tokenizer)
+    classifier = ScamClassifier()
 
     preds: List[int] = []
     confidences: List[float] = []
 
     for text in texts:
-        result = classifier.predict(text)
+        normalized = normalize_text(text)
+        result = classifier.analyze(raw_text=text, normalized_text=normalized)
         label_name = result["label"]
         if label_name not in LABEL2ID:
             raise ValueError(
@@ -263,11 +272,11 @@ def predict_batch_pipeline(
                 f"expected one of {sorted(LABEL2ID.keys())}"
             )
         preds.append(LABEL2ID[label_name])
-        # ScamClassifier returns probability_score as the score of the
-        # *predicted* class in most implementations; fall back to 0.0 if
-        # the key is missing so a heuristic-only path doesn't crash the
-        # whole eval run.
-        score = result.get("probability_score", result.get("confidence_score", 0.0))
+        # For gate purposes, "confidence" is the probability of the
+        # *predicted* class. ScamClassifier returns probability_score
+        # (P(malicious)) for backward compatibility with the UI banner,
+        # so we prefer confidence_score when available.
+        score = result.get("confidence_score", result.get("probability_score", 0.0))
         confidences.append(float(score))
 
     return np.array(preds), np.array(confidences)

@@ -193,8 +193,18 @@ _CALLBACK_PHRASES = (
     "call immediately", "call 09", "call +63", "text this number",
 )
 _PSA_PHRASES = (
+    # English
     "will never ask", "don't share", "do not share", "never share", "beware",
-    "report suspicious", "scam alert", "laging tandaan", "huwag magbigay", "huwag ibigay",
+    "report suspicious", "scam alert",
+    "do not click", "don't click", "never click", "do not do it",
+    "do not respond", "do not reply", "don't respond", "don't reply",
+    "hang up",
+    # Tagalog
+    "laging tandaan", "huwag magbigay", "huwag ibigay",
+    "huwag mag-click", "huwag i-click", "wag mag-click", "wag i-click",
+    "huwag ibahagi", "wag ibahagi",
+    "hindi kami nangangailangan",
+    "i-report",
 )
 
 _GOV_DEADLINE_WORDS = ("due", "deadline", "expire", "renew", "schedule")
@@ -206,10 +216,34 @@ _FORCE_LEGIT_CATEGORIES = {
     "Legitimate Transaction Notice",
 }
 _FORCE_LEGIT_BLOCKERS = _STRONG_OVERRIDE_CATEGORIES | {"Task/Job Scam"}
+_MALICIOUS_HEURISTIC_NEGATIONS = (
+    "do not click",
+    "don't click",
+    "never click",
+    "huwag i-click",
+    "wag i-click",
+    "huwag mag-click",
+    "do not share",
+    "don't share",
+    "never share",
+    "huwag ibahagi",
+    "wag ibahagi",
+    "huwag ibigay",
+    "wag ibigay",
+    "if this was not you",
+    "kung hindi ikaw",
+    "ignore this message",
+    "i-ignore ang message",
+)
 
 
 def _has_term(lower: str, term: str) -> bool:
     return re.search(r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])", lower) is not None
+
+
+def _has_malicious_heuristic_negation(text: str) -> bool:
+    lower_text = text.lower()
+    return any(phrase in lower_text for phrase in _MALICIOUS_HEURISTIC_NEGATIONS)
 
 
 def _is_official_domain(domain: str) -> bool:
@@ -223,12 +257,16 @@ def _force_legitimate() -> List[float]:
     return [0.95, 0.03, 0.02]
 
 
-def blend_score_with_heuristics(probs: List[float], reasons: List[Dict[str, str]]) -> List[float]:
+def blend_score_with_heuristics(
+    probs: List[float], reasons: List[Dict[str, str]], text: str = ""
+) -> List[float]:
     categories = {r["category"] for r in reasons}
+    
     strong_hit = bool(categories & _STRONG_OVERRIDE_CATEGORIES)
 
     if strong_hit:
-        if probs[2] < MALICIOUS_HEURISTIC_FLOOR:
+        has_negation = _has_malicious_heuristic_negation(text)
+        if not has_negation and probs[2] < MALICIOUS_HEURISTIC_FLOOR:
             print(f"[inference] Heuristic override: p_malicious {probs[2]:.4f} -> "
                   f"{MALICIOUS_HEURISTIC_FLOOR} due to {sorted(categories & _STRONG_OVERRIDE_CATEGORIES)}.")
             new_probs = list(probs)
@@ -397,7 +435,11 @@ def extract_scam_explanations(text: str) -> List[Dict[str, str]]:
             "description": "Real bank transaction format with no link",
         })
 
-    if _GOV_PH_PATTERN.search(lower_flat):
+        # NOTE: match against `lower` (spaces preserved), NOT `lower_flat`.
+    # Whitespace-stripping joins adjacent words, e.g.
+    # "at lto.gov.ph or" -> "atlto.gov.phor", which breaks the
+    # `(?![a-z0-9\-]|\.[a-z0-9])` negative lookahead.
+    if _GOV_PH_PATTERN.search(lower):
         reasons.append({
             "category": "Official Government Domain",
             "description": "Contains a verified .gov.ph domain",
@@ -645,14 +687,15 @@ class ScamClassifier:
     def analyze(self, raw_text: str, normalized_text: str) -> dict:
         probs = self.predict_probs(normalized_text)
         reasons = extract_scam_explanations(raw_text)
-        probs = blend_score_with_heuristics(probs, reasons)
+        has_negation = _has_malicious_heuristic_negation(raw_text)
+        probs = blend_score_with_heuristics(probs, reasons, raw_text)
 
         idx = max(range(3), key=lambda i: probs[i])
         label = ID2LABEL[idx]
         risk_level = compute_risk_level(probs, reasons)
         p_malicious = probs[2]
 
-        if risk_level == "HIGH" and label != "malicious":
+        if risk_level == "HIGH" and label != "malicious" and not has_negation:
             label = "malicious"
             p_malicious = max(p_malicious, 0.90)
 
