@@ -733,6 +733,199 @@ router.post('/ai-insights/:reportId/review', async (req, res) => {
       'Admin classification of AI verdicts was removed. Report review is performed by officers through the Review Queue.',
   });
 });
+/**
+ * GET /api/v1/admin/reports/export
+ *
+ * Returns one row per report, scoped to the admin's agency + jurisdiction.
+ * Supports the same filters as /reports (region, scamType, from, to) plus:
+ *   - status: pending | under_review | one_approval | two_approvals |
+ *             blacklisted | approved | rejected | all
+ *   - limit:  1..5000 (default 1000)
+ *
+ * Every row carries the full audit trail: reporter, target, location,
+ * AI classification, review workflow, and per-officer votes with names
+ * joined from the User collection.
+ *
+ * No pagination — this is a snapshot for export.
+ */
+router.get('/reports/export', async (req, res) => {
+  try {
+    const { region, from, to, scamType, status, limit } = req.query;
+
+    if (
+      region &&
+      req.adminProfile.jurisdiction !== 'National / Regional' &&
+      region !== req.adminProfile.jurisdiction
+    ) {
+      return res.status(403).json({
+        success: false,
+        error: 'OUT_OF_SCOPE',
+        message: 'You may only export reports in your assigned region.',
+      });
+    }
+
+    const scope = reportScope(req.adminProfile, region || null);
+    const filters = {};
+
+    const start = parseDate(from);
+    const end = parseDate(to, true);
+    if ((from && !start) || (to && !end)) {
+      return res.status(400).json({
+        success: false,
+        error: 'INVALID_DATE',
+        message: 'Dates must be valid ISO dates.',
+      });
+    }
+    if (start || end) {
+      filters.createdAt = {
+        ...(start ? { $gte: start } : {}),
+        ...(end ? { $lte: end } : {}),
+      };
+    }
+
+    if (scamType && scamType !== 'all') {
+      filters.$or = [
+        { officerSubtypeAggregated: scamType },
+        { officerSubtype: scamType },
+        { 'aiFlag.subtype': scamType },
+        { 'aiFlag.label': scamType },
+        { category: scamType },
+        { scamType },
+      ];
+    }
+
+    if (status && status !== 'all') {
+      const validStatuses = [
+        'pending',
+        'under_review',
+        'one_approval',
+        'two_approvals',
+        'blacklisted',
+        'approved',
+        'rejected',
+      ];
+      if (!validStatuses.includes(status)) {
+        return res.status(400).json({
+          success: false,
+          error: 'INVALID_STATUS',
+          message: `status must be one of: ${validStatuses.join(', ')}.`,
+        });
+      }
+      filters.status = status;
+    }
+
+    const query = Object.keys(scope).length
+      ? { $and: [scope, filters] }
+      : filters;
+
+    const cappedLimit = Math.min(Math.max(parseInt(limit, 10) || 1000, 1), 5000);
+
+    const docs = await Report.find(query)
+      .sort({ createdAt: -1 })
+      .limit(cappedLimit)
+      .lean();
+
+    // Collect every distinct voter UID across all rows, then resolve
+    // names in a single query.
+    const officerUids = new Set();
+    for (const doc of docs) {
+      for (const v of doc.votes || []) {
+        if (v.userId) officerUids.add(v.userId);
+      }
+    }
+    const officerDocs = officerUids.size
+      ? await User.find(
+          { firebaseUid: { $in: Array.from(officerUids) } },
+          { firebaseUid: 1, fullName: 1, email: 1, badgeId: 1, agency: 1 }
+        ).lean()
+      : [];
+    const officerByUid = new Map(officerDocs.map((o) => [o.firebaseUid, o]));
+
+    const rows = docs.map((doc) => {
+      const ai = doc.aiFlag || {};
+      const loc = doc.location || {};
+
+      const votes = (doc.votes || []).map((v) => {
+        const officer = officerByUid.get(v.userId) || null;
+        return {
+          officerName: officer?.fullName || null,
+          officerEmail: officer?.email || null,
+          officerBadgeId: officer?.badgeId || null,
+          userId: v.userId,
+          decision: v.decision,
+          comment: v.comment || '',
+          votedAt: v.votedAt || null,
+          editedAt: v.editedAt || null,
+          subtypeAction: v.subtypeAction || null,
+          correctedSubtype: v.correctedSubtype || null,
+          isHighValue: Boolean(v.isHighValue),
+          aiSubtypeAtVote: v.aiSubtypeAtVote || null,
+        };
+      });
+
+      return {
+        reportId: doc.reportId,
+        sequence: doc.sequence,
+        hash: doc.hash,
+        createdAt: doc.createdAt,
+
+        reporterName: doc.reporterShared ? doc.reporterName : null,
+        reporterEmail: doc.reporterShared ? doc.reporterEmail : null,
+        reporterShared: Boolean(doc.reporterShared),
+
+        reportedNumber: doc.reportedNumber,
+        channel: doc.channel || 'SMS',
+
+        region: loc.region || doc.jurisdiction || 'Unknown',
+        address: loc.address || null,
+        lat: loc.lat ?? loc.latitude ?? null,
+        lng: loc.lng ?? loc.longitude ?? null,
+
+        textData: doc.textData || '',
+        category: doc.category || 'UNKNOWN',
+        scamType: doc.scamType || 'UNKNOWN',
+
+        aiLabel: ai.label || 'unavailable',
+        aiSubtype: ai.subtype || null,
+        aiConfidence: ai.confidenceScore ?? ai.probabilityScore ?? null,
+        aiSubtypeConfidence: ai.subtypeConfidence ?? null,
+        aiRiskLevel: ai.riskLevel || 'UNKNOWN',
+        aiModelVersion: ai.modelVersion || null,
+        aiExplanationReasons: ai.explanationReasons || [],
+        aiOcrUsed: Boolean(ai.ocrUsed),
+        aiOcrText: ai.ocrText || null,
+
+        status: doc.status,
+        resolvedAt: doc.resolvedAt || null,
+        votes,
+        officerVerdict: doc.officerSubtypeAggregated || null,
+        officerAgreement: doc.officerSubtypeAgreement || 0,
+        officerFinalizedAt: doc.officerSubtypeFinalizedAt || null,
+      };
+    });
+
+    return res.json({
+      success: true,
+      meta: {
+        generatedAt: new Date().toISOString(),
+        agency: req.adminProfile.agency,
+        jurisdiction: req.adminProfile.jurisdiction,
+        filters: { region, scamType, status, from, to },
+        rowCount: rows.length,
+        limit: cappedLimit,
+      },
+      data: rows,
+    });
+  } catch (err) {
+    console.error('[admin.reports-export]', err);
+    return res.status(500).json({
+      success: false,
+      error: 'REPORTS_EXPORT_FAILED',
+      message: 'Could not generate the report export.',
+    });
+  }
+});
+
 
 router.get('/reports', async (req, res) => {
   try {

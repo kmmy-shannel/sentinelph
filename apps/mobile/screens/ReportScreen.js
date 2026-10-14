@@ -1,9 +1,6 @@
 // apps/mobile/screens/ReportScreen.js
 //
 // Guided 2-step report wizard with Layer 1 instant AI warning.
-// (Header comment preserved from original — omitted here for brevity
-//  in the reply, but paste it back if you want. All functional behavior
-//  is identical; only colors come from the theme context now.)
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -505,7 +502,7 @@ export default function ReportScreen() {
   const [analyzeError, setAnalyzeError] = useState(null);
   const analyzeTimerRef = useRef(null);
   const analyzeReqIdRef = useRef(0);
-  const ocrScreenshotUriRef = useRef(null);   // FIX: prevents re-analysis loop
+  const ocrScreenshotUriRef = useRef(null);
 
   const [shareIdentity, setShareIdentity] = useState(DEFAULT_SHARE_IDENTITY);
   const [reporterName, setReporterName] = useState('');
@@ -545,34 +542,30 @@ export default function ReportScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
- useEffect(() => {
-  if (analyzeTimerRef.current) clearTimeout(analyzeTimerRef.current);
+  useEffect(() => {
+    if (analyzeTimerRef.current) clearTimeout(analyzeTimerRef.current);
 
-  // FIX: If this exact screenshot has already been analyzed, skip.
-  // Prevents the infinite loop where OCR sets ocrText, which changes
-  // activeAnalysisText, which re-triggers the effect, which re-runs
-  // OCR on the same image, which sets ocrText again...
-  if (hasScreenshot && screenshot?.uri && screenshot.uri === ocrScreenshotUriRef.current) {
-    return;
-  }
+    if (hasScreenshot && screenshot?.uri && screenshot.uri === ocrScreenshotUriRef.current) {
+      return;
+    }
 
-  const trimmed = activeAnalysisText;
-  if (!trimmed || trimmed.length < MIN_ANALYZE_CHARS) {
-    setAnalysis(null);
-    setAnalyzeError(null);
-    setAnalyzing(false);
-    return;
-  }
+    const trimmed = activeAnalysisText;
+    if (!trimmed || trimmed.length < MIN_ANALYZE_CHARS) {
+      setAnalysis(null);
+      setAnalyzeError(null);
+      setAnalyzing(false);
+      return;
+    }
 
-  setAnalyzing(true);
-  analyzeTimerRef.current = setTimeout(
-    () => runAnalysis(trimmed, hasScreenshot ? screenshot?.uri : undefined),
-    ANALYZE_DEBOUNCE_MS
-  );
+    setAnalyzing(true);
+    analyzeTimerRef.current = setTimeout(
+      () => runAnalysis(trimmed, hasScreenshot ? screenshot?.uri : undefined),
+      ANALYZE_DEBOUNCE_MS
+    );
 
-  return () => clearTimeout(analyzeTimerRef.current);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [activeAnalysisText, hasScreenshot, screenshot?.uri]);
+    return () => clearTimeout(analyzeTimerRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAnalysisText, hasScreenshot, screenshot?.uri]);
 
   const readImageAsBase64 = async (uri) => {
     if (!uri) return undefined;
@@ -589,26 +582,15 @@ export default function ReportScreen() {
     setAnalyzing(true);
     setAnalyzeError(null);
     try {
-      console.log('[debug] runAnalysis called with:');
-      console.log('[debug]   text:', text);
-      console.log('[debug]   imageUri:', imageUri);
-
       const imageBase64 = imageUri ? await readImageAsBase64(imageUri) : undefined;
-
-      console.log('[debug] imageBase64 length:', imageBase64 ? imageBase64.length : 0);
-      console.log('[debug] imageBase64 first 50 chars:', imageBase64 ? imageBase64.slice(0, 50) : 'N/A');
 
       const response = await api.post('/api/v1/reports/analyze', {
         text: text || undefined,
         imageBase64,
       });
 
-      console.log('[debug] analyze HTTP status:', response.status);
-
       if (reqId !== analyzeReqIdRef.current) return;
       const data = response.data;
-
-      console.log('[debug] analyze response body:', JSON.stringify(data).slice(0, 1000));
 
       if (data?.available === false) {
         setAnalysis(null);
@@ -627,17 +609,15 @@ export default function ReportScreen() {
         label: data.label ?? null,
       });
 
-    const extractedOcrText = data.ocrText ?? data.ocr_text;
-if (
-  imageUri &&
-  typeof extractedOcrText === 'string' &&
-  !ocrEditedByUserRef.current
-) {
-  setOcrText(extractedOcrText);
-  // FIX: record the screenshot we just analyzed so the effect won't
-  // re-fire when ocrText updates activeAnalysisText.
-  ocrScreenshotUriRef.current = imageUri;
-}
+      const extractedOcrText = data.ocrText ?? data.ocr_text;
+      if (
+        imageUri &&
+        typeof extractedOcrText === 'string' &&
+        !ocrEditedByUserRef.current
+      ) {
+        setOcrText(extractedOcrText);
+        ocrScreenshotUriRef.current = imageUri;
+      }
     } catch (err) {
       if (reqId !== analyzeReqIdRef.current) return;
       setAnalysis(null);
@@ -648,12 +628,11 @@ if (
   };
 
   const handleOcrTextChange = (value) => {
-  ocrEditedByUserRef.current = true;
-  // FIX: user is typing — allow analysis to re-run on the new text,
-  // but don't re-run OCR on the image.
-  ocrScreenshotUriRef.current = null;
-  setOcrText(value);
-};
+    ocrEditedByUserRef.current = true;
+    ocrScreenshotUriRef.current = null;
+    setOcrText(value);
+  };
+
   const pickScreenshot = async () => {
     if (textDisabled) return;
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -674,23 +653,21 @@ if (
         type: a.mimeType || 'image/jpeg',
       };
       setScreenshot(picked);
-ocrEditedByUserRef.current = false;
-setOcrText('');
-// FIX: new screenshot — clear the "already analyzed" marker
-ocrScreenshotUriRef.current = null;
-runAnalysis('', picked.uri);
+      ocrEditedByUserRef.current = false;
+      setOcrText('');
+      ocrScreenshotUriRef.current = null;
+      runAnalysis('', picked.uri);
     }
   };
 
   const removeScreenshot = () => {
-  // FIX: clear the analyzed-marker when the screenshot is removed
-  ocrScreenshotUriRef.current = null;
-  setScreenshot(null);
-  ocrEditedByUserRef.current = false;
-  setOcrText('');
-  setAnalysis(null);
-  setAnalyzeError(null);
-};
+    ocrScreenshotUriRef.current = null;
+    setScreenshot(null);
+    ocrEditedByUserRef.current = false;
+    setOcrText('');
+    setAnalysis(null);
+    setAnalyzeError(null);
+  };
 
   const pickExtraFiles = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -1002,7 +979,7 @@ runAnalysis('', picked.uri);
               maxWidth: 320,
             }}
           >
-            ZKP hash anchored to chain. You&apos;ll be notified when reviewers verify.
+            You&apos;ll be notified when reviewers verify your report.
           </Text>
           <TouchableOpacity
             onPress={() => navigation.navigate('Home')}
@@ -1596,42 +1573,44 @@ runAnalysis('', picked.uri);
                 >
                   <TextInput
                     value={reporterName}
-                    onChangeText={setReporterName}
-                    placeholder="Your name (as it should appear to officers)"
+                    editable={false}
+                    selectTextOnFocus={false}
+                    placeholder="(no name on file)"
                     placeholderTextColor={theme.textFaint}
                     autoCapitalize="words"
                     style={{
-                      color: theme.text,
+                      color: theme.textMuted,
                       fontSize: 13,
                       paddingHorizontal: 14,
                       paddingVertical: 12,
                       borderRadius: 12,
-                      backgroundColor: theme.surfaceAlt,
+                      backgroundColor: theme.surfaceMuted,
                       borderWidth: 1,
                       borderColor: theme.border,
                     }}
                   />
                   <TextInput
                     value={reporterEmail}
-                    onChangeText={setReporterEmail}
-                    placeholder="Your email (optional)"
+                    editable={false}
+                    selectTextOnFocus={false}
+                    placeholder="(no email on file)"
                     placeholderTextColor={theme.textFaint}
                     autoCapitalize="none"
                     keyboardType="email-address"
                     autoCorrect={false}
                     style={{
-                      color: theme.text,
+                      color: theme.textMuted,
                       fontSize: 13,
                       paddingHorizontal: 14,
                       paddingVertical: 12,
                       borderRadius: 12,
-                      backgroundColor: theme.surfaceAlt,
+                      backgroundColor: theme.surfaceMuted,
                       borderWidth: 1,
                       borderColor: theme.border,
                     }}
                   />
                   <Text style={{ color: theme.textFaint, fontSize: 10, lineHeight: 15 }}>
-                    Only officers in your region can see this. It is not shared with the public or other citizens.
+                    Populated from your verified account. Only officers in your region can see this.
                   </Text>
                 </View>
               )}
@@ -1796,106 +1775,6 @@ runAnalysis('', picked.uri);
               error={analyzeError}
               theme={theme}
             />
-
-            {/* ZKP Commitment Card */}
-            <View
-              style={{
-                borderRadius: 16,
-                overflow: 'hidden',
-                backgroundColor: theme.primaryFaint,
-                borderWidth: 1,
-                borderColor: theme.primaryTintBorder,
-              }}
-            >
-              <View
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: S.md,
-                  paddingHorizontal: S.lg,
-                  paddingVertical: 14,
-                  borderBottomWidth: 1,
-                  borderBottomColor: theme.primaryTintBorder,
-                }}
-              >
-                <View
-                  style={{
-                    width: 34,
-                    height: 34,
-                    borderRadius: 12,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    backgroundColor: theme.primaryTint,
-                    flexShrink: 0,
-                  }}
-                >
-                  <ShieldIcon size={14} color={theme.primarySoft} />
-                </View>
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text
-                    style={{
-                      color: theme.primarySoft,
-                      fontSize: 13,
-                      fontWeight: '700',
-                      letterSpacing: 0.2,
-                    }}
-                  >
-                    Zero-Knowledge Proof
-                  </Text>
-                  <Text
-                    style={{ color: theme.textMuted, fontSize: 10, marginTop: 1 }}
-                    numberOfLines={1}
-                  >
-                    Identity protected · Commitment generated
-                  </Text>
-                </View>
-              </View>
-              <View style={{ paddingHorizontal: S.lg, paddingVertical: 14 }}>
-                <Text
-                  style={{
-                    color: theme.textMuted,
-                    fontSize: 11,
-                    marginBottom: 10,
-                    lineHeight: 16,
-                  }}
-                >
-                  A cryptographic commitment was created from your report. This
-                  proves authenticity without revealing your identity.
-                </Text>
-                <View
-                  style={{
-                    padding: S.md,
-                    borderRadius: 12,
-                    backgroundColor: theme.surfaceAlt,
-                    borderWidth: 1,
-                    borderColor: theme.primaryTintBorder,
-                  }}
-                >
-                  <Text
-                    style={{
-                      color: theme.textMuted,
-                      fontSize: 9,
-                      fontWeight: '700',
-                      letterSpacing: 1,
-                      marginBottom: 4,
-                    }}
-                  >
-                    ZKP COMMITMENT HASH
-                  </Text>
-                  <Text
-                    style={{
-                      color: theme.primarySoft,
-                      fontSize: 10,
-                      fontFamily: 'JetBrainsMono_400Regular',
-                      lineHeight: 15,
-                    }}
-                    numberOfLines={3}
-                  >
-                    {zkpHash}
-                  </Text>
-                </View>
-              </View>
-            </View>
 
             {/* Submission summary */}
             <View
