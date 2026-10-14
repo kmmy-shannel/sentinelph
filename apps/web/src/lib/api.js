@@ -1,4 +1,3 @@
-<<<<<<< Updated upstream
 // apps/web/src/lib/api.js
 //
 // Axios instance for the SentinelPH Express API Gateway.
@@ -15,16 +14,13 @@
 //   Request interceptor attaches the current Firebase ID token from
 //   firebase/auth. Response interceptor retries once on 401 with a
 //   forced-refresh token, then signs the user out if that also fails.
-=======
   // apps/web/src/lib/api.js
   //
   // Axios instance for the SentinelPH Express API Gateway.
->>>>>>> Stashed changes
 
   import axios from 'axios';
   import { auth } from '../config/firebase';
 
-<<<<<<< Updated upstream
 // Read both possible env var names. Trim any trailing slash so
 // `${API_BASE_URL}/api/v1/...` never produces `//api/v1/...`.
 // Strip a trailing `/api/v1` if present so callers can pass
@@ -97,7 +93,6 @@ apiClient.interceptors.response.use(
     }
 
     return Promise.reject(error);
-=======
   function resolveBaseUrl() {
     const raw =
       import.meta.env.VITE_API_BASE_URL ||
@@ -108,7 +103,6 @@ apiClient.interceptors.response.use(
       .trim()
       .replace(/\/+$/, '')
       .replace(/\/api\/v1$/, '');
->>>>>>> Stashed changes
   }
 
   export const API_BASE_URL = resolveBaseUrl();
@@ -121,7 +115,6 @@ apiClient.interceptors.response.use(
     },
   });
 
-<<<<<<< Updated upstream
 // ─── Change password ──────────────────────────────────────────────────
 
 /**
@@ -138,7 +131,6 @@ export async function changePassword({ currentPassword, newPassword, confirmPass
   });
   return response.data;
 }
-=======
   // ─── Request interceptor: attach Firebase ID token ────────────────────
   apiClient.interceptors.request.use(
     async (config) => {
@@ -291,6 +283,5 @@ export async function changePassword({ currentPassword, newPassword, confirmPass
     });
     return response.data;
   }
->>>>>>> Stashed changes
 
   export default apiClient;
