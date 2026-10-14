@@ -505,6 +505,7 @@ export default function ReportScreen() {
   const [analyzeError, setAnalyzeError] = useState(null);
   const analyzeTimerRef = useRef(null);
   const analyzeReqIdRef = useRef(0);
+  const ocrScreenshotUriRef = useRef(null);   // FIX: prevents re-analysis loop
 
   const [shareIdentity, setShareIdentity] = useState(DEFAULT_SHARE_IDENTITY);
   const [reporterName, setReporterName] = useState('');
@@ -544,26 +545,34 @@ export default function ReportScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    if (analyzeTimerRef.current) clearTimeout(analyzeTimerRef.current);
+ useEffect(() => {
+  if (analyzeTimerRef.current) clearTimeout(analyzeTimerRef.current);
 
-    const trimmed = activeAnalysisText;
-    if (!trimmed || trimmed.length < MIN_ANALYZE_CHARS) {
-      setAnalysis(null);
-      setAnalyzeError(null);
-      setAnalyzing(false);
-      return;
-    }
+  // FIX: If this exact screenshot has already been analyzed, skip.
+  // Prevents the infinite loop where OCR sets ocrText, which changes
+  // activeAnalysisText, which re-triggers the effect, which re-runs
+  // OCR on the same image, which sets ocrText again...
+  if (hasScreenshot && screenshot?.uri && screenshot.uri === ocrScreenshotUriRef.current) {
+    return;
+  }
 
-    setAnalyzing(true);
-    analyzeTimerRef.current = setTimeout(
-      () => runAnalysis(trimmed, hasScreenshot ? screenshot?.uri : undefined),
-      ANALYZE_DEBOUNCE_MS
-    );
+  const trimmed = activeAnalysisText;
+  if (!trimmed || trimmed.length < MIN_ANALYZE_CHARS) {
+    setAnalysis(null);
+    setAnalyzeError(null);
+    setAnalyzing(false);
+    return;
+  }
 
-    return () => clearTimeout(analyzeTimerRef.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeAnalysisText, hasScreenshot]);
+  setAnalyzing(true);
+  analyzeTimerRef.current = setTimeout(
+    () => runAnalysis(trimmed, hasScreenshot ? screenshot?.uri : undefined),
+    ANALYZE_DEBOUNCE_MS
+  );
+
+  return () => clearTimeout(analyzeTimerRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [activeAnalysisText, hasScreenshot, screenshot?.uri]);
 
   const readImageAsBase64 = async (uri) => {
     if (!uri) return undefined;
@@ -618,14 +627,17 @@ export default function ReportScreen() {
         label: data.label ?? null,
       });
 
-      const extractedOcrText = data.ocrText ?? data.ocr_text;
-      if (
-        imageUri &&
-        typeof extractedOcrText === 'string' &&
-        !ocrEditedByUserRef.current
-      ) {
-        setOcrText(extractedOcrText);
-      }
+    const extractedOcrText = data.ocrText ?? data.ocr_text;
+if (
+  imageUri &&
+  typeof extractedOcrText === 'string' &&
+  !ocrEditedByUserRef.current
+) {
+  setOcrText(extractedOcrText);
+  // FIX: record the screenshot we just analyzed so the effect won't
+  // re-fire when ocrText updates activeAnalysisText.
+  ocrScreenshotUriRef.current = imageUri;
+}
     } catch (err) {
       if (reqId !== analyzeReqIdRef.current) return;
       setAnalysis(null);
@@ -636,10 +648,12 @@ export default function ReportScreen() {
   };
 
   const handleOcrTextChange = (value) => {
-    ocrEditedByUserRef.current = true;
-    setOcrText(value);
-  };
-
+  ocrEditedByUserRef.current = true;
+  // FIX: user is typing — allow analysis to re-run on the new text,
+  // but don't re-run OCR on the image.
+  ocrScreenshotUriRef.current = null;
+  setOcrText(value);
+};
   const pickScreenshot = async () => {
     if (textDisabled) return;
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -660,19 +674,23 @@ export default function ReportScreen() {
         type: a.mimeType || 'image/jpeg',
       };
       setScreenshot(picked);
-      ocrEditedByUserRef.current = false;
-      setOcrText('');
-      runAnalysis('', picked.uri);
+ocrEditedByUserRef.current = false;
+setOcrText('');
+// FIX: new screenshot — clear the "already analyzed" marker
+ocrScreenshotUriRef.current = null;
+runAnalysis('', picked.uri);
     }
   };
 
   const removeScreenshot = () => {
-    setScreenshot(null);
-    ocrEditedByUserRef.current = false;
-    setOcrText('');
-    setAnalysis(null);
-    setAnalyzeError(null);
-  };
+  // FIX: clear the analyzed-marker when the screenshot is removed
+  ocrScreenshotUriRef.current = null;
+  setScreenshot(null);
+  ocrEditedByUserRef.current = false;
+  setOcrText('');
+  setAnalysis(null);
+  setAnalyzeError(null);
+};
 
   const pickExtraFiles = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();

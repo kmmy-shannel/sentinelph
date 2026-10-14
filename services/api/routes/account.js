@@ -1,5 +1,4 @@
 // services/api/routes/account.js
-const crypto = require('crypto');
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const { verifyFirebaseToken } = require('../middleware/auth');
@@ -7,26 +6,34 @@ const { initFirebase } = require('../config/firebase');
 const User = require('../models/User');
 const AuditLog = require('../models/AuditLog');
 const PasswordChangeOtp = require('../models/PasswordChangeOtp');
-const { sendPasswordChangeOtpEmail } = require('../utils/email');
+const { generateOtp, hashCode, safeEqual } = require('../utils/passwordOtp');
+const { sendPasswordChangeOtp } = require('../utils/email');
 
 const router = express.Router();
 
 router.use(verifyFirebaseToken);
 
-// ─── Constants ─────────────────────────────────────────────────────
-const MAX_PW_LENGTH = 64;
-const MIN_PW_LENGTH = 8;
-const SPECIAL_CHAR_RE = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/;
+// ─── Rate limiters ────────────────────────────────────────────────────
 
-// OTP flow timing
-const OTP_TTL_MS = 5 * 60 * 1000;            // code valid for 5 minutes
-const OTP_RESEND_COOLDOWN_MS = 60 * 1000;    // 60s between sends
-const OTP_MAX_ATTEMPTS = 5;                  // wrong-code lockout
-
-// ─── Rate limiters ────────────────────────────────────────────────
-const changePwLimiter = rateLimit({
+// Requesting an OTP: max 5 per 15 min per IP. Also see the per-user
+// cooldown inside the handler (60s between sends).
+const requestOtpLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'RATE_LIMITED',
+    message: 'Too many code requests. Please try again later.',
+  },
+});
+
+// Submitting the change: max 10 per 15 min. Generous enough for a
+// typo or two, tight enough to prevent brute force.
+const changePwLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -36,39 +43,22 @@ const changePwLimiter = rateLimit({
   },
 });
 
-const requestOtpLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 5,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    success: false,
-    error: 'RATE_LIMITED',
-    message: 'Too many OTP requests. Please try again later.',
-  },
-});
+// ─── Constants ────────────────────────────────────────────────────────
 
-// ─── Helpers ──────────────────────────────────────────────────────
-function generateOtp() {
-  // Cryptographically random 6-digit code, zero-padded.
-  // crypto.randomInt(0, 1_000_000) yields 0..999999 inclusive.
-  const n = crypto.randomInt(0, 1_000_000);
-  return String(n).padStart(6, '0');
-}
+const MAX_PW_LENGTH = 64;
+const MIN_PW_LENGTH = 8;
+const SPECIAL_CHAR_RE = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/;
 
-function hashCode(code) {
-  return crypto.createHash('sha256').update(String(code)).digest('hex');
-}
+// Per-user cooldown between OTP sends (in milliseconds).
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
 
-async function sendPasswordChangeOtp({ to, code, fullName }) {
-  return sendPasswordChangeOtpEmail(
-    to,
-    fullName,
-    code,
-    Math.floor(OTP_TTL_MS / 60000)
-  );
-}
+// ─── Shared helpers ───────────────────────────────────────────────────
 
+/**
+ * Verify a plaintext password against Firebase by calling the
+ * Identity Toolkit REST API. Returns { ok, firebaseError }.
+ * The Admin SDK does not expose password verification — only set.
+ */
 async function verifyCurrentPassword(email, currentPassword) {
   const apiKey = process.env.FIREBASE_API_KEY;
   if (!apiKey) {
@@ -102,7 +92,6 @@ async function verifyCurrentPassword(email, currentPassword) {
 
 function validateNewPasswordStrength(pw) {
   if (typeof pw !== 'string') return 'Password must be a string.';
-  if (/\s/.test(pw)) return 'Password must not contain spaces.';
   if (pw.length < MIN_PW_LENGTH)
     return `Password must be at least ${MIN_PW_LENGTH} characters.`;
   if (pw.length > MAX_PW_LENGTH)
@@ -146,7 +135,8 @@ router.post('/request-password-change-otp', requestOtpLimiter, async (req, res) 
       });
     }
 
-    // Verify the current password first.
+    // Verify the current password first — we don't send codes to
+    // anyone who can't prove they know the current password.
     const verify = await verifyCurrentPassword(fbUser.email, currentPassword);
     if (!verify.ok) {
       const errorCode =
@@ -165,7 +155,8 @@ router.post('/request-password-change-otp', requestOtpLimiter, async (req, res) 
       return res.status(400).json({ success: false, error: errorCode, message });
     }
 
-    // Cooldown check.
+    // Cooldown: don't let the user spam-send. Look up the most recent
+    // unused OTP for this user.
     const recent = await PasswordChangeOtp.findOne({
       firebaseUid: uid,
       usedAt: null,
@@ -182,13 +173,14 @@ router.post('/request-password-change-otp', requestOtpLimiter, async (req, res) 
       });
     }
 
-    // Invalidate any old unused codes for this user so only the newest works.
+    // Invalidate any old unused codes for this user so only the newest
+    // works. Prevents stale codes from being usable.
     await PasswordChangeOtp.updateMany(
       { firebaseUid: uid, usedAt: null },
       { $set: { usedAt: new Date() } }
     );
 
-    // Generate and store the new code.
+    // Generate and store the new code
     const code = generateOtp();
     const codeHash = hashCode(code);
 
@@ -200,7 +192,8 @@ router.post('/request-password-change-otp', requestOtpLimiter, async (req, res) 
       requestUserAgent: req.get('user-agent') || null,
     });
 
-    // Send the email. If this fails, delete the OTP row so it can't be used.
+    // Send the email. If this fails, delete the OTP row so it can't
+    // be used, and return an error.
     try {
       await sendPasswordChangeOtp({
         to: fbUser.email,
@@ -228,6 +221,8 @@ router.post('/request-password-change-otp', requestOtpLimiter, async (req, res) 
     return res.status(200).json({
       success: true,
       message: 'A 6-digit verification code has been sent to your email.',
+      // For dev-only convenience — do NOT return this in production.
+      // Set SHOW_OTP_IN_RESPONSE=true in dev .env, unset in production.
       ...(process.env.SHOW_OTP_IN_RESPONSE === 'true' ? { _devCode: code } : {}),
     });
   } catch (err) {
@@ -244,7 +239,7 @@ router.post('/request-password-change-otp', requestOtpLimiter, async (req, res) 
 // POST /api/v1/account/change-password
 // body: { currentPassword, newPassword, confirmPassword, otpCode }
 //
-// Step 2 of 2. Requires a valid otpCode issued by the endpoint above.
+// Step 2 of 2. Now REQUIRES a valid otpCode issued by the endpoint above.
 // ══════════════════════════════════════════════════════════════════════
 router.post('/change-password', changePwLimiter, async (req, res) => {
   try {
@@ -261,43 +256,43 @@ router.post('/change-password', changePwLimiter, async (req, res) => {
       );
     };
 
-    // ─── Shape validation ─────────────────────────────────────────
+    // ── Field presence ────────────────────────────────────────────
     if (
       typeof currentPassword !== 'string' ||
       typeof newPassword !== 'string' ||
       typeof confirmPassword !== 'string' ||
+      typeof otpCode !== 'string' ||
       !currentPassword ||
       !newPassword ||
-      !confirmPassword
+      !confirmPassword ||
+      !otpCode
     ) {
       logReject('MISSING_FIELDS', 'One or more fields missing', {
         hasCurrent: typeof currentPassword === 'string' && currentPassword.length > 0,
         hasNew: typeof newPassword === 'string' && newPassword.length > 0,
         hasConfirm: typeof confirmPassword === 'string' && confirmPassword.length > 0,
+        hasOtp: typeof otpCode === 'string' && otpCode.length > 0,
       });
       return res.status(400).json({
         success: false,
         error: 'MISSING_FIELDS',
-        message: 'Please fill in all fields.',
+        message: 'Please fill in all fields, including the verification code.',
       });
     }
 
-    if (typeof otpCode !== 'string' || !/^\d{6}$/.test(otpCode)) {
-      logReject('MISSING_OTP', 'OTP missing or not 6 digits', {
-        otpLen: typeof otpCode === 'string' ? otpCode.length : 0,
+    if (!/^\d{6}$/.test(otpCode)) {
+      logReject('INVALID_OTP_FORMAT', 'OTP not 6 digits', {
+        length: otpCode.length,
       });
       return res.status(400).json({
         success: false,
-        error: 'MISSING_OTP',
-        message: 'Please enter the 6-digit code sent to your email.',
+        error: 'INVALID_OTP',
+        message: 'The verification code must be 6 digits.',
       });
     }
 
     if (newPassword !== confirmPassword) {
-      logReject('PASSWORD_MISMATCH', 'New passwords do not match', {
-        newLen: newPassword.length,
-        confirmLen: confirmPassword.length,
-      });
+      logReject('PASSWORD_MISMATCH', 'New passwords do not match');
       return res.status(400).json({
         success: false,
         error: 'PASSWORD_MISMATCH',
@@ -305,10 +300,9 @@ router.post('/change-password', changePwLimiter, async (req, res) => {
       });
     }
 
-    // ─── Password strength ────────────────────────────────────────
     const strengthError = validateNewPasswordStrength(newPassword);
     if (strengthError) {
-      logReject('WEAK_PASSWORD', strengthError, {});
+      logReject('WEAK_PASSWORD', strengthError);
       return res.status(400).json({
         success: false,
         error: 'WEAK_PASSWORD',
@@ -316,76 +310,10 @@ router.post('/change-password', changePwLimiter, async (req, res) => {
       });
     }
 
-    // ─── OTP verification ─────────────────────────────────────────
-    const otpRow = await PasswordChangeOtp.findOne({
-      firebaseUid: uid,
-      usedAt: null,
-    }).sort({ createdAt: -1 });
-
-    if (!otpRow) {
-      logReject('OTP_NOT_FOUND', 'No active OTP for this user', {});
-      return res.status(400).json({
-        success: false,
-        error: 'OTP_NOT_FOUND',
-        message: 'No active code found. Please request a new one.',
-      });
-    }
-
-    // TTL check — belt and braces on top of the Mongo TTL index.
-    if (Date.now() - otpRow.createdAt.getTime() > OTP_TTL_MS) {
-      logReject('OTP_EXPIRED', 'OTP past TTL', {
-        ageMs: Date.now() - otpRow.createdAt.getTime(),
-      });
-      await PasswordChangeOtp.updateOne(
-        { _id: otpRow._id },
-        { $set: { usedAt: new Date() } }
-      );
-      return res.status(400).json({
-        success: false,
-        error: 'OTP_EXPIRED',
-        message: 'Your code has expired. Please request a new one.',
-      });
-    }
-
-    // Attempts lockout
-    if ((otpRow.attempts || 0) >= OTP_MAX_ATTEMPTS) {
-      logReject('OTP_LOCKED', 'Too many wrong attempts', {
-        attempts: otpRow.attempts,
-      });
-      return res.status(429).json({
-        success: false,
-        error: 'OTP_LOCKED',
-        message: 'Too many incorrect attempts. Please request a new code.',
-      });
-    }
-
-    const providedHash = hashCode(otpCode);
-    if (providedHash !== otpRow.codeHash) {
-      // Increment attempts and reject.
-      await PasswordChangeOtp.updateOne(
-        { _id: otpRow._id },
-        { $inc: { attempts: 1 } }
-      );
-      const remaining = OTP_MAX_ATTEMPTS - ((otpRow.attempts || 0) + 1);
-      logReject('OTP_INCORRECT', 'Code hash mismatch', {
-        attempts: (otpRow.attempts || 0) + 1,
-      });
-      return res.status(400).json({
-        success: false,
-        error: 'OTP_INCORRECT',
-        message:
-          remaining > 0
-            ? `Incorrect code. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`
-            : 'Incorrect code. Please request a new one.',
-      });
-    }
-
-    // ─── Verify current password against Firebase ────────────────
     const admin = initFirebase();
     const fbUser = await admin.auth().getUser(uid);
-
     if (!fbUser.email) {
-      logReject('NO_EMAIL', 'Firebase user has no email', { uid });
+      logReject('NO_EMAIL', 'Firebase user has no email');
       return res.status(400).json({
         success: false,
         error: 'NO_EMAIL',
@@ -393,51 +321,74 @@ router.post('/change-password', changePwLimiter, async (req, res) => {
       });
     }
 
+    // ── Step 2a: Verify the current password (again — defense in depth) ──
     const verify = await verifyCurrentPassword(fbUser.email, currentPassword);
     if (!verify.ok) {
       logReject('VERIFY_FAILED', 'Current password rejected', {
         firebaseError: verify.firebaseError,
-        httpStatus: verify.httpStatus,
       });
-      const errorCode =
-        verify.firebaseError === 'USER_DISABLED'
-          ? 'USER_DISABLED'
-          : verify.firebaseError === 'TOO_MANY_ATTEMPTS_TRY_LATER'
-          ? 'TOO_MANY_ATTEMPTS'
-          : verify.firebaseError === 'EMAIL_NOT_FOUND'
-          ? 'EMAIL_NOT_FOUND'
-          : 'INVALID_CURRENT_PASSWORD';
-      const message =
-        errorCode === 'USER_DISABLED'
-          ? 'Your Firebase account is disabled. Contact your NBI supervisor.'
-          : errorCode === 'TOO_MANY_ATTEMPTS'
-          ? 'Too many attempts. Please try again in a few minutes.'
-          : errorCode === 'EMAIL_NOT_FOUND'
-          ? 'Your sign-in email is not registered. Contact your administrator.'
-          : 'Current password is incorrect.';
-      return res.status(400).json({ success: false, error: errorCode, message });
+      return res.status(400).json({
+        success: false,
+        error: 'INVALID_CURRENT_PASSWORD',
+        message: 'Current password is incorrect.',
+      });
     }
 
-    // ─── All checks passed — commit the change ────────────────────
+    // ── Step 2b: Verify the OTP ──────────────────────────────────
+    const record = await PasswordChangeOtp.findOne({
+      firebaseUid: uid,
+      usedAt: null,
+    }).sort({ createdAt: -1 });
+
+    if (!record) {
+      logReject('NO_OTP', 'No active OTP for this user');
+      return res.status(400).json({
+        success: false,
+        error: 'OTP_NOT_FOUND',
+        message: 'No active verification code. Please request a new one.',
+      });
+    }
+
+    if (record.attempts >= record.maxAttempts) {
+      logReject('OTP_ATTEMPTS_EXCEEDED', 'Too many OTP attempts', {
+        attempts: record.attempts,
+      });
+      return res.status(400).json({
+        success: false,
+        error: 'OTP_EXPIRED',
+        message: 'Too many failed attempts. Please request a new code.',
+      });
+    }
+
+    const submittedHash = hashCode(otpCode);
+    if (!safeEqual(submittedHash, record.codeHash)) {
+      record.attempts += 1;
+      await record.save();
+      logReject('OTP_MISMATCH', 'OTP does not match', {
+        attempts: record.attempts,
+      });
+      return res.status(400).json({
+        success: false,
+        error: 'INVALID_OTP',
+        message:
+          record.attempts >= record.maxAttempts
+            ? 'Too many failed attempts. Please request a new code.'
+            : `Incorrect code. ${record.maxAttempts - record.attempts} attempt(s) remaining.`,
+      });
+    }
+
+    // Mark the OTP as used BEFORE updating the password, so a race
+    // condition can't reuse it.
+    record.usedAt = new Date();
+    await record.save();
+
+    // ── Step 2c: Update the password ─────────────────────────────
     await admin.auth().updateUser(uid, { password: newPassword });
 
-    // Mark the OTP row as used so it can never be replayed.
-    await PasswordChangeOtp.updateOne(
-      { _id: otpRow._id },
-      { $set: { usedAt: new Date() } }
-    );
-
-    // Best-effort: bump Mongo mirror's updatedAt.
     try {
-      await User.updateOne(
-        { firebaseUid: uid },
-        { $set: { updatedAt: new Date() } }
-      );
+      await User.updateOne({ firebaseUid: uid }, { $set: { updatedAt: new Date() } });
     } catch (dbErr) {
-      console.warn(
-        '[account/change-password] User.updatedAt bump failed (non-fatal):',
-        dbErr.message
-      );
+      console.warn('[account/change-password] User.updatedAt bump failed:', dbErr.message);
     }
 
     await AuditLog.record({
@@ -445,7 +396,7 @@ router.post('/change-password', changePwLimiter, async (req, res) => {
       role: req.user.role,
       action: 'ACCOUNT_PASSWORD_CHANGED',
       ipAddress: req.ip,
-      metadata: { email: fbUser.email },
+      metadata: { email: fbUser.email, verifiedByOtp: true },
     }).catch(() => {});
 
     console.log('[account/change-password] success for uid:', uid);

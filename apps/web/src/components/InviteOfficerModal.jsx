@@ -3,10 +3,6 @@ import React, { useState } from 'react';
 import apiClient from '../lib/api';
 
 // Canonical PH region list — must match shared/regions.js exactly.
-// Hardcoded here (rather than imported) because Vite's dev server
-// resolves workspace imports differently from Metro, and duplicating
-// the 17 short strings is a lower-risk trade-off than debugging
-// cross-workspace ESM interop.
 const PH_REGIONS = [
   'NCR',
   'CAR',
@@ -34,6 +30,10 @@ const INITIAL_FORM = {
   agency: '',
   jurisdiction: '',
 };
+
+// ─── Purple accent (matches admin theme) ──────────────────────────────
+const ACCENT = '#a855f7';
+const ACCENT_HOVER = '#9333ea';
 
 export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
   const [form, setForm] = useState(INITIAL_FORM);
@@ -66,7 +66,7 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
       setStatus('error');
       const backendMessage = err?.response?.data?.message;
       setErrorMessage(
-        backendMessage || 'Failed to send invitation. Please check the details and try again.'
+        backendMessage || 'Failed to add officer. Please check the details and try again.'
       );
     }
   };
@@ -77,8 +77,6 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ backgroundColor: 'rgba(6, 6, 15, 0.85)' }}
-      // Backdrop click intentionally does NOT close the modal —
-      // invitation is a deliberate admin action, not a dismissible dialog.
       aria-modal="true"
       role="dialog"
       aria-labelledby="invite-officer-title"
@@ -95,7 +93,7 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
           <div>
             <p
               className="text-xs uppercase tracking-widest font-mono"
-              style={{ color: '#3b82f6' }}
+              style={{ color: ACCENT }}
             >
               SentinelPH
             </p>
@@ -104,7 +102,7 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
               className="text-lg font-semibold"
               style={{ color: '#f9fafb', fontFamily: "'Inter', sans-serif" }}
             >
-              Invite Officer
+              Add Officer
             </h2>
           </div>
           <button
@@ -125,9 +123,9 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
             <div
               className="rounded-lg px-4 py-3 text-sm"
               style={{
-                backgroundColor: 'rgba(34, 197, 94, 0.08)',
-                border: '1px solid rgba(34, 197, 94, 0.35)',
-                color: '#22c55e',
+                backgroundColor: 'rgba(168, 85, 247, 0.08)',
+                border: '1px solid rgba(168, 85, 247, 0.35)',
+                color: ACCENT,
               }}
             >
               Invitation sent to <strong>{form.email}</strong>. They'll receive an
@@ -182,7 +180,7 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
                 required
                 disabled={isSubmitting}
               />
-                          <label className="block">
+              <label className="block">
                 <span className="block text-xs font-medium mb-1.5" style={{ color: '#94a3b8' }}>
                   Region / Jurisdiction
                 </span>
@@ -221,9 +219,15 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
                   type="submit"
                   disabled={isSubmitting}
                   className="px-4 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-60"
-                  style={{ backgroundColor: '#3b82f6', color: '#06060f' }}
+                  style={{ backgroundColor: ACCENT, color: '#06060f' }}
+                  onMouseEnter={(e) => {
+                    if (!isSubmitting) e.currentTarget.style.backgroundColor = ACCENT_HOVER;
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = ACCENT;
+                  }}
                 >
-                  {isSubmitting ? 'Sending…' : 'Send Invitation'}
+                  {isSubmitting ? 'Sending…' : 'Add Officer'}
                 </button>
               </div>
             </form>
@@ -235,7 +239,9 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
                 type="button"
                 onClick={resetAndClose}
                 className="px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
-                style={{ backgroundColor: '#3b82f6', color: '#06060f' }}
+                style={{ backgroundColor: ACCENT, color: '#06060f' }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = ACCENT_HOVER}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = ACCENT}
               >
                 Done
               </button>

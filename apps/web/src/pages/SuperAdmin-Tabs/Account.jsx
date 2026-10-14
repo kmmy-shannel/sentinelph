@@ -8,20 +8,42 @@ import {
   Check,
   X,
   LogOut,
-} from 'lucide-react';
+  Shield,
+  Clock,
+  BadgeCheck,
+} from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { changePassword } from "../../lib/api";
 
-const A = "#22c55e"; // superadmin accent (green)
+// ─── SuperAdmin accent (green) ────────────────────────────────────────
+const A = "#22c55e";
+const A_HOVER = "#16a34a";
+const A_TINT = "rgba(34,197,94,0.12)";
+const A_TINT_BORDER = "rgba(34,197,94,0.35)";
 
-// Maximum password length — must match services/api/routes/account.js
-// (MAX_PW_LENGTH = 64). If the two disagree, the client will allow a
-// password the server rejects, and the user gets a confusing 400.
 const MAX_PW_LENGTH = 64;
 
+// ─── Person silhouette (replaces "SA" initials in the identity block) ─
+function PersonIcon({ size = 30, color = A }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={color}
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="8" r="3.5" />
+      <path d="M5 20c0-3.5 3.1-6 7-6s7 2.5 7 6" />
+    </svg>
+  );
+}
+
 // ─── Eye-toggle password input ────────────────────────────────────────
-// Owns its own visible/hidden state so toggling one field never reveals
-// the others.
 function PasswordInput({
   value,
   onChange,
@@ -29,6 +51,7 @@ function PasswordInput({
   autoComplete = "new-password",
   inputStyle,
   hasError = false,
+  disabled = false,
 }) {
   const [visible, setVisible] = useState(false);
 
@@ -41,17 +64,21 @@ function PasswordInput({
         placeholder={placeholder}
         autoComplete={autoComplete}
         spellCheck={false}
+        disabled={disabled}
         maxLength={MAX_PW_LENGTH}
         style={{
           ...inputStyle,
           paddingRight: "42px",
           borderColor: hasError ? "#ef4444" : inputStyle.border,
+          opacity: disabled ? 0.5 : 1,
+          cursor: disabled ? "not-allowed" : "text",
         }}
       />
       <button
         type="button"
         onClick={() => setVisible((v) => !v)}
         tabIndex={-1}
+        disabled={disabled}
         aria-label={visible ? "Hide password" : "Show password"}
         style={{
           position: "absolute",
@@ -61,11 +88,12 @@ function PasswordInput({
           background: "transparent",
           border: "none",
           padding: "4px",
-          cursor: "pointer",
+          cursor: disabled ? "not-allowed" : "pointer",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
           color: "#4b5563",
+          opacity: disabled ? 0.4 : 1,
         }}
       >
         {visible ? <EyeOff size={14} /> : <Eye size={14} />}
@@ -94,7 +122,7 @@ function scorePassword(pw) {
   if (score > 5) score = 5;
 
   if (score <= 1) return { score, label: "Very Weak", color: "#ef4444" };
-  if (score === 2) return { score, label: "Weak", color: "#f97316" };
+  if (score === 2) return { score, label: "Weak", color: A };
   if (score === 3) return { score, label: "Fair", color: "#f59e0b" };
   if (score === 4) return { score, label: "Strong", color: "#22c55e" };
   return { score: 5, label: "Very Strong", color: "#16a34a" };
@@ -106,15 +134,7 @@ function PasswordStrengthMeter({ value }) {
 
   return (
     <div style={{ marginTop: "8px" }}>
-      {/* 5-segment bar */}
-      <div
-        style={{
-          display: "flex",
-          gap: "4px",
-          height: "4px",
-          marginBottom: "6px",
-        }}
-      >
+      <div style={{ display: "flex", gap: "4px", height: "4px", marginBottom: "6px" }}>
         {[0, 1, 2, 3, 4].map((i) => (
           <div
             key={i}
@@ -128,7 +148,6 @@ function PasswordStrengthMeter({ value }) {
         ))}
       </div>
 
-      {/* Label + per-criterion checklist */}
       <div
         style={{
           display: "flex",
@@ -170,11 +189,59 @@ function PasswordStrengthMeter({ value }) {
   );
 }
 
+// ─── Profile info row ────────────────────────────────────────────────
+function InfoRow({ icon: Icon, label, value, mono = false, accent = false }) {
+  return (
+    <div style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
+      <div
+        style={{
+          width: "28px",
+          height: "28px",
+          borderRadius: "8px",
+          background: accent ? A_TINT : "#13131e",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+          marginTop: "1px",
+        }}
+      >
+        <Icon size={13} color={accent ? A : "#64748b"} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{
+            fontSize: "9px",
+            fontWeight: 600,
+            color: "#64748b",
+            fontFamily: "'JetBrains Mono',monospace",
+            letterSpacing: "0.08em",
+            marginBottom: "3px",
+          }}
+        >
+          {label}
+        </div>
+        <div
+          style={{
+            fontSize: "13px",
+            color: accent ? A : "#fff",
+            fontWeight: accent ? 600 : 500,
+            fontFamily: mono ? "'JetBrains Mono',monospace" : "inherit",
+            wordBreak: "break-word",
+          }}
+        >
+          {value}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Account() {
   const { user, role, logout } = useAuth();
 
   const [currentPw, setCurrentPw] = useState("");
-  const [newPw, setNewPw]         = useState("");
+  const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
 
   const [pwError, setPwError] = useState(null);
@@ -185,9 +252,32 @@ export default function Account() {
   const [showSuccess, setShowSuccess] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  const card   = { background: "#0e0e18", border: "1px solid #1a1a2a", borderRadius: "12px", padding: "24px", maxWidth: "640px" };
-  const label  = { fontSize: "9px", fontWeight: 500, color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em", marginBottom: "6px" };
-  const inputS = { width: "100%", padding: "10px 14px", borderRadius: "10px", fontSize: "13px", background: "#080810", border: "1px solid #1a1a2a", color: "#e2e8f0", outline: "none", boxSizing: "border-box" };
+  const card = {
+    borderRadius: "12px",
+    padding: "24px",
+    marginBottom: "20px",
+    background: "#0e0e18",
+    border: "1px solid #1a1a2a",
+  };
+  const label = {
+    fontSize: "9px",
+    fontWeight: 600,
+    marginBottom: "6px",
+    color: "#64748b",
+    fontFamily: "'JetBrains Mono',monospace",
+    letterSpacing: "0.08em",
+  };
+  const inputS = {
+    width: "100%",
+    padding: "10px 14px",
+    borderRadius: "10px",
+    fontSize: "13px",
+    background: "#080810",
+    border: "1px solid #1a1a2a",
+    color: "#e2e8f0",
+    outline: "none",
+    boxSizing: "border-box",
+  };
 
   const sanitizePw = (value) => value.replace(/\s/g, "").slice(0, MAX_PW_LENGTH);
 
@@ -269,12 +359,12 @@ export default function Account() {
     } catch (err) {
       let message = err?.response?.data?.message;
       if (!message) {
-        if (err?.code === 'ECONNABORTED') {
-          message = 'The server took too long to respond. Please try again in a moment.';
-        } else if (err?.code === 'ERR_NETWORK') {
-          message = 'Could not reach the server. Check your connection and try again.';
+        if (err?.code === "ECONNABORTED") {
+          message = "The server took too long to respond. Please try again in a moment.";
+        } else if (err?.code === "ERR_NETWORK") {
+          message = "Could not reach the server. Check your connection and try again.";
         } else {
-          message = 'Could not update the password. Please try again.';
+          message = "Could not update the password. Please try again.";
         }
       }
       setPwError(message);
@@ -283,55 +373,273 @@ export default function Account() {
     }
   }
 
-  return (
-    <div style={{ maxWidth: "640px", display: "flex", flexDirection: "column", gap: "20px" }}>
+  const displayName = user?.name ?? user?.displayName ?? "Platform Admin";
+  const displayEmail = user?.email ?? "admin@sentinelph.gov.ph";
+  const userUid = user?.uid ?? "—";
 
-      {/* Profile */}
+  return (
+    <div
+      style={{
+        maxWidth: "680px",
+        display: "flex",
+        flexDirection: "column",
+        gap: "0",
+      }}
+    >
+      {/* Header strip */}
+      <div
+        style={{
+          padding: "12px 16px",
+          borderRadius: "10px",
+          background: "#0a0a12",
+          border: "1px solid #1a1a2a",
+          marginBottom: "20px",
+          display: "flex",
+          alignItems: "center",
+          gap: "12px",
+        }}
+      >
+        <span
+          style={{
+            color: A,
+            fontWeight: 700,
+            fontFamily: "'JetBrains Mono',monospace",
+            fontSize: "11px",
+            letterSpacing: "0.08em",
+          }}
+        >
+          ACCOUNT
+        </span>
+        <span style={{ color: "#374151" }}>·</span>
+        <span style={{ fontSize: "12px", color: "#94a3b8" }}>
+          Profile & security settings
+        </span>
+      </div>
+
+      {/* Profile card */}
       <div style={card}>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "20px" }}>
-          <UserCircle size={14} color="#4b5563" />
-          <span style={{ fontSize: "9px", fontWeight: 500, color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            marginBottom: "24px",
+            paddingBottom: "16px",
+            borderBottom: "1px solid #13131e",
+          }}
+        >
+          <UserCircle size={16} color={A} />
+          <span
+            style={{
+              fontSize: "11px",
+              fontWeight: 700,
+              color: "#fff",
+              fontFamily: "'JetBrains Mono',monospace",
+              letterSpacing: "0.08em",
+            }}
+          >
             PROFILE
+          </span>
+          <span
+            style={{
+              marginLeft: "auto",
+              fontSize: "11px",
+              color: "#4b5563",
+            }}
+          >
+            Platform-level administrator
           </span>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px 24px", marginBottom: "24px" }}>
-          <div>
-            <div style={label}>DISPLAY NAME</div>
-            <div style={{ fontSize: "13px", color: "#fff" }}>{user?.name ?? "Platform Admin"}</div>
+        {/* Identity block — person icon instead of initials */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "16px",
+            marginBottom: "28px",
+          }}
+        >
+          <div
+            style={{
+              width: "60px",
+              height: "60px",
+              borderRadius: "16px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+              background: A_TINT,
+              border: `1.5px solid ${A_TINT_BORDER}`,
+            }}
+            aria-hidden="true"
+          >
+            <PersonIcon size={30} color={A} />
           </div>
-          <div>
-            <div style={label}>EMAIL</div>
-            <div style={{ fontSize: "13px", color: "#fff", fontFamily: "'JetBrains Mono',monospace" }}>{user?.email ?? "admin@sentinelph.gov.ph"}</div>
-          </div>
-          <div>
-            <div style={label}>ROLE</div>
-            <div style={{ fontSize: "13px", color: A, fontWeight: 600, fontFamily: "'JetBrains Mono',monospace" }}>{(role ?? "superadmin").toUpperCase()}</div>
-          </div>
-          <div>
-            <div style={label}>USER ID</div>
-            <div style={{ fontSize: "13px", color: "#9ca3af", fontFamily: "'JetBrains Mono',monospace" }}>{user?.uid ?? "—"}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              style={{
+                fontWeight: 700,
+                color: "#fff",
+                fontSize: "16px",
+                marginBottom: "4px",
+              }}
+            >
+              {displayName}
+            </div>
+            <div
+              style={{
+                fontSize: "12px",
+                color: "#94a3b8",
+                fontFamily: "'JetBrains Mono',monospace",
+                wordBreak: "break-all",
+              }}
+            >
+              {displayEmail}
+            </div>
+            <div
+              style={{
+                display: "flex",
+                gap: "6px",
+                marginTop: "10px",
+                flexWrap: "wrap",
+              }}
+            >
+              <span
+                style={{
+                  fontSize: "10px",
+                  fontWeight: 600,
+                  padding: "3px 9px",
+                  borderRadius: "999px",
+                  background: A_TINT,
+                  color: A,
+                  border: `1px solid ${A_TINT_BORDER}`,
+                  fontFamily: "'JetBrains Mono',monospace",
+                  letterSpacing: "0.04em",
+                }}
+              >
+                {(role ?? "superadmin").toUpperCase()}
+              </span>
+              <span
+                style={{
+                  fontSize: "10px",
+                  fontWeight: 600,
+                  padding: "3px 9px",
+                  borderRadius: "999px",
+                  background: "rgba(34,197,94,0.10)",
+                  color: "#22c55e",
+                  border: "1px solid rgba(34,197,94,0.30)",
+                  fontFamily: "'JetBrains Mono',monospace",
+                  letterSpacing: "0.04em",
+                }}
+              >
+                ACTIVE
+              </span>
+            </div>
           </div>
         </div>
 
-        <button onClick={logout}
-          style={{ padding: "10px 20px", borderRadius: "10px", fontSize: "12px", fontWeight: 600, background: "#3f1a1a", border: "1px solid #ef444440", color: "#ef4444", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: "8px" }}>
+        {/* Info grid */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: "20px 28px",
+            marginBottom: "24px",
+          }}
+        >
+          <InfoRow
+            icon={UserCircle}
+            label="DISPLAY NAME"
+            value={displayName}
+          />
+          <InfoRow
+            icon={UserCircle}
+            label="EMAIL"
+            value={displayEmail}
+            mono
+          />
+          <InfoRow
+            icon={Shield}
+            label="ROLE"
+            value={(role ?? "superadmin").toUpperCase()}
+            accent
+          />
+          <InfoRow
+            icon={BadgeCheck}
+            label="USER ID"
+            value={userUid}
+            mono
+          />
+          <InfoRow
+            icon={Check}
+            label="ACCOUNT STATUS"
+            value="Active"
+          />
+          <InfoRow
+            icon={Clock}
+            label="SESSION"
+            value="Authenticated"
+          />
+        </div>
+
+        <button
+          onClick={logout}
+          style={{
+            padding: "10px 20px",
+            borderRadius: "10px",
+            fontSize: "12px",
+            fontWeight: 600,
+            background: "#3f1a1a",
+            border: "1px solid #ef444440",
+            color: "#ef4444",
+            cursor: "pointer",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "8px",
+          }}
+        >
           <LogOut size={14} />
           Sign Out
         </button>
       </div>
 
-      {/* Change Password */}
+      {/* Change password card */}
       <div style={card}>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "20px" }}>
-          <KeyRound size={14} color="#4b5563" />
-          <span style={{ fontSize: "9px", fontWeight: 500, color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            marginBottom: "20px",
+            paddingBottom: "16px",
+            borderBottom: "1px solid #13131e",
+          }}
+        >
+          <KeyRound size={16} color={A} />
+          <span
+            style={{
+              fontSize: "11px",
+              fontWeight: 700,
+              color: "#fff",
+              fontFamily: "'JetBrains Mono',monospace",
+              letterSpacing: "0.08em",
+            }}
+          >
             CHANGE PASSWORD
+          </span>
+          <span
+            style={{
+              marginLeft: "auto",
+              fontSize: "11px",
+              color: "#4b5563",
+            }}
+          >
+            Single-step · no email verification
           </span>
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-          {/* Current password */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
           <div>
             <div style={label}>CURRENT PASSWORD</div>
             <PasswordInput
@@ -345,7 +653,6 @@ export default function Account() {
             />
           </div>
 
-          {/* New password */}
           <div>
             <div style={label}>NEW PASSWORD</div>
             <PasswordInput
@@ -355,19 +662,35 @@ export default function Account() {
               hasError={Boolean(fieldErrors.newPw)}
             />
             {fieldErrors.newPw ? (
-              <div style={{ fontSize: "10px", color: "#ef4444", marginTop: "4px", fontFamily: "'JetBrains Mono',monospace", display: "flex", alignItems: "center", gap: "4px" }}>
+              <div
+                style={{
+                  fontSize: "10px",
+                  color: "#ef4444",
+                  marginTop: "6px",
+                  fontFamily: "'JetBrains Mono',monospace",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "4px",
+                }}
+              >
                 <X size={10} /> {fieldErrors.newPw}
               </div>
             ) : newPw ? (
               <PasswordStrengthMeter value={newPw} />
             ) : (
-              <div style={{ fontSize: "10px", color: "#4b5563", marginTop: "4px", fontFamily: "'JetBrains Mono',monospace" }}>
-                8–{MAX_PW_LENGTH} characters · Letters + Numbers + Special (!@#$%^&*) · No spaces
+              <div
+                style={{
+                  fontSize: "10px",
+                  color: "#4b5563",
+                  marginTop: "6px",
+                  fontFamily: "'JetBrains Mono',monospace",
+                }}
+              >
+                8–{MAX_PW_LENGTH} chars · letter + number + special (!@#$%^&*) · no spaces
               </div>
             )}
           </div>
 
-          {/* Confirm password */}
           <div>
             <div style={label}>CONFIRM NEW PASSWORD</div>
             <PasswordInput
@@ -377,26 +700,66 @@ export default function Account() {
               hasError={Boolean(fieldErrors.confirmPw)}
             />
             {fieldErrors.confirmPw ? (
-              <div style={{ fontSize: "10px", color: "#ef4444", marginTop: "4px", fontFamily: "'JetBrains Mono',monospace", display: "flex", alignItems: "center", gap: "4px" }}>
+              <div
+                style={{
+                  fontSize: "10px",
+                  color: "#ef4444",
+                  marginTop: "6px",
+                  fontFamily: "'JetBrains Mono',monospace",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "4px",
+                }}
+              >
                 <X size={10} /> {fieldErrors.confirmPw}
               </div>
             ) : confirmPw && newPw === confirmPw ? (
-              <div style={{ fontSize: "10px", color: "#22c55e", marginTop: "4px", fontFamily: "'JetBrains Mono',monospace", display: "flex", alignItems: "center", gap: "4px" }}>
+              <div
+                style={{
+                  fontSize: "10px",
+                  color: "#22c55e",
+                  marginTop: "6px",
+                  fontFamily: "'JetBrains Mono',monospace",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "4px",
+                }}
+              >
                 <Check size={10} /> Passwords match
               </div>
             ) : null}
           </div>
 
-          {/* Top-level error (server response / network failure) */}
           {pwError && (
-            <div style={{ padding: "10px 14px", borderRadius: "8px", fontSize: "12px", background: "#ef444420", border: "1px solid #ef444430", color: "#ef4444" }}>
+            <div
+              style={{
+                padding: "10px 14px",
+                borderRadius: "8px",
+                fontSize: "12px",
+                background: "#ef444420",
+                border: "1px solid #ef444430",
+                color: "#ef4444",
+              }}
+            >
               {pwError}
             </div>
           )}
 
-          {/* Success banner */}
           {showSuccess && (
-            <div style={{ padding: "12px 16px", borderRadius: "10px", fontSize: "13px", fontWeight: 500, background: "#0a1a12", border: "1px solid #22c55e40", color: "#22c55e", display: "flex", alignItems: "center", gap: "10px" }}>
+            <div
+              style={{
+                padding: "12px 16px",
+                borderRadius: "10px",
+                fontSize: "13px",
+                fontWeight: 500,
+                background: "#0a1a12",
+                border: "1px solid #22c55e40",
+                color: "#22c55e",
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+              }}
+            >
               <Check size={16} />
               Password updated successfully.
             </div>
@@ -407,18 +770,25 @@ export default function Account() {
             disabled={submitting}
             style={{
               alignSelf: "flex-start",
-              padding: "10px 20px",
+              padding: "11px 22px",
               borderRadius: "10px",
               fontSize: "12px",
               fontWeight: 600,
               background: submitting ? "#2a2a3a" : A,
-              color: "#08200f",
+              color: submitting ? "#6b7280" : "#08200f",
               border: "none",
               cursor: submitting ? "not-allowed" : "pointer",
-              marginTop: "4px",
+              marginTop: "6px",
               display: "flex",
               alignItems: "center",
               gap: "8px",
+              transition: "background 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              if (!submitting) e.currentTarget.style.background = A_HOVER;
+            }}
+            onMouseLeave={(e) => {
+              if (!submitting) e.currentTarget.style.background = A;
             }}
           >
             {submitting && (
@@ -427,8 +797,8 @@ export default function Account() {
                   width: "12px",
                   height: "12px",
                   borderRadius: "50%",
-                  border: "2px solid rgba(255,255,255,0.3)",
-                  borderTopColor: "#fff",
+                  border: "2px solid rgba(8,32,15,0.3)",
+                  borderTopColor: "#08200f",
                   animation: "spin 0.7s linear infinite",
                   display: "inline-block",
                 }}

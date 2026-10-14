@@ -16,37 +16,58 @@ function escapeRegex(value) {
 }
 
 /**
- * For each blacklist entry, attach `evidenceImage` from the most recent
- * report filed against the same number. Only includes the screenshot if
- * it exists — keeps response size reasonable by requesting the field
- * explicitly and only for the entries we're returning.
+ * For each blacklist entry, attach fields derived from the most recent
+ * Report filed against the same number:
  *
- * This is a separate step (not a Mongo $lookup) because the screenshot
- * is a base64 data-URI (potentially MBs each) and we don't want to
- * always pay the cost — only when listing.
+ *   evidenceImage — the base64 data-URI screenshot (or null)
+ *   aiLabel       — Level 1 tier from services/ai/app/inference.py
+ *   aiSubtype     — Level 2 subtype key
+ *   aiRiskLevel   — HIGH | MEDIUM | LOW | UNKNOWN
+ *   aiConfidence  — Level 1 confidence score
+ *
+ * Entry-level fields take precedence; the Report is the fallback source
+ * for legacy entries that predate these columns. Screenshots live on the
+ * Report (not on BlacklistEntry), so the join is required either way.
+ *
+ * Implemented as a separate query (not a Mongo $lookup) because the
+ * screenshot is a base64 data-URI (potentially MBs each) and we don't
+ * want to always pay the cost — only when listing.
  */
-async function attachEvidenceImages(entries) {
+async function attachReportDerivedFields(entries) {
   if (!entries.length) return entries;
 
   const phoneNumbers = entries.map((e) => e.phoneNumber).filter(Boolean);
   if (!phoneNumbers.length) return entries;
 
   const reports = await Report.find({ reportedNumber: { $in: phoneNumbers } })
-    .select('reportedNumber evidenceImage createdAt')
+    .select('reportedNumber evidenceImage createdAt aiFlag')
     .sort({ createdAt: -1 })
     .lean();
 
-  const imageByNumber = new Map();
+  // Newest report per phone number.
+  const byNumber = new Map();
   for (const r of reports) {
-    if (!imageByNumber.has(r.reportedNumber) && r.evidenceImage) {
-      imageByNumber.set(r.reportedNumber, r.evidenceImage);
+    if (!byNumber.has(r.reportedNumber)) {
+      byNumber.set(r.reportedNumber, r);
     }
   }
 
-  return entries.map((e) => ({
-    ...e,
-    evidenceImage: imageByNumber.get(e.phoneNumber) || null,
-  }));
+  return entries.map((e) => {
+    const source = byNumber.get(e.phoneNumber);
+    const ai = source?.aiFlag || {};
+
+    return {
+      ...e,
+      evidenceImage: source?.evidenceImage || null,
+      aiLabel:       e.aiLabel       || ai.label       || null,
+      aiSubtype:     e.aiSubtype     || ai.subtype     || null,
+      aiRiskLevel:   e.aiRiskLevel   || ai.riskLevel   || null,
+      aiConfidence:
+        e.aiConfidence != null
+          ? e.aiConfidence
+          : (typeof ai.confidenceScore === 'number' ? ai.confidenceScore : null),
+    };
+  });
 }
 
 // =====================================================================
@@ -118,20 +139,6 @@ router.post(
 
 // =====================================================================
 // GET /api/v1/blacklist/public — Citizen-safe public registry
-//
-// Returns ONLY confirmed blacklisted entries, projected to the fields
-// citizens may see:
-//   { phoneNumber, status, scamType, reportCount, region, blacklistedAt }
-//
-// NEVER returns: officer identities, votes, comments, hashes, notes.
-//
-// Registered BEFORE /:phoneNumber/status so "public" is never treated
-// as a phone number.
-//
-// Query params (all optional):
-//   ?q=<text>       filter by phoneNumber or scamType (case-insensitive)
-//   ?region=<r>     filter by region (UNCLASSIFIED entries not filtered out)
-//   ?limit=100      max rows (default 100, cap 500)
 // =====================================================================
 router.get(
   '/public',
@@ -144,9 +151,6 @@ router.get(
       500
     );
 
-    // Only confirmed scam entries are exposed to citizens. Statuses the
-    // officer flow uses once a report reaches two approvals:
-    //   'blacklisted' (canonical)   'approved' (legacy alias)
     const query = { status: { $in: ['blacklisted', 'approved'] } };
 
     if (req.query.region) {
@@ -158,7 +162,7 @@ router.get(
       if (pattern) {
         query.$or = [
           { phoneNumber: { $regex: pattern, $options: 'i' } },
-          { scamType: { $regex: pattern, $options: 'i' } },
+          { aiSubtype: { $regex: pattern, $options: 'i' } },
         ];
       }
     }
@@ -166,15 +170,15 @@ router.get(
     const items = await BlacklistEntry.find(query)
       .sort({ blacklistedAt: -1, updatedAt: -1 })
       .limit(limit)
-      .select('phoneNumber status scamType reportCount region blacklistedAt')
+      .select('phoneNumber status aiLabel aiSubtype aiRiskLevel reportCount region blacklistedAt')
       .lean();
 
-    // Belt-and-braces projection: even if select() is bypassed, the
-    // response only ever carries the public fields.
     const publicItems = items.map((e) => ({
       phoneNumber: e.phoneNumber,
       status: e.status,
-      scamType: e.scamType || 'UNKNOWN',
+      aiLabel: e.aiLabel || null,
+      aiSubtype: e.aiSubtype || null,
+      aiRiskLevel: e.aiRiskLevel || null,
       reportCount: e.reportCount ?? 0,
       region: e.region || UNCLASSIFIED,
       blacklistedAt: e.blacklistedAt || null,
@@ -213,7 +217,9 @@ router.get(
         data: {
           phoneNumber: entry.phoneNumber,
           status: entry.status,
-          scamType: entry.scamType || null,
+          aiLabel: entry.aiLabel || null,
+          aiSubtype: entry.aiSubtype || null,
+          aiRiskLevel: entry.aiRiskLevel || null,
           reportCount: entry.reportCount ?? 0,
           region: entry.region || null,
           blacklistedAt: entry.blacklistedAt,
@@ -228,10 +234,6 @@ router.get(
 // =====================================================================
 // GET /api/v1/blacklist — List candidates/entries with filters
 //   (Officer, Analyst, Auditor)
-//
-// Response entries now include:
-//   - votes:  [ { officerId, decision, comment, votedAt }, ... ]
-//   - evidenceImage: base64 data-URI from the linked Report (or null)
 // =====================================================================
 router.get(
   '/',
@@ -264,7 +266,8 @@ router.get(
       if (pattern) {
         query.$or = [
           { phoneNumber: { $regex: pattern, $options: 'i' } },
-          { scamType: { $regex: pattern, $options: 'i' } },
+          { aiSubtype: { $regex: pattern, $options: 'i' } },
+          { aiLabel: { $regex: pattern, $options: 'i' } },
         ];
       }
     }
@@ -278,11 +281,11 @@ router.get(
       BlacklistEntry.countDocuments(query),
     ]);
 
-    const itemsWithEvidence = await attachEvidenceImages(items);
+    const enriched = await attachReportDerivedFields(items);
 
     return res.status(200).json({
       success: true,
-      data: itemsWithEvidence,
+      data: enriched,
       pagination: {
         page,
         limit,

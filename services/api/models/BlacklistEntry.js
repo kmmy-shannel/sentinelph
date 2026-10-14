@@ -4,6 +4,33 @@ const crypto = require('crypto');
 
 const { Schema } = mongoose;
 
+/**
+ * Legacy vote-handling model.
+ *
+ * NOTE: This model's voting is RETIRED at the route layer
+ * (POST /api/v1/blacklist/:phoneNumber/vote → 410 Gone). The canonical
+ * voting path is now Report.castVote(). This model is still used as a
+ * read-model for the blacklist registry and is populated by
+ * upsertFromReport() once a Report reaches quorum.
+ *
+ * Its registerVote() logic already implements the correct 2-of-3 quorum
+ * rule (finalize on the 2nd decisive vote; the 3rd is optional), which
+ * matches Report.castVote().
+ *
+ * AI CLASSIFICATION FIELDS
+ *   aiLabel    — Level 1 tier produced by services/ai/app/inference.py.
+ *                Values: 'legitimate' | 'grey_area' | 'malicious' |
+ *                'uncertain' | 'unavailable' | null
+ *   aiSubtype  — Level 2 subtype key. Examples: 'phishing_link',
+ *                'fake_prize_lottery', 'delivery_tracking'. See
+ *                inference.py's SUBTYPE_TAXONOMY for the full set.
+ *   aiRiskLevel— Derived risk: 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN'
+ *   aiConfidence — Float 0..1 from the Level 1 model.
+ *
+ * These are snapshots taken at finalization. The registry route also
+ * falls back to the source Report's aiFlag at read time, so legacy
+ * entries render correctly without a mandatory backfill.
+ */
 const VOTE_DECISIONS = ['approve', 'reject'];
 const STATUSES = ['pending', 'under_review', 'blacklisted', 'rejected'];
 const APPROVALS_REQUIRED = 2;
@@ -40,6 +67,33 @@ const BlacklistEntrySchema = new Schema(
       default: 'pending',
       index: true,
     },
+
+    // ─── AI classification snapshot (see header docblock) ────────────
+    aiLabel: {
+      type: String,
+      trim: true,
+      default: null,
+      index: true,
+    },
+    aiSubtype: {
+      type: String,
+      trim: true,
+      default: null,
+      index: true,
+    },
+    aiRiskLevel: {
+      type: String,
+      enum: ['HIGH', 'MEDIUM', 'LOW', 'UNKNOWN', null],
+      default: null,
+    },
+    aiConfidence: {
+      type: Number,
+      min: 0,
+      max: 1,
+      default: null,
+    },
+    // ─────────────────────────────────────────────────────────────────
+
     votes: { type: [VoteSchema], default: [] },
     approvingOfficers: { type: [String], default: [] },
     reportCount: { type: Number, default: 0, min: 0 },
@@ -89,6 +143,8 @@ BlacklistEntrySchema.methods.registerVote = function registerVote(
   const approvals = this.votes.filter((v) => v.decision === 'approve').length;
   const rejections = this.votes.filter((v) => v.decision === 'reject').length;
 
+  // 2-of-3 quorum: finalize on the 2nd decisive vote. The 3rd vote is
+  // optional and only matters as a tiebreaker when the first two disagree.
   if (approvals >= APPROVALS_REQUIRED) {
     this.status = 'blacklisted';
     this.blacklistedAt = new Date();
@@ -97,6 +153,9 @@ BlacklistEntrySchema.methods.registerVote = function registerVote(
       .map((v) => v.officerId);
   } else if (rejections >= REJECTIONS_REQUIRED) {
     this.status = 'rejected';
+    this.approvingOfficers = this.votes
+      .filter((v) => v.decision === 'reject')
+      .map((v) => v.officerId);
   } else if (approvals === 1) {
     this.status = 'under_review';
   }
@@ -130,8 +189,6 @@ BlacklistEntrySchema.statics.upsertFromReport = async function upsertFromReport(
         .filter(Boolean)
     : [];
 
-  // Build the officer notes: join all non-empty comments from the report's
-  // votes. This is what shows up in the Blacklist Registry modal.
   const officerNotes = Array.isArray(report.votes)
     ? report.votes
         .map((v) => String(v.comment || '').trim())
@@ -151,6 +208,15 @@ BlacklistEntrySchema.statics.upsertFromReport = async function upsertFromReport(
     votedAt: v.votedAt || new Date(),
   }));
 
+  // ─── AI classification snapshot ─────────────────────────────────
+  const ai = report.aiFlag || {};
+  const aiLabel = ai.label || null;
+  const aiSubtype = ai.subtype || null;
+  const aiRiskLevel = ai.riskLevel || null;
+  const aiConfidence =
+    typeof ai.confidenceScore === 'number' ? ai.confidenceScore : null;
+  // ────────────────────────────────────────────────────────────────
+
   let entry = await this.findOne({ phoneNumber });
 
   if (!entry) {
@@ -163,6 +229,10 @@ BlacklistEntrySchema.statics.upsertFromReport = async function upsertFromReport(
       reportCount,
       notes,
       blacklistedAt: finalStatus === 'blacklisted' ? new Date() : null,
+      aiLabel,
+      aiSubtype,
+      aiRiskLevel,
+      aiConfidence,
     });
   } else {
     if (entry.status !== 'blacklisted' && entry.status !== 'rejected') {
@@ -171,16 +241,23 @@ BlacklistEntrySchema.statics.upsertFromReport = async function upsertFromReport(
       entry.approvingOfficers = approvingOfficers;
       entry.reportCount = reportCount;
       entry.notes = notes;
+      entry.aiLabel = aiLabel;
+      entry.aiSubtype = aiSubtype;
+      entry.aiRiskLevel = aiRiskLevel;
+      entry.aiConfidence = aiConfidence;
       if (finalStatus === 'blacklisted' && !entry.blacklistedAt) {
         entry.blacklistedAt = new Date();
       }
     } else {
       entry.reportCount = reportCount;
-      // Refresh notes if they're missing (e.g., old entries created before
-      // this field existed)
-      if (!entry.notes && notes) {
-        entry.notes = notes;
+      // Backfill AI fields on entries that predate these columns.
+      if (!entry.aiLabel && aiLabel) entry.aiLabel = aiLabel;
+      if (!entry.aiSubtype && aiSubtype) entry.aiSubtype = aiSubtype;
+      if (!entry.aiRiskLevel && aiRiskLevel) entry.aiRiskLevel = aiRiskLevel;
+      if (entry.aiConfidence == null && aiConfidence != null) {
+        entry.aiConfidence = aiConfidence;
       }
+      if (!entry.notes && notes) entry.notes = notes;
     }
   }
 
@@ -199,6 +276,7 @@ BlacklistEntrySchema.statics.upsertFromReport = async function upsertFromReport(
 
 BlacklistEntrySchema.index({ status: 1, updatedAt: -1 });
 BlacklistEntrySchema.index({ phoneNumber: 1, status: 1 });
+BlacklistEntrySchema.index({ aiLabel: 1, status: 1 });
 
 const BlacklistEntry =
   mongoose.models.BlacklistEntry ||

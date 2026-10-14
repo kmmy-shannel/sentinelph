@@ -33,29 +33,80 @@ async function verifyChain({ fromBlock, toBlock } = {}) {
         },
       },
     ]);
-    fromBlock = bounds[0]?.min_i ?? 1;
-    toBlock   = bounds[0]?.max_i ?? 0;
+
+    const minSeq = bounds[0]?.min_i;
+    const maxSeq = bounds[0]?.max_i;
+
+    // Guard: an empty ledger (no docs) OR a ledger whose minimum
+    // sequence is not a positive integer is invalid. Reject explicitly
+    // instead of falling through to `fromBlock = 0` (which produced
+    // the "Missing predecessor block #-1" error).
+    if (
+      typeof minSeq !== 'number' ||
+      typeof maxSeq !== 'number' ||
+      !Number.isFinite(minSeq) ||
+      !Number.isFinite(maxSeq) ||
+      minSeq < 1 ||
+      maxSeq < minSeq
+    ) {
+      throw Object.assign(
+        new Error(
+          'Cannot verify chain — ledger has no valid starting block. ' +
+            `min=${minSeq}, max=${maxSeq}.`
+        ),
+        { status: 400 }
+      );
+    }
+
+    fromBlock = minSeq;
+    toBlock = maxSeq;
   }
 
   fromBlock = Number(fromBlock);
-  toBlock   = Number(toBlock);
+  toBlock = Number(toBlock);
 
   if (!Number.isFinite(fromBlock) || !Number.isFinite(toBlock)) {
-    throw Object.assign(new Error('Invalid range: from/to must be numbers'), { status: 400 });
+    throw Object.assign(
+      new Error('Invalid range: from/to must be numbers'),
+      { status: 400 }
+    );
   }
+
+  // Guard: reject any explicit range that starts below 1. This catches
+  // a malformed client request or a stale cached payload.
+  if (fromBlock < 1) {
+    throw Object.assign(
+      new Error(`Invalid range: fromBlock must be >= 1 (got ${fromBlock}).`),
+      { status: 400 }
+    );
+  }
+
   if (fromBlock > toBlock) {
-    throw Object.assign(new Error('Invalid range: from > to'), { status: 400 });
+    throw Object.assign(
+      new Error(`Invalid range: from (${fromBlock}) > to (${toBlock}).`),
+      { status: 400 }
+    );
   }
 
   // ── Seed the previous hash ───────────────────────────────
   let prevHash;
   if (fromBlock === 1) {
+    // Genesis seed — used only for the true first block of the chain.
     prevHash = process.env.GENESIS_HASH || '0'.repeat(64);
   } else {
-    const predecessor = await Report.findOne({ sequence: fromBlock - 1 }).lean();
+    // For any other starting block, use the stored hash of the
+    // immediately preceding block. This is what makes ranged
+    // verification link correctly back to the full chain.
+    const predecessor = await Report.findOne({
+      sequence: fromBlock - 1,
+    }).lean();
     if (!predecessor) {
       throw Object.assign(
-        new Error(`Missing predecessor block #${fromBlock - 1}`),
+        new Error(
+          `Cannot verify from block #${fromBlock} — predecessor block #${
+            fromBlock - 1
+          } is missing from the ledger.`
+        ),
         { status: 400 }
       );
     }
@@ -63,13 +114,17 @@ async function verifyChain({ fromBlock, toBlock } = {}) {
   }
 
   // ── Fetch the slice (ascending) ──────────────────────────
-  const rows = await Report
-    .find({ sequence: { $gte: fromBlock, $lte: toBlock } })
+  const rows = await Report.find({
+    sequence: { $gte: fromBlock, $lte: toBlock },
+  })
     .sort({ sequence: 1 })
     .lean();
 
   if (rows.length === 0) {
-    throw Object.assign(new Error('No blocks in requested range'), { status: 404 });
+    throw Object.assign(
+      new Error('No blocks in requested range'),
+      { status: 404 }
+    );
   }
 
   // ── Walk the chain ───────────────────────────────────────

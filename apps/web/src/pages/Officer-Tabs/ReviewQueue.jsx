@@ -19,10 +19,63 @@ const STATUS_ORDER = [
 // 10 columns: ID, NUMBER, TYPE, SUBTYPE, REPORTER, REPORTS, CHANNEL, SUBMITTED, PRIOR VOTES, ACTION
 const COL_WIDTHS = ['10%', '12%', '10%', '13%', '12%', '6%', '6%', '12%', '9%', '10%'];
 
+// ─── Prior-votes color: amber for any vote, grey only when none ──────
+function priorVotesColor(label) {
+  return label === "None" ? "#4b5563" : "#f59e0b";
+}
+// ─────────────────────────────────────────────────────────────────────
+
+// ─── Action column button styles ─────────────────────────────────────
+const ACTION_BTN_BASE = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "5px",
+  padding: "5px 11px",
+  borderRadius: "7px",
+  fontSize: "11px",
+  fontWeight: 600,
+  cursor: "pointer",
+  border: "1px solid transparent",
+  transition: "background 0.12s ease, border-color 0.12s ease",
+  whiteSpace: "nowrap",
+  fontFamily: "'Inter', system-ui, sans-serif",
+};
+
+const ACTION_BTN_BLUE = {
+  ...ACTION_BTN_BASE,
+  background: "rgba(59,130,246,0.10)",
+  borderColor: "rgba(59,130,246,0.35)",
+  color: "#60a5fa",
+};
+const ACTION_BTN_BLUE_HOVER = { background: "rgba(59,130,246,0.22)" };
+// ─────────────────────────────────────────────────────────────────────
+
+// ─── TIER TAXONOMY (Level 1) — mirrors inference.py ──────────────────
+// inference.py emits: 'legitimate' | 'grey_area' | 'malicious' (plus
+// 'uncertain' / 'unavailable' as fallbacks). We render each as a
+// color-coded chip so the TYPE column shows the AI's tier, not the
+// raw scamType string.
+const TIER_STYLES = {
+  malicious:   { dot: '#f43f5e', text: '#fb7185', bg: 'rgba(244,63,94,0.06)',   border: 'rgba(244,63,94,0.25)',   label: 'Malicious' },
+  grey_area:   { dot: '#eab308', text: '#facc15', bg: 'rgba(234,179,8,0.06)',   border: 'rgba(234,179,8,0.25)',   label: 'Grey Area' },
+  legitimate:  { dot: '#10b981', text: '#34d399', bg: 'rgba(16,185,129,0.06)',  border: 'rgba(16,185,129,0.25)',  label: 'Legitimate' },
+  uncertain:   { dot: '#94a3b8', text: '#94a3b8', bg: 'rgba(148,163,184,0.06)', border: 'rgba(148,163,184,0.20)', label: 'Uncertain' },
+  unavailable: { dot: '#64748b', text: '#64748b', bg: 'rgba(100,116,139,0.06)', border: 'rgba(100,116,139,0.20)', label: 'Unavailable' },
+};
+
+// Normalize whatever the backend sends (case/underscore variants) into
+// a key that exists in TIER_STYLES.
+function normalizeTierKey(raw) {
+  if (!raw) return 'unavailable';
+  const s = String(raw).toLowerCase().trim();
+  if (s === 'malicious') return 'malicious';
+  if (s === 'grey_area' || s === 'grey area' || s === 'greyarea' || s === 'gray_area' || s === 'gray area') return 'grey_area';
+  if (s === 'legitimate') return 'legitimate';
+  if (s === 'uncertain') return 'uncertain';
+  return 'unavailable';
+}
+
 // ─── SUBTYPE TAXONOMY (Level 2) ──────────────────────────────────────
-// Grouped by parent Level 1 tier. Used to populate the officer's
-// correction dropdown so officers can only pick a subtype that belongs
-// to the AI's declared Level 1 label.
 const SUBTYPES_BY_TIER = {
   legitimate: [
     'personal_conversational',
@@ -31,9 +84,7 @@ const SUBTYPES_BY_TIER = {
     'delivery_tracking',
     'bank_activity_alert',
   ],
-  grey_area: [
-    'brand_marketing',
-  ],
+  grey_area: ['brand_marketing'],
   malicious: [
     'phishing_link',
     'fake_prize_lottery',
@@ -43,7 +94,6 @@ const SUBTYPES_BY_TIER = {
   ],
 };
 
-// Human-readable labels for the dropdown.
 const SUBTYPE_LABELS = {
   personal_conversational: 'Personal Conversation',
   two_factor_auth: 'One-Time Password (OTP)',
@@ -58,14 +108,12 @@ const SUBTYPE_LABELS = {
   impersonation_family: 'Impersonation (Family)',
 };
 
-// Risk-tier color palette, aligned with the mobile app's RISK_STYLES.
-const RISK_TIER_STYLES = {
-  malicious: { dot: '#f43f5e', text: '#fb7185', bg: 'rgba(244,63,94,0.06)', border: 'rgba(244,63,94,0.25)' },
-  grey_area: { dot: '#eab308', text: '#facc15', bg: 'rgba(234,179,8,0.06)', border: 'rgba(234,179,8,0.25)' },
-  legitimate: { dot: '#10b981', text: '#34d399', bg: 'rgba(16,185,129,0.06)', border: 'rgba(16,185,129,0.25)' },
-};
+function labelSubtype(st) {
+  if (!st) return '—';
+  return SUBTYPE_LABELS[st] || st;
+}
 
-// ─── SVG ICONS (no emojis) ───────────────────────────────────────────
+// ─── SVG ICONS ───────────────────────────────────────────────────────
 const CheckIcon = ({ color, size = 14 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <path d="M20 6L9 17l-5-5" />
@@ -86,7 +134,6 @@ const SearchIcon = ({ color = "#4b5563" }) => (
   </svg>
 );
 
-// Pencil (Correct)
 const PencilIcon = ({ color, size = 14 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M12 20h9" />
@@ -94,7 +141,13 @@ const PencilIcon = ({ color, size = 14 }) => (
   </svg>
 );
 
-// Question mark in circle (Unsure)
+const EyeIcon = ({ color = "#60a5fa", size = 14 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
+
 const QuestionIcon = ({ color, size = 14 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="12" cy="12" r="10" />
@@ -103,14 +156,12 @@ const QuestionIcon = ({ color, size = 14 }) => (
   </svg>
 );
 
-// Filled star (High-value)
 const StarIcon = ({ color = "#f59e0b", size = 14, filled = false }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? color : "none"} stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
     <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
   </svg>
 );
 
-// Chevron down (for dropdown affordance)
 const ChevronDownIcon = ({ color = "#64748b", size = 12 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="6 9 12 15 18 9" />
@@ -146,9 +197,27 @@ function mapReportToRow(r, currentUid) {
     rawStatus === "rejected"       ? "Rejected" :
     rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1);
 
+  // ── AI tier ──────────────────────────────────────────────────────
+  // inference.py emits `label` on aiFlag. Fall back through a few
+  // alternative field names in case this report was ingested through
+  // an older pipeline. Never fall back to `scamType` — that is a
+  // subtype string, not a tier, and showing it as the tier would be
+  // misleading.
+  const rawTier =
+    ai.label ||
+    ai.tier ||
+    r.aiLabel ||
+    null;
+  const tierKey = normalizeTierKey(rawTier);
+
+  // ── Subtype ──────────────────────────────────────────────────────
+  const aiSubtype = ai.subtype || r.aiSubtype || null;
+
   return {
     id: String(id),
     number: r.sender || r.scammerNumber || r.reportedNumber || "Unknown",
+    // `type` is retained for backward compatibility (CSV export, search),
+    // but the table now renders the tier chip instead.
     type: r.scamType || r.category || "UNKNOWN",
     reports: r.reportCount ?? r.reports ?? 1,
     channel: r.channel || "SMS",
@@ -167,18 +236,19 @@ function mapReportToRow(r, currentUid) {
     evidenceText: r.evidenceText || r.content || r.textData || "",
     evidenceImage: r.evidenceImage || null,
     evidenceFiles: Array.isArray(r.evidenceFiles) ? r.evidenceFiles : [],
-    aiLabel: ai.label || "unavailable",
+    // Tier fields (new)
+    aiTier: tierKey,
+    aiLabel: tierKey,           // keep the old field name populated for the modal
+    aiRawLabel: rawTier,        // the raw string, for the modal's small text
     aiRiskLevel: ai.riskLevel || "UNKNOWN",
     aiConfidence: typeof ai.confidenceScore === "number" ? ai.confidenceScore : null,
     nullifierHash: r.nullifierHash || r.nullifier || null,
     zkpHash: r.zkpHash || null,
     jurisdiction: r.jurisdiction || "PH",
-    // ─── REPORTER IDENTITY ────────────────────────────────────────────
     reporterName: r.reporterName || null,
     reporterEmail: r.reporterEmail || null,
     reporterShared: Boolean(r.reporterShared),
-    // ─── LEVEL 2 SUBTYPE (continuous learning signal) ─────────────────
-    aiSubtype: ai.subtype || r.aiSubtype || null,
+    aiSubtype,
     aiSubtypeConfidence: typeof ai.subtypeConfidence === "number"
       ? ai.subtypeConfidence
       : (typeof r.aiSubtypeConfidence === "number" ? r.aiSubtypeConfidence : null),
@@ -186,11 +256,9 @@ function mapReportToRow(r, currentUid) {
     aiExplanationReasons: Array.isArray(ai.explanationReasons)
       ? ai.explanationReasons
       : (Array.isArray(r.aiExplanationReasons) ? r.aiExplanationReasons : []),
-    // Officer's own subtype verdict, if one was already recorded
     mySubtypeAction: myVote?.subtypeAction || null,
     myCorrectedSubtype: myVote?.correctedSubtype || null,
     myIsHighValue: Boolean(myVote?.isHighValue),
-    // ──────────────────────────────────────────────────────────────────
   };
 }
 
@@ -217,14 +285,10 @@ export default function ReviewQueue() {
   const [isEditMode, setIsEditMode] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
 
-  // ─── SUBTYPE VERIFICATION STATE (continuous learning) ─────────────
-  // subtypeAction: null | 'confirmed' | 'corrected' | 'unsure'
   const [subtypeAction, setSubtypeAction] = useState(null);
   const [correctedSubtype, setCorrectedSubtype] = useState(null);
   const [isHighValue, setIsHighValue] = useState(false);
-  // ──────────────────────────────────────────────────────────────────
 
-  // ─── Evidence zoom lightbox ────────────────────────────────────────
   const [zoomImage, setZoomImage] = useState(null);
   const [zoomScale, setZoomScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -258,7 +322,6 @@ export default function ReviewQueue() {
     setPan({ x: 0, y: 0 });
     setDragging(false);
   }
-  // ───────────────────────────────────────────────────────────────────
 
   const loadReports = useCallback(async () => {
     setLoading(true);
@@ -328,7 +391,6 @@ export default function ReviewQueue() {
     setIsEditMode(false);
     setLoadingDetail(true);
 
-    // Prefill subtype verification from the officer's own prior vote, if any
     setSubtypeAction(row.mySubtypeAction || null);
     setCorrectedSubtype(row.myCorrectedSubtype || null);
     setIsHighValue(Boolean(row.myIsHighValue));
@@ -341,6 +403,13 @@ export default function ReviewQueue() {
 
       const freshMyVote = (full?.votes || []).find(v => v.userId === user?.uid);
 
+      const rawTier =
+        full?.aiFlag?.label ||
+        full?.aiFlag?.tier ||
+        full?.aiLabel ||
+        row.aiRawLabel ||
+        null;
+
       setVoteModal({
         ...row,
         evidenceImage: full?.evidenceImage || null,
@@ -350,11 +419,12 @@ export default function ReviewQueue() {
         myDecision: freshMyVote?.decision || row.myDecision,
         myComment: freshMyVote?.comment || "",
         myEditedAt: freshMyVote?.editedAt || null,
-        // ─── REPORTER IDENTITY ──────────────────────────────────────
         reporterName: full?.reporterName ?? row.reporterName ?? null,
         reporterEmail: full?.reporterEmail ?? row.reporterEmail ?? null,
         reporterShared: Boolean(full?.reporterShared ?? row.reporterShared),
-        // ─── AI SUBTYPE + EXPLANATIONS ──────────────────────────────
+        aiTier: normalizeTierKey(rawTier),
+        aiLabel: normalizeTierKey(rawTier),
+        aiRawLabel: rawTier,
         aiSubtype: full?.aiFlag?.subtype || full?.aiSubtype || row.aiSubtype || null,
         aiSubtypeConfidence:
           (typeof full?.aiFlag?.subtypeConfidence === "number" ? full.aiFlag.subtypeConfidence : null) ??
@@ -366,7 +436,6 @@ export default function ReviewQueue() {
           Array.isArray(full?.aiFlag?.explanationReasons) ? full.aiFlag.explanationReasons :
           Array.isArray(full?.aiExplanationReasons) ? full.aiExplanationReasons :
           row.aiExplanationReasons || [],
-        // ─────────────────────────────────────────────────────────────
         _loadingImage: false,
       });
 
@@ -385,12 +454,6 @@ export default function ReviewQueue() {
     }
   }
 
-  const canOpenRow = useCallback((row) => {
-    if (tab === 'voted' || tab === 'resolved') return true;
-    if (tab === 'all') return row.hasVoted || row.isResolved;
-    return false;
-  }, [tab]);
-
   const filtered = useMemo(() => {
     let list = reports;
     if (tab === "resolved") {
@@ -406,7 +469,9 @@ export default function ReviewQueue() {
         r.id.toLowerCase().includes(q) ||
         r.number.toLowerCase().includes(q) ||
         r.type.toLowerCase().includes(q) ||
+        (r.aiLabel || "").toLowerCase().includes(q) ||
         (r.aiSubtype || "").toLowerCase().includes(q) ||
+        labelSubtype(r.aiSubtype).toLowerCase().includes(q) ||
         (r.reporterName || "").toLowerCase().includes(q) ||
         (r.reporterEmail || "").toLowerCase().includes(q)
       );
@@ -444,11 +509,9 @@ export default function ReviewQueue() {
         ? (isEditMode ? 'edit' : 'read')
         : 'vote';
 
-  // Build the subtype-verification payload block reused in both
-  // submit and edit flows.
   function buildSubtypePayload() {
     return {
-      subtypeAction: subtypeAction || null, // 'confirmed' | 'corrected' | 'unsure' | null
+      subtypeAction: subtypeAction || null,
       correctedSubtype: subtypeAction === 'corrected' ? correctedSubtype : null,
       isHighValue: Boolean(isHighValue),
       aiSubtypeAtVote: voteModal?.aiSubtype || null,
@@ -565,7 +628,7 @@ export default function ReviewQueue() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search ID, number, type, subtype…"
+            placeholder="Search ID, number, tier, subtype…"
             style={{ width: "100%", padding: "8px 12px 8px 30px", borderRadius: "8px", fontSize: "12px", background: "#0e0e18", border: "1px solid #1a1a2a", color: "#e2e8f0", outline: "none", boxSizing: "border-box" }}
           />
         </div>
@@ -593,7 +656,13 @@ export default function ReviewQueue() {
         <div style={{ padding: "12px 20px", borderBottom: "1px solid #1a1a2a" }}>
           <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff" }}>Incoming Reports</div>
           <div style={{ fontSize: "11px", marginTop: "2px", color: "#4b5563" }}>
-            {tab === 'pending' ? 'Click "Review" to open a case' : 'Click any row to open the case'}
+            {tab === 'pending'
+              ? 'Click "Review" to open a case'
+              : tab === 'voted'
+                ? 'Click "Edit vote" to change your decision'
+                : tab === 'resolved'
+                  ? 'Click "View" to inspect the final decision'
+                  : 'Click the action button to open a case'}
           </div>
         </div>
 
@@ -615,8 +684,20 @@ export default function ReviewQueue() {
                 </colgroup>
                 <thead>
                   <tr style={{ borderBottom: "1px solid #1a1a2a" }}>
-                    {['ID', 'NUMBER', 'TYPE', 'SUBTYPE', 'REPORTER', 'RPT', 'CH.', 'SUBMITTED', 'PRIOR VOTES', ''].map((h, i) => (
-                      <th key={i} style={{ padding: "8px 20px", textAlign: "left", fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", textTransform: "uppercase" }}>
+                    {['ID', 'NUMBER', 'TYPE', 'SUBTYPE', 'REPORTER', 'RPT', 'CH.', 'SUBMITTED', 'PRIOR VOTES', 'ACTION'].map((h, i) => (
+                      <th
+                        key={i}
+                        style={{
+                          padding: "8px 20px",
+                          textAlign: i === 9 ? "center" : "left",
+                          fontSize: "9px",
+                          fontWeight: 700,
+                          letterSpacing: "1px",
+                          color: "#4b5563",
+                          fontFamily: "'JetBrains Mono',monospace",
+                          textTransform: "uppercase",
+                        }}
+                      >
                         {h}
                       </th>
                     ))}
@@ -624,63 +705,85 @@ export default function ReviewQueue() {
                 </thead>
                 <tbody>
                   {group.items.map((row) => {
-                    const clickable = canOpenRow(row);
-                    const tier = RISK_TIER_STYLES[row.aiLabel] || null;
+                    // TYPE column → AI tier chip (from inference.py Level 1)
+                    const tier = TIER_STYLES[row.aiTier] || TIER_STYLES.unavailable;
                     return (
                       <tr
                         key={row.id}
-                        onClick={clickable ? () => openVoteModal(row) : undefined}
                         style={{
                           borderBottom: "1px solid #13131e",
-                          cursor: clickable ? "pointer" : "default",
                           transition: "background 0.12s ease",
                         }}
-                        onMouseEnter={clickable ? (e) => { e.currentTarget.style.background = "#101020"; } : undefined}
-                        onMouseLeave={clickable ? (e) => { e.currentTarget.style.background = "transparent"; } : undefined}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = "#101020"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                       >
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#3b82f6", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.id.slice(0, 12)}</td>
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#fff", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.number}</td>
-                        <td style={{ padding: "12px 20px", fontSize: "12px", color: "#9ca3af", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.type}</td>
-                        {/* ─── SUBTYPE COLUMN ──────────────────────── */}
-                        <td style={{ padding: "12px 20px", fontSize: "11px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {row.aiSubtype ? (
-                            <span
-                              style={{
-                                padding: "2px 8px",
-                                borderRadius: "6px",
-                                fontFamily: "'JetBrains Mono',monospace",
-                                color: tier ? tier.text : "#a5b4fc",
-                                background: tier ? tier.bg : "rgba(79,70,229,0.08)",
-                                border: `1px solid ${tier ? tier.border : "rgba(79,70,229,0.2)"}`,
-                              }}
-                            >
-                              {row.aiSubtype}
-                            </span>
-                          ) : (
-                            <span style={{ color: "#4b5563" }}>—</span>
-                          )}
+
+                        {/* TYPE — Level 1 tier chip */}
+                        <td style={{ padding: "12px 20px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "5px",
+                              padding: "3px 9px",
+                              borderRadius: "6px",
+                              fontSize: "10px",
+                              fontWeight: 700,
+                              fontFamily: "'JetBrains Mono',monospace",
+                              textTransform: "uppercase",
+                              letterSpacing: "0.04em",
+                              color: tier.text,
+                              background: tier.bg,
+                              border: `1px solid ${tier.border}`,
+                            }}
+                          >
+                            <span style={{ width: "5px", height: "5px", borderRadius: "50%", background: tier.dot, display: "inline-block" }} />
+                            {tier.label}
+                          </span>
                         </td>
-                        {/* ──────────────────────────────────────────── */}
-                        {/* ─── REPORTER IDENTITY ──────────────────── */}
+
+                        {/* SUBTYPE — Level 2 label (matches Blacklist Registry) */}
+                        <td style={{ padding: "12px 20px", fontSize: "11px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: row.aiSubtype ? "#cbd5e1" : "#4b5563" }}>
+                          {labelSubtype(row.aiSubtype)}
+                        </td>
+
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#9ca3af", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           {row.reporterShared && row.reporterName
                             ? row.reporterName
                             : <span style={{ color: "#4b5563", fontStyle: "italic" }}>Anonymous</span>}
                         </td>
-                        {/* ──────────────────────────────────────────── */}
                         <td style={{ padding: "12px 20px", fontSize: "12px", fontWeight: 700, color: "#fff" }}>{row.reports}</td>
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#6b7280" }}>{row.channel}</td>
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.submitted}</td>
-                        <td style={{ padding: "12px 20px", fontSize: "12px", color: row.priorVotes === "1 vote" ? "#f59e0b" : "#4b5563" }}>{row.priorVotes}</td>
-                        <td style={{ padding: "12px 20px" }}>
-                          {row.hasVoted ? (
-                            <span style={{ fontSize: "11px", color: "#22c55e", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: "4px" }}>
-                              <CheckIcon color="#22c55e" size={11} /> Voted
-                            </span>
+                        <td style={{ padding: "12px 20px", fontSize: "12px", color: priorVotesColor(row.priorVotes), fontWeight: row.priorVotes === "None" ? 400 : 600 }}>{row.priorVotes}</td>
+                        <td style={{ padding: "12px 20px", verticalAlign: "middle", textAlign: "center" }}>
+                          {row.isResolved ? (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); openVoteModal(row); }}
+                              style={ACTION_BTN_BLUE}
+                              onMouseEnter={(e) => Object.assign(e.currentTarget.style, ACTION_BTN_BLUE_HOVER)}
+                              onMouseLeave={(e) => Object.assign(e.currentTarget.style, ACTION_BTN_BLUE)}
+                            >
+                              <EyeIcon color="#60a5fa" size={11} /> View
+                            </button>
+                          ) : row.hasVoted ? (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); openVoteModal(row); }}
+                              style={ACTION_BTN_BLUE}
+                              onMouseEnter={(e) => Object.assign(e.currentTarget.style, ACTION_BTN_BLUE_HOVER)}
+                              onMouseLeave={(e) => Object.assign(e.currentTarget.style, ACTION_BTN_BLUE)}
+                            >
+                              <PencilIcon color="#60a5fa" size={11} /> Edit vote
+                            </button>
                           ) : row.isUnresolved ? (
                             <button
                               onClick={(e) => { e.stopPropagation(); openVoteModal(row); }}
-                              style={{ fontSize: "11px", fontWeight: 600, color: "#3b82f6", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                              style={ACTION_BTN_BLUE}
+                              onMouseEnter={(e) => Object.assign(e.currentTarget.style, ACTION_BTN_BLUE_HOVER)}
+                              onMouseLeave={(e) => Object.assign(e.currentTarget.style, ACTION_BTN_BLUE)}
+                            >
                               Review
                             </button>
                           ) : (
@@ -723,92 +826,79 @@ export default function ReviewQueue() {
                 </div>
               )}
 
-              {/* ─── AI CLASSIFICATION (Level 1 + Level 2) ─────────────── */}
+              {/* AI CLASSIFICATION — Level 1 tier + Level 2 subtype */}
               <div style={{ marginBottom: "16px" }}>
                 <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "8px", fontFamily: "'JetBrains Mono',monospace" }}>
                   AI CLASSIFICATION
                 </div>
 
-                {voteModal.aiSubtype ? (
-                  (() => {
-                    const tier = RISK_TIER_STYLES[voteModal.aiLabel] || RISK_TIER_STYLES.grey_area;
+                {(() => {
+                  const tier = TIER_STYLES[voteModal.aiTier] || TIER_STYLES.unavailable;
+                  const hasAny = voteModal.aiSubtype || voteModal.aiTier !== 'unavailable';
+                  if (!hasAny) {
                     return (
-                      <div style={{ padding: "14px 16px", borderRadius: "10px", background: tier.bg, border: `1px solid ${tier.border}` }}>
-                        <div style={{ display: "flex", gap: "20px", alignItems: "flex-start", marginBottom: voteModal.aiExplanationReasons?.length > 0 ? "12px" : 0 }}>
-                          {/* Risk tier column */}
-                          <div style={{ flex: "0 0 auto", minWidth: "110px" }}>
-                            <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>
-                              RISK TIER
-                            </div>
-                            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: tier.dot }} />
-                              <span style={{ fontSize: "12px", fontWeight: 700, color: tier.text, fontFamily: "'JetBrains Mono',monospace", textTransform: "uppercase" }}>
-                                {voteModal.aiRiskLevel}
-                              </span>
-                            </div>
-                            <div style={{ fontSize: "10px", color: "#64748b", marginTop: "4px" }}>
-                              {voteModal.aiLabel}
-                            </div>
-                          </div>
-
-                          {/* Subtype column */}
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>
-                              SUBTYPE
-                            </div>
-                            <div style={{ fontSize: "13px", fontWeight: 700, color: "#e2e8f0", fontFamily: "'JetBrains Mono',monospace", marginBottom: "4px", wordBreak: "break-word" }}>
-                              {voteModal.aiSubtype}
-                            </div>
-                            <div style={{ fontSize: "10px", color: "#64748b" }}>
-                              {voteModal.aiSubtypeConfidence != null
-                                ? `${(voteModal.aiSubtypeConfidence * 100).toFixed(1)}% confidence`
-                                : "confidence unavailable"}
-                              {voteModal.aiSubtypeModelVersion && (
-                                <span style={{ marginLeft: "8px" }}>
-                                  · {voteModal.aiSubtypeModelVersion}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Explanation reasons */}
-                        {voteModal.aiExplanationReasons?.length > 0 && (
-                          <div style={{ paddingTop: "12px", borderTop: "1px solid rgba(148,163,184,0.08)" }}>
-                            <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "8px" }}>
-                              WHY THE AI FLAGGED THIS
-                            </div>
-                            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                              {voteModal.aiExplanationReasons.map((reason, i) => (
-                                <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
-                                  <span style={{ fontSize: "10px", color: "#818cf8", fontWeight: 700, marginTop: "1px", flexShrink: 0 }}>
-                                    {i + 1}.
-                                  </span>
-                                  <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ fontSize: "11px", fontWeight: 600, color: "#cbd5e1" }}>
-                                      {reason.category}
-                                    </div>
-                                    <div style={{ fontSize: "10px", color: "#64748b", lineHeight: 1.4 }}>
-                                      {reason.description}
-                                    </div>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
+                      <div style={{ padding: "12px 14px", borderRadius: "10px", background: "rgba(148,163,184,0.03)", border: "1px solid rgba(148,163,184,0.08)", fontSize: "11px", color: "#64748b", fontStyle: "italic" }}>
+                        No AI classification available for this report.
                       </div>
                     );
-                  })()
-                ) : (
-                  <div style={{ padding: "12px 14px", borderRadius: "10px", background: "rgba(148,163,184,0.03)", border: "1px solid rgba(148,163,184,0.08)", fontSize: "11px", color: "#64748b", fontStyle: "italic" }}>
-                    No subtype available for this report (subtype model may not have loaded when it was submitted).
-                  </div>
-                )}
-              </div>
-              {/* ─────────────────────────────────────────────────────── */}
+                  }
+                  return (
+                    <div style={{ padding: "14px 16px", borderRadius: "10px", background: tier.bg, border: `1px solid ${tier.border}` }}>
+                      <div style={{ display: "flex", gap: "20px", alignItems: "flex-start", marginBottom: voteModal.aiExplanationReasons?.length > 0 ? "12px" : 0 }}>
+                        <div style={{ flex: "0 0 auto", minWidth: "110px" }}>
+                          <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>TIER</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: tier.dot }} />
+                            <span style={{ fontSize: "12px", fontWeight: 700, color: tier.text, fontFamily: "'JetBrains Mono',monospace", textTransform: "uppercase" }}>
+                              {tier.label}
+                            </span>
+                          </div>
+                          {voteModal.aiRiskLevel && (
+                            <div style={{ fontSize: "10px", color: "#64748b", marginTop: "4px" }}>
+                              Risk: {voteModal.aiRiskLevel}
+                            </div>
+                          )}
+                        </div>
 
-              {/* ─── REPORTER IDENTITY ──────────────────────────────────── */}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>SUBTYPE</div>
+                          <div style={{ fontSize: "13px", fontWeight: 700, color: "#e2e8f0", fontFamily: "'JetBrains Mono',monospace", marginBottom: "4px", wordBreak: "break-word" }}>
+                            {labelSubtype(voteModal.aiSubtype)}
+                          </div>
+                          <div style={{ fontSize: "10px", color: "#64748b" }}>
+                            {voteModal.aiSubtypeConfidence != null
+                              ? `${(voteModal.aiSubtypeConfidence * 100).toFixed(1)}% confidence`
+                              : "confidence unavailable"}
+                            {voteModal.aiSubtypeModelVersion && (
+                              <span style={{ marginLeft: "8px" }}>· {voteModal.aiSubtypeModelVersion}</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {voteModal.aiExplanationReasons?.length > 0 && (
+                        <div style={{ paddingTop: "12px", borderTop: "1px solid rgba(148,163,184,0.08)" }}>
+                          <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "8px" }}>
+                            WHY THE AI FLAGGED THIS
+                          </div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                            {voteModal.aiExplanationReasons.map((reason, i) => (
+                              <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
+                                <span style={{ fontSize: "10px", color: "#818cf8", fontWeight: 700, marginTop: "1px", flexShrink: 0 }}>{i + 1}.</span>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontSize: "11px", fontWeight: 600, color: "#cbd5e1" }}>{reason.category}</div>
+                                  <div style={{ fontSize: "10px", color: "#64748b", lineHeight: 1.4 }}>{reason.description}</div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+
               <div style={{ padding: "12px 14px", borderRadius: "8px", marginBottom: "16px", background: voteModal.reporterShared ? "rgba(59,130,246,0.06)" : "rgba(148,163,184,0.03)", border: `1px solid ${voteModal.reporterShared ? "rgba(59,130,246,0.25)" : "rgba(148,163,184,0.08)"}` }}>
                 <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px", fontFamily: "'JetBrains Mono',monospace" }}>
                   REPORTED BY
@@ -830,7 +920,6 @@ export default function ReviewQueue() {
                   </div>
                 )}
               </div>
-              {/* ────────────────────────────────────────────────────────── */}
 
               {voteModal.votes.length > 0 && (
                 <div style={{ marginBottom: "20px" }}>
@@ -852,7 +941,7 @@ export default function ReviewQueue() {
                             </span>
                           </div>
                           <div style={{ fontSize: "11px", color: "#9ca3af", lineHeight: 1.5 }}>"{v.comment || 'No comment'}"</div>
-                          {/* Subtype verdict for THIS vote, if any */}
+
                           {(v.subtypeAction || v.isHighValue) && (
                             <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
                               {v.subtypeAction && (
@@ -896,25 +985,11 @@ export default function ReviewQueue() {
                   </div>
                   <div
                     onClick={() => openZoom(voteModal.evidenceImage)}
-                    style={{
-                      borderRadius: "8px",
-                      overflow: "hidden",
-                      background: "#080810",
-                      border: "1px solid #13131e",
-                      maxHeight: "320px",
-                      display: "flex",
-                      justifyContent: "center",
-                      cursor: "zoom-in",
-                      transition: "border-color 0.15s ease",
-                    }}
+                    style={{ borderRadius: "8px", overflow: "hidden", background: "#080810", border: "1px solid #13131e", maxHeight: "320px", display: "flex", justifyContent: "center", cursor: "zoom-in", transition: "border-color 0.15s ease" }}
                     onMouseEnter={(e) => e.currentTarget.style.borderColor = "#3b82f6"}
                     onMouseLeave={(e) => e.currentTarget.style.borderColor = "#13131e"}
                   >
-                    <img
-                      src={voteModal.evidenceImage}
-                      alt="Screenshot evidence"
-                      style={{ maxWidth: "100%", maxHeight: "320px", objectFit: "contain", pointerEvents: "none" }}
-                    />
+                    <img src={voteModal.evidenceImage} alt="Screenshot evidence" style={{ maxWidth: "100%", maxHeight: "320px", objectFit: "contain", pointerEvents: "none" }} />
                   </div>
                 </div>
               )}
@@ -934,7 +1009,6 @@ export default function ReviewQueue() {
                 </div>
               )}
 
-              {/* ── READ MODE (voted, still open) ── */}
               {modalMode === 'read' && !voteModal.isResolved && voteModal.hasVoted && (
                 <div style={{ marginBottom: "16px" }}>
                   <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "6px" }}>YOUR VOTE</div>
@@ -945,7 +1019,6 @@ export default function ReviewQueue() {
                     </div>
                     <div style={{ fontSize: "12px", color: "#cbd5e1", lineHeight: 1.5 }}>"{voteModal.myComment || 'No comment'}"</div>
 
-                    {/* Subtype verdict block, if officer recorded one */}
                     {(voteModal.mySubtypeAction || voteModal.myIsHighValue) && (
                       <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid rgba(148,163,184,0.08)", display: "flex", flexWrap: "wrap", gap: "6px" }}>
                         {voteModal.mySubtypeAction && (
@@ -974,13 +1047,12 @@ export default function ReviewQueue() {
 
                   <button
                     onClick={enterEditMode}
-                    style={{ marginTop: "12px", width: "100%", padding: "10px", borderRadius: "10px", fontSize: "12px", fontWeight: 700, background: "#111118", border: "1.5px solid #1a1a28", color: "#9ca3af", cursor: "pointer" }}>
-                    Edit vote
+                    style={{ marginTop: "12px", width: "100%", padding: "10px", borderRadius: "10px", fontSize: "12px", fontWeight: 700, background: "rgba(59,130,246,0.10)", border: "1.5px solid rgba(59,130,246,0.35)", color: "#60a5fa", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>
+                    <PencilIcon color="#60a5fa" size={12} /> Edit vote
                   </button>
                 </div>
               )}
 
-              {/* ── VOTE / EDIT MODE ── */}
               {(modalMode === 'vote' || modalMode === 'edit') && (
                 <>
                   {modalMode === 'edit' && (
@@ -989,7 +1061,6 @@ export default function ReviewQueue() {
                     </div>
                   )}
 
-                  {/* ─── SUBTYPE VERIFICATION (continuous learning) ─── */}
                   {voteModal.aiSubtype && (
                     <div style={{ marginBottom: "20px", padding: "14px 16px", borderRadius: "10px", background: "#080810", border: "1px solid #1a1a28" }}>
                       <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "8px", fontFamily: "'JetBrains Mono',monospace" }}>
@@ -999,18 +1070,11 @@ export default function ReviewQueue() {
                         Your answer becomes a training signal. Confirmed examples reinforce the model; corrected examples teach it the right label; unsure examples are excluded from the next retrain.
                       </div>
 
-                      {/* Three-way choice */}
                       <div style={{ display: "flex", gap: "8px", marginBottom: subtypeAction === 'corrected' ? "14px" : "0" }}>
                         <button
                           type="button"
                           onClick={() => { setSubtypeAction('confirmed'); setCorrectedSubtype(null); }}
-                          style={{
-                            flex: 1, padding: "12px 8px", borderRadius: "10px", fontSize: "11px", fontWeight: 700,
-                            cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px",
-                            background: subtypeAction === 'confirmed' ? "rgba(34,197,94,0.12)" : "#111118",
-                            border: `1.5px solid ${subtypeAction === 'confirmed' ? "#22c55e" : "#1a1a28"}`,
-                            color: subtypeAction === 'confirmed' ? "#22c55e" : "#64748b",
-                          }}
+                          style={{ flex: 1, padding: "12px 8px", borderRadius: "10px", fontSize: "11px", fontWeight: 700, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px", background: subtypeAction === 'confirmed' ? "rgba(34,197,94,0.12)" : "#111118", border: `1.5px solid ${subtypeAction === 'confirmed' ? "#22c55e" : "#1a1a28"}`, color: subtypeAction === 'confirmed' ? "#22c55e" : "#64748b" }}
                         >
                           <CheckIcon color={subtypeAction === 'confirmed' ? "#22c55e" : "#64748b"} size={16} />
                           <span>Confirm AI</span>
@@ -1019,13 +1083,7 @@ export default function ReviewQueue() {
                         <button
                           type="button"
                           onClick={() => setSubtypeAction('corrected')}
-                          style={{
-                            flex: 1, padding: "12px 8px", borderRadius: "10px", fontSize: "11px", fontWeight: 700,
-                            cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px",
-                            background: subtypeAction === 'corrected' ? "rgba(59,130,246,0.12)" : "#111118",
-                            border: `1.5px solid ${subtypeAction === 'corrected' ? "#3b82f6" : "#1a1a28"}`,
-                            color: subtypeAction === 'corrected' ? "#3b82f6" : "#64748b",
-                          }}
+                          style={{ flex: 1, padding: "12px 8px", borderRadius: "10px", fontSize: "11px", fontWeight: 700, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px", background: subtypeAction === 'corrected' ? "rgba(59,130,246,0.12)" : "#111118", border: `1.5px solid ${subtypeAction === 'corrected' ? "#3b82f6" : "#1a1a28"}`, color: subtypeAction === 'corrected' ? "#3b82f6" : "#64748b" }}
                         >
                           <PencilIcon color={subtypeAction === 'corrected' ? "#3b82f6" : "#64748b"} size={16} />
                           <span>Correct AI</span>
@@ -1034,20 +1092,13 @@ export default function ReviewQueue() {
                         <button
                           type="button"
                           onClick={() => { setSubtypeAction('unsure'); setCorrectedSubtype(null); }}
-                          style={{
-                            flex: 1, padding: "12px 8px", borderRadius: "10px", fontSize: "11px", fontWeight: 700,
-                            cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px",
-                            background: subtypeAction === 'unsure' ? "rgba(234,179,8,0.1)" : "#111118",
-                            border: `1.5px solid ${subtypeAction === 'unsure' ? "#eab308" : "#1a1a28"}`,
-                            color: subtypeAction === 'unsure' ? "#facc15" : "#64748b",
-                          }}
+                          style={{ flex: 1, padding: "12px 8px", borderRadius: "10px", fontSize: "11px", fontWeight: 700, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px", background: subtypeAction === 'unsure' ? "rgba(234,179,8,0.1)" : "#111118", border: `1.5px solid ${subtypeAction === 'unsure' ? "#eab308" : "#1a1a28"}`, color: subtypeAction === 'unsure' ? "#facc15" : "#64748b" }}
                         >
                           <QuestionIcon color={subtypeAction === 'unsure' ? "#facc15" : "#64748b"} size={16} />
                           <span>Unsure</span>
                         </button>
                       </div>
 
-                      {/* Correction dropdown — only shown when "Correct" is picked */}
                       {subtypeAction === 'corrected' && (
                         <div style={{ marginBottom: "14px", position: "relative" }}>
                           <label style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", display: "block", marginBottom: "6px", fontFamily: "'JetBrains Mono',monospace" }}>
@@ -1057,15 +1108,10 @@ export default function ReviewQueue() {
                             <select
                               value={correctedSubtype || ''}
                               onChange={(e) => setCorrectedSubtype(e.target.value || null)}
-                              style={{
-                                width: "100%", padding: "10px 32px 10px 12px", borderRadius: "10px", fontSize: "12px",
-                                background: "#111118", border: "1px solid #1a1a28", color: "#e2e8f0",
-                                outline: "none", cursor: "pointer", appearance: "none", WebkitAppearance: "none",
-                                fontFamily: "'JetBrains Mono',monospace",
-                              }}
+                              style={{ width: "100%", padding: "10px 32px 10px 12px", borderRadius: "10px", fontSize: "12px", background: "#111118", border: "1px solid #1a1a28", color: "#e2e8f0", outline: "none", cursor: "pointer", appearance: "none", WebkitAppearance: "none", fontFamily: "'JetBrains Mono',monospace" }}
                             >
                               <option value="">— Choose the correct subtype —</option>
-                              {(SUBTYPES_BY_TIER[voteModal.aiLabel] || []).map((st) => (
+                              {(SUBTYPES_BY_TIER[voteModal.aiTier] || SUBTYPES_BY_TIER[voteModal.aiLabel] || []).map((st) => (
                                 <option key={st} value={st}>
                                   {SUBTYPE_LABELS[st] || st}
                                   {st === voteModal.aiSubtype ? '  (current AI pick)' : ''}
@@ -1079,7 +1125,6 @@ export default function ReviewQueue() {
                         </div>
                       )}
 
-                      {/* High-value star */}
                       <label style={{ display: "flex", alignItems: "center", gap: "10px", paddingTop: "12px", borderTop: "1px solid rgba(148,163,184,0.06)", cursor: "pointer" }}>
                         <input
                           type="checkbox"
@@ -1090,13 +1135,10 @@ export default function ReviewQueue() {
                         <span style={{ fontSize: "11px", color: "#94a3b8", display: "inline-flex", alignItems: "center", gap: "6px" }}>
                           <StarIcon color="#f59e0b" size={12} filled={isHighValue} />
                           Mark as high-value training example
-                          <span style={{ color: "#4b5563" }}>
-                            (weighted 3x in the next retrain)
-                          </span>
+                          <span style={{ color: "#4b5563" }}>(weighted 3x in the next retrain)</span>
                         </span>
                       </label>
 
-                      {/* Contextual hint for the chosen action */}
                       {subtypeAction === 'confirmed' && (
                         <div style={{ marginTop: "10px", fontSize: "10px", color: "#22c55e", fontStyle: "italic" }}>
                           Your confirmation will be logged with weight 2.0 in the next retraining run.
@@ -1114,7 +1156,27 @@ export default function ReviewQueue() {
                       )}
                     </div>
                   )}
-                  {/* ─────────────────────────────────────────────── */}
+
+                  <div style={{
+                    marginBottom: "12px",
+                    padding: "12px 14px",
+                    borderRadius: "10px",
+                    background: "#080810",
+                    border: "1px solid #1a1a28",
+                    fontSize: "12px",
+                    color: "#94a3b8",
+                    lineHeight: 1.55,
+                  }}>
+                    <div style={{ fontWeight: 600, color: "#cbd5e1", marginBottom: "6px" }}>
+                      Decide whether this report is a genuine scam
+                    </div>
+                    <div style={{ marginBottom: "4px" }}>
+                      <strong style={{ color: "#22c55e" }}>Approve</strong> — you agree the number/message is a real scam. When two out of three officers approve, the number is added to the blacklist.
+                    </div>
+                    <div>
+                      <strong style={{ color: "#ef4444" }}>Reject</strong> — you believe this is a false alarm or legitimate. When two out of three officers reject, the case is closed as not-a-scam.
+                    </div>
+                  </div>
 
                   <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
                     <button onClick={() => setDecision("approve")}
@@ -1154,7 +1216,6 @@ export default function ReviewQueue() {
         </div>
       )}
 
-      {/* ─── Evidence zoom lightbox ─── */}
       {zoomImage && (
         <div
           onWheel={(e) => {

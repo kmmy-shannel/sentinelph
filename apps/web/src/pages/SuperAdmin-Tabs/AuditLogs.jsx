@@ -7,7 +7,7 @@ const ROLE_COLOR = {
   officer: "#3b82f6",
   analyst: "#a855f7",
   auditor: "#22c55e",
-  admin: "#f59e0b",
+  admin: "#d60bf5",
   superadmin: A,
   system: "#4b5563",
   citizen: "#6b7280",
