@@ -7,9 +7,9 @@
 // (#080810), indigo/purple accent (#6366f1 / #4f46e5), monospace uppercase
 // field labels — matching the Figma Make "CITIZEN PROTECTION PORTAL" theme.
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import {
-  ActivityIndicator,  Image,   
+  ActivityIndicator,  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -51,6 +51,42 @@ const T = {
 };
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// ---------------------------------------------------------------------------
+// Full name validation
+//
+// Rules — matches common PH government form standards:
+//   • 2 to 80 characters
+//   • Letters (A-Z a-z), including Ñ/ñ and accented Latin letters
+//   • Spaces, hyphens, apostrophes, periods (for Jr., Sr., III)
+//   • At least one letter
+//   • Rejects digits, symbols, emojis, and leading/trailing whitespace
+//   • Collapses runs of whitespace to a single space (handled by sanitizer)
+// ---------------------------------------------------------------------------
+const FULL_NAME_REGEX = /^[A-Za-zÀ-ÖØ-öø-ÿÑñ.'\- ]{2,80}$/;
+
+function sanitizeFullName(raw) {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .replace(/[^A-Za-zÀ-ÖØ-öø-ÿÑñ.'\- ]/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .slice(0, 80);
+}
+
+function validateFullName(name) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return 'Full name is required.';
+  if (trimmed.length < 2) return 'Full name must be at least 2 characters.';
+  if (trimmed.length > 80) return 'Full name must be 80 characters or fewer.';
+  if (/\d/.test(trimmed)) return 'Full name must not contain numbers.';
+  if (!/[A-Za-zÀ-ÖØ-öø-ÿÑñ]/.test(trimmed)) {
+    return 'Full name must contain at least one letter.';
+  }
+  if (!FULL_NAME_REGEX.test(trimmed)) {
+    return 'Full name may only contain letters, spaces, hyphens, apostrophes, and periods.';
+  }
+  return null;
+}
 
 function isPasswordValid(password) {
   if (typeof password !== 'string') return false;
@@ -95,6 +131,7 @@ function getPasswordStrength(password) {
   if (score <= 3) return { score: 3, label: 'STRONG', color: T.strong };
   return { score: 4, label: 'VERY STRONG', color: T.strong };
 }
+
 // ---------------------------------------------------------------------------
 // UI Atoms
 // ---------------------------------------------------------------------------
@@ -130,6 +167,7 @@ function Field({
   focused,
   onFocus,
   onBlur,
+  editable = true,
 }) {
   const [visible, setVisible] = useState(false);
 
@@ -151,6 +189,7 @@ function Field({
           style={styles.input}
           onFocus={onFocus}
           onBlur={onBlur}
+          editable={editable}
         />
         {secure ? <EyeIcon visible={visible} onPress={() => setVisible((v) => !v)} /> : null}
       </View>
@@ -238,8 +277,6 @@ function StrengthMeter({ password }) {
   );
 }
 
-// Toast shown briefly at the top of the screen. Distinct from the inline
-// `banner` used for form-validation/API feedback.
 function Toast({ message }) {
   if (!message) return null;
   return (
@@ -250,13 +287,11 @@ function Toast({ message }) {
   );
 }
 
-// Rounded purple logo badge with the "S" mark, app title, and the green
-// "CITIZEN PROTECTION PORTAL" status pill.
 function BrandHeader() {
   return (
     <View style={styles.headerBlock}>
-            <Image
-       source={require('../assets/LOGO1.png')}
+      <Image
+        source={require('../assets/LOGO1.png')}
         style={styles.logoImage}
         resizeMode="contain"
       />
@@ -279,7 +314,6 @@ function LegalFooter() {
   );
 }
 
-// Outer shell that frames the auth card, brand header, and footer.
 function PhoneShell({ children, title }) {
   return (
     <View style={styles.shell}>
@@ -294,14 +328,450 @@ function PhoneShell({ children, title }) {
 }
 
 // ---------------------------------------------------------------------------
-// Forgot Password Sheet
+// Legal Modal
 //
-// Defined HERE — before SignInScreen — because:
-//   • ForgotPasswordSheet reads `sheetStyles` at render time
-//   • `sheetStyles` is a `const` (StyleSheet.create call) — not hoisted
-//   • If sheetStyles were declared after SignInScreen, tapping
-//     "Forgot password?" would crash with:
-//       "ReferenceError: Cannot access 'sheetStyles' before initialization"
+// Gating rules:
+//   • "I Agree" is disabled until the user scrolls to the bottom of the
+//     current tab's document.
+//   • Tapping "I Agree" fires onAgree(tab), where tab is 'terms' or 'privacy'.
+//     The parent tracks which documents have been acknowledged.
+//   • Users can dismiss with "Close" or the X — in that case onAgree is NOT
+//     called and the document remains unread.
+// ---------------------------------------------------------------------------
+
+const TERMS_SECTIONS = [
+  {
+    heading: '1. Acceptance of Terms',
+    body:
+      'By creating an account on SentinelPH, you agree to these Terms of Service. ' +
+      'If you do not agree, you must not use the application. Your continued use ' +
+      'after any modification constitutes acceptance of the updated terms.',
+  },
+  {
+    heading: '2. Purpose of the Service',
+    body:
+      'SentinelPH is a citizen-reporting platform for suspected SMS scams, ' +
+      'smishing, and fraud. It is an advisory tool only. Reports submitted through ' +
+      'the platform do not constitute formal complaints and are not a substitute ' +
+      'for filing a case with the Philippine National Police (PNP), National ' +
+      'Bureau of Investigation (NBI), or the Cybercrime Investigation and ' +
+      'Coordinating Center (CICC).',
+  },
+  {
+    heading: '3. User Responsibilities',
+    body:
+      'You agree to submit only truthful reports. You must not use the platform ' +
+      'to harass, defame, or impersonate any person or organization. Knowingly ' +
+      'filing false reports may be prosecuted under Article 154 of the Revised ' +
+      'Penal Code and Republic Act No. 10175 (Cybercrime Prevention Act of 2012).',
+  },
+  {
+    heading: '4. Prohibited Conduct',
+    body:
+      'You must not attempt to reverse engineer, scrape, or disrupt the service. ' +
+      'You must not upload malware, attempt unauthorized access, or use the ' +
+      'platform for commercial solicitation. Violations may result in account ' +
+      'suspension and referral to law enforcement.',
+  },
+  {
+    heading: '5. Content Ownership',
+    body:
+      'You retain ownership of the messages and evidence you submit. By ' +
+      'submitting a report, you grant SentinelPH a non-exclusive, royalty-free ' +
+      'license to process, analyze, and store the content for the purpose of ' +
+      'scam detection, trend analysis, and coordination with law enforcement ' +
+      'agencies.',
+  },
+  {
+    heading: '6. Limitation of Liability',
+    body:
+      'SentinelPH and its operators are not liable for any direct, indirect, or ' +
+      'consequential damages arising from reliance on AI classifications or ' +
+      'officer verdicts. The platform provides best-effort advisory signals and ' +
+      'does not guarantee prevention of fraud.',
+  },
+  {
+    heading: '7. Modifications',
+    body:
+      'We may update these terms from time to time. Material changes will be ' +
+      'communicated through the application. Continued use after changes are ' +
+      'posted constitutes acceptance.',
+  },
+  {
+    heading: '8. Governing Law',
+    body:
+      'These terms are governed by the laws of the Republic of the Philippines. ' +
+      'Any dispute shall be brought before the appropriate courts of Metro Manila.',
+  },
+];
+
+const PRIVACY_SECTIONS = [
+  {
+    heading: '1. Data Controller',
+    body:
+      'The data controller for SentinelPH is the operating agency (NBI or ' +
+      'designated government body). Contact details for the Data Protection ' +
+      'Officer are available in the application settings.',
+  },
+  {
+    heading: '2. Data We Collect',
+    body:
+      'When you use SentinelPH, we collect: (a) your full name and email ' +
+      'address for account registration; (b) the SMS text, sender number, and ' +
+      'screenshots you submit as part of a report; (c) your approximate ' +
+      'location (latitude and longitude) to route the report to the correct ' +
+      'regional officer queue; (d) device and network metadata for security ' +
+      'and fraud prevention.',
+  },
+  {
+    heading: '3. Purpose of Processing',
+    body:
+      'Your data is processed to: (a) classify the reported message using our ' +
+      'AI model; (b) route the report to the appropriate regional officer; ' +
+      '(c) enable officers to review, vote, and finalize the report; (d) ' +
+      'produce aggregated statistics for law-enforcement planning.',
+  },
+  {
+    heading: '4. Legal Basis',
+    body:
+      'Processing is based on your consent (Section 12 of RA 10173, the Data ' +
+      'Privacy Act of 2012) and on the legitimate interests of the government ' +
+      'in preventing cybercrime (Section 13). Consent is obtained when you ' +
+      'accept this privacy notice and submit your first report.',
+  },
+  {
+    heading: '5. Anonymity by Default',
+    body:
+      'Report submissions are pseudonymized using zero-knowledge nullifiers. ' +
+      'By default, officers see the reported message and sender number but not ' +
+      'your identity. Your name and email are shown only if you opt in via the ' +
+      '"Share my identity with officers" toggle on the report submission screen.',
+  },
+  {
+    heading: '6. Data Sharing',
+    body:
+      'Your data is never sold. It is shared only with: (a) the reviewing ' +
+      'officer(s) assigned to your region; (b) supervising admin within the ' +
+      'same agency; (c) auditors and the Data Protection Officer for compliance ' +
+      'review. Aggregated, non-identifiable statistics may be shared with ' +
+      'partner agencies.',
+  },
+  {
+    heading: '7. Data Retention',
+    body:
+      'Reports are retained for a period of five (5) years to support ongoing ' +
+      'investigation, after which they are anonymized. Account data (name, ' +
+      'email) is retained until you request deletion. To request deletion, ' +
+      'contact the Data Protection Officer through the application.',
+  },
+  {
+    heading: '8. Your Rights',
+    body:
+      'Under RA 10173, you have the right to: (a) be informed; (b) object to ' +
+      'processing; (c) access your data; (d) rectify inaccuracies; (e) erase ' +
+      'or block; (f) damages; (g) data portability; (h) file a complaint with ' +
+      'the National Privacy Commission. Contact the Data Protection Officer ' +
+      'to exercise any of these rights.',
+  },
+  {
+    heading: '9. Security',
+    body:
+      'We use industry-standard encryption in transit (HTTPS/TLS) and at rest. ' +
+      'Passwords are never stored on our servers — authentication is handled by ' +
+      'Firebase Authentication. Reports are hash-chained to detect tampering.',
+  },
+  {
+    heading: '10. Children',
+    body:
+      'SentinelPH is not intended for users under 18. We do not knowingly ' +
+      'collect data from minors. If you believe a minor has created an ' +
+      'account, contact the Data Protection Officer for removal.',
+  },
+];
+
+function LegalModal({ visible, initialTab = 'terms', onClose, onAgree }) {
+  const [tab, setTab] = useState(initialTab);
+  const [scrolledToBottom, setScrolledToBottom] = useState(false);
+
+  useEffect(() => {
+    if (visible) setScrolledToBottom(false);
+  }, [visible, tab]);
+
+  const sections = tab === 'terms' ? TERMS_SECTIONS : PRIVACY_SECTIONS;
+
+  function handleScroll(event) {
+    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
+    const padding = 24;
+    const atBottom =
+      layoutMeasurement.height + contentOffset.y >= contentSize.height - padding;
+    if (atBottom && !scrolledToBottom) setScrolledToBottom(true);
+  }
+
+  function handleAgree() {
+    if (!scrolledToBottom) return;
+    if (typeof onAgree === 'function') onAgree(tab);
+    onClose();
+  }
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent
+      onRequestClose={onClose}
+    >
+      <View style={legalStyles.backdrop}>
+        <View style={legalStyles.sheet}>
+          <View style={legalStyles.header}>
+            <View style={{ flex: 1 }}>
+              <Text style={legalStyles.eyebrow}>SENTINELPH · LEGAL</Text>
+              <Text style={legalStyles.title}>
+                {tab === 'terms' ? 'Terms of Service' : 'Privacy Policy'}
+              </Text>
+            </View>
+            <TouchableOpacity
+              onPress={onClose}
+              style={legalStyles.closeBtn}
+              accessibilityLabel="Close"
+            >
+              <Ionicons name="close-outline" size={22} color={T.textMuted} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={legalStyles.tabs}>
+            <TouchableOpacity
+              style={[legalStyles.tab, tab === 'terms' && legalStyles.tabActive]}
+              onPress={() => setTab('terms')}
+            >
+              <Text
+                style={[
+                  legalStyles.tabText,
+                  tab === 'terms' && legalStyles.tabTextActive,
+                ]}
+              >
+                Terms of Service
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[legalStyles.tab, tab === 'privacy' && legalStyles.tabActive]}
+              onPress={() => setTab('privacy')}
+            >
+              <Text
+                style={[
+                  legalStyles.tabText,
+                  tab === 'privacy' && legalStyles.tabTextActive,
+                ]}
+              >
+                Privacy Policy
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            style={legalStyles.body}
+            contentContainerStyle={{ paddingBottom: 24 }}
+            onScroll={handleScroll}
+            scrollEventThrottle={80}
+            showsVerticalScrollIndicator
+          >
+            <Text style={legalStyles.updated}>Last updated: October 2026</Text>
+            {sections.map((s) => (
+              <View key={s.heading} style={legalStyles.section}>
+                <Text style={legalStyles.sectionHeading}>{s.heading}</Text>
+                <Text style={legalStyles.sectionBody}>{s.body}</Text>
+              </View>
+            ))}
+            <View style={legalStyles.ackBlock}>
+              <Ionicons
+                name={scrolledToBottom ? 'checkmark-circle' : 'ellipse-outline'}
+                size={16}
+                color={scrolledToBottom ? T.green : T.textMuted}
+              />
+              <Text style={legalStyles.ackText}>
+                {scrolledToBottom
+                  ? 'You have reached the end of this document.'
+                  : 'Scroll to the bottom to enable "I Agree".'}
+              </Text>
+            </View>
+          </ScrollView>
+
+          <View style={legalStyles.actions}>
+            <TouchableOpacity style={legalStyles.secondaryAction} onPress={onClose}>
+              <Text style={legalStyles.secondaryActionText}>Close</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                legalStyles.primaryAction,
+                !scrolledToBottom && legalStyles.primaryActionDisabled,
+              ]}
+              disabled={!scrolledToBottom}
+              onPress={handleAgree}
+            >
+              <Text
+                style={[
+                  legalStyles.primaryActionText,
+                  !scrolledToBottom && { color: T.textMuted },
+                ]}
+              >
+                I Agree
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+const legalStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.78)',
+    justifyContent: 'flex-end',
+  },
+  sheet: {
+    backgroundColor: T.card,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    borderTopWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: T.borderSubtle,
+    maxHeight: '92%',
+    paddingTop: 18,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: T.borderSubtle,
+  },
+  eyebrow: {
+    fontFamily: T.mono,
+    fontSize: 10,
+    letterSpacing: 1.5,
+    color: T.indigo,
+    marginBottom: 4,
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: T.textPrimary,
+  },
+  closeBtn: {
+    padding: 6,
+  },
+  tabs: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 4,
+    gap: 8,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: T.inputBg,
+    borderWidth: 1,
+    borderColor: T.borderMedium,
+    alignItems: 'center',
+  },
+  tabActive: {
+    backgroundColor: 'rgba(99,102,241,0.12)',
+    borderColor: 'rgba(99,102,241,0.55)',
+  },
+  tabText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: T.textMuted,
+  },
+  tabTextActive: {
+    color: T.textPrimary,
+  },
+  body: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+  },
+  updated: {
+    fontFamily: T.mono,
+    fontSize: 10,
+    letterSpacing: 1,
+    color: T.textMuted,
+    marginBottom: 12,
+  },
+  section: {
+    marginBottom: 18,
+  },
+  sectionHeading: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: T.textPrimary,
+    marginBottom: 6,
+  },
+  sectionBody: {
+    fontSize: 12.5,
+    lineHeight: 19,
+    color: T.textBody,
+  },
+  ackBlock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: T.inputBg,
+    borderWidth: 1,
+    borderColor: T.borderMedium,
+    marginTop: 6,
+  },
+  ackText: {
+    flex: 1,
+    fontSize: 11.5,
+    color: T.textBody,
+  },
+  actions: {
+    flexDirection: 'row',
+    gap: 10,
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: T.borderSubtle,
+  },
+  secondaryAction: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 12,
+    backgroundColor: T.inputBg,
+    borderWidth: 1,
+    borderColor: T.borderMedium,
+    alignItems: 'center',
+  },
+  secondaryActionText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: T.textMuted,
+  },
+  primaryAction: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 12,
+    backgroundColor: T.indigoDark,
+    alignItems: 'center',
+  },
+  primaryActionDisabled: {
+    backgroundColor: '#14142a',
+  },
+  primaryActionText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: T.textPrimary,
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Forgot Password Sheet
 // ---------------------------------------------------------------------------
 
 function OtpDigitsMeter({ value }) {
@@ -339,7 +809,7 @@ function ForgotPasswordSheet({ visible, onClose }) {
     isOffline,
   } = useAuth();
 
-  const [stage, setStage] = useState(1); // 1=email, 2=otp, 3=password
+  const [stage, setStage] = useState(1);
   const [email, setEmail] = useState('');
   const [otp, setOtp] = useState('');
   const [resetSessionToken, setResetSessionToken] = useState('');
@@ -457,7 +927,6 @@ function ForgotPasswordSheet({ visible, onClose }) {
               </TouchableOpacity>
             </View>
 
-            {/* Stage indicator */}
             {!success && (
               <View style={sheetStyles.stageRow}>
                 {[1, 2, 3].map((s) => (
@@ -683,10 +1152,7 @@ function ForgotPasswordSheet({ visible, onClose }) {
                   }
                 />
 
-                <TouchableOpacity
-                  style={sheetStyles.cancelBtn}
-                  onPress={handleClose}
-                >
+                <TouchableOpacity style={sheetStyles.cancelBtn} onPress={handleClose}>
                   <Text style={sheetStyles.cancelText}>Cancel</Text>
                 </TouchableOpacity>
               </>
@@ -1017,12 +1483,33 @@ function SignUpScreen() {
   const [focusedField, setFocusedField] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
   const [banner, setBanner] = useState(null);
+  const [legalTab, setLegalTab] = useState(null); // null | 'terms' | 'privacy'
+
+  const [termsRead, setTermsRead] = useState(false);
+  const [privacyRead, setPrivacyRead] = useState(false);
+  const bothRead = termsRead && privacyRead;
+
+  useEffect(() => {
+    if (bothRead) setAgreedToTerms(true);
+  }, [bothRead]);
+
+  // ── Live validation state, computed on every render ────────────────
+  // `canSubmit` is the single source of truth for the Sign Up button.
+  // It requires every field to be valid AND both legal documents to
+  // have been acknowledged AND the checkbox to be on AND the user to
+  // be online. Any one of these being false keeps the button greyed.
+  const nameOk = validateFullName(fullName) === null;
+  const emailOk = EMAIL_REGEX.test(email.trim());
+  const passwordOk = isPasswordValid(password);
+  const confirmOk = confirmPassword.length > 0 && confirmPassword === password;
+  const termsOk = bothRead && agreedToTerms;
+  const canSubmit = nameOk && emailOk && passwordOk && confirmOk && termsOk && !isOffline;
 
   const validate = () => {
     const errors = {};
-    if (!fullName.trim()) {
-      errors.fullName = 'Full name is required.';
-    }
+    const nameError = validateFullName(fullName);
+    if (nameError) errors.fullName = nameError;
+
     if (!EMAIL_REGEX.test(email.trim())) {
       errors.email = 'Enter a valid email address.';
     }
@@ -1033,7 +1520,10 @@ function SignUpScreen() {
     if (confirmPassword !== password) {
       errors.confirmPassword = 'Passwords do not match.';
     }
-    if (!agreedToTerms) {
+    if (!bothRead) {
+      errors.agreedToTerms =
+        'Please open and read both the Terms of Service and the Privacy Policy.';
+    } else if (!agreedToTerms) {
       errors.agreedToTerms = 'You must agree to the Terms and Privacy Policy.';
     }
     setFieldErrors(errors);
@@ -1042,6 +1532,12 @@ function SignUpScreen() {
 
   const handleSignUp = async () => {
     setBanner(null);
+    if (!canSubmit) {
+      // User tapped when fields are incomplete or docs unread — surface
+      // the specific errors so they know what to fix.
+      validate();
+      return;
+    }
     if (!validate()) return;
     try {
       await signUp(fullName.trim(), email.trim(), password, agreedToTerms);
@@ -1050,8 +1546,53 @@ function SignUpScreen() {
     }
   };
 
+  const handleFullNameChange = (raw) => {
+    const cleaned = sanitizeFullName(raw);
+    setFullName(cleaned);
+    if (fieldErrors.fullName) {
+      const err = validateFullName(cleaned);
+      if (!err) {
+        setFieldErrors((prev) => {
+          const next = { ...prev };
+          delete next.fullName;
+          return next;
+        });
+      }
+    }
+  };
+
+  const handleLegalAgree = (tab) => {
+    if (tab === 'terms') setTermsRead(true);
+    if (tab === 'privacy') setPrivacyRead(true);
+    if (fieldErrors.agreedToTerms) {
+      setFieldErrors((prev) => {
+        const next = { ...prev };
+        delete next.agreedToTerms;
+        return next;
+      });
+    }
+  };
+
+  const handleTermsRowPress = () => {
+    if (!bothRead) {
+      if (!termsRead) setLegalTab('terms');
+      else if (!privacyRead) setLegalTab('privacy');
+      return;
+    }
+    setAgreedToTerms((v) => !v);
+  };
+
   return (
     <>
+      {legalTab && (
+        <LegalModal
+          visible
+          initialTab={legalTab}
+          onClose={() => setLegalTab(null)}
+          onAgree={handleLegalAgree}
+        />
+      )}
+
       {isOffline && (
         <View style={styles.offlineBanner}>
           <Ionicons name="cloud-offline-outline" size={16} color={T.red} />
@@ -1082,7 +1623,7 @@ function SignUpScreen() {
       <Field
         label="FULL NAME"
         value={fullName}
-        onChangeText={setFullName}
+        onChangeText={handleFullNameChange}
         placeholder="Juan Dela Cruz"
         autoComplete="name"
         textContentType="name"
@@ -1137,20 +1678,55 @@ function SignUpScreen() {
       />
 
       <TouchableOpacity
-        style={styles.termsRow}
-        onPress={() => setAgreedToTerms((v) => !v)}
+        style={[styles.termsRow, !bothRead && styles.termsRowLocked]}
+        onPress={handleTermsRowPress}
         accessibilityRole="checkbox"
-        accessibilityState={{ checked: agreedToTerms }}
+        accessibilityState={{ checked: agreedToTerms, disabled: !bothRead }}
       >
         <Ionicons
-          name={agreedToTerms ? 'checkbox' : 'square-outline'}
+          name={
+            !bothRead
+              ? 'lock-closed-outline'
+              : agreedToTerms
+              ? 'checkbox'
+              : 'square-outline'
+          }
           size={18}
-          color={agreedToTerms ? T.indigo : T.textMuted}
+          color={!bothRead ? T.textMuted : agreedToTerms ? T.indigo : T.textMuted}
         />
-        <Text style={styles.termsText}>
-          I agree to the Terms of Service and Privacy Policy (RA 10173)
+        <Text style={[styles.termsText, !bothRead && styles.termsTextLocked]}>
+          I agree to the{' '}
+          <Text
+            style={[styles.termsLink, termsRead && styles.termsLinkDone]}
+            onPress={(e) => {
+              e.stopPropagation?.();
+              setLegalTab('terms');
+            }}
+          >
+            Terms of Service
+          </Text>
+          {termsRead ? ' ✓' : ''}
+          {' '}and{' '}
+          <Text
+            style={[styles.termsLink, privacyRead && styles.termsLinkDone]}
+            onPress={(e) => {
+              e.stopPropagation?.();
+              setLegalTab('privacy');
+            }}
+          >
+            Privacy Policy
+          </Text>
+          {privacyRead ? ' ✓' : ''}
+          {' '}(RA 10173)
         </Text>
       </TouchableOpacity>
+
+      {!bothRead && (
+        <Text style={styles.termsHint}>
+          Open both documents and scroll to the bottom to enable the checkbox.
+        </Text>
+      )}
+
       {fieldErrors.agreedToTerms ? (
         <Text style={styles.fieldError}>{fieldErrors.agreedToTerms}</Text>
       ) : null}
@@ -1159,7 +1735,7 @@ function SignUpScreen() {
         label="Sign Up"
         onPress={handleSignUp}
         loading={isLoading}
-        disabled={isOffline}
+        disabled={!canSubmit}
       />
 
       <TouchableOpacity style={styles.switchModeRow} onPress={() => switchScreen('signin')}>
@@ -1342,11 +1918,10 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   logoImage: {
-  width: 110,
+    width: 110,
     height: 110,
     marginBottom: 12,
-  
-},
+  },
   appName: {
     fontSize: 24,
     fontWeight: '800',
@@ -1572,11 +2147,31 @@ const styles = StyleSheet.create({
     gap: 8,
     marginTop: 16,
   },
+  termsRowLocked: {
+    opacity: 0.85,
+  },
   termsText: {
     flex: 1,
     fontSize: 12,
     color: T.textBody,
     lineHeight: 17,
+  },
+  termsTextLocked: {
+    color: T.textMuted,
+  },
+  termsLink: {
+    color: T.indigo,
+    fontWeight: '700',
+    textDecorationLine: 'underline',
+  },
+  termsLinkDone: {
+    color: T.green,
+  },
+  termsHint: {
+    fontSize: 11,
+    color: T.textMuted,
+    marginTop: 6,
+    fontStyle: 'italic',
   },
 
   // Buttons
@@ -1594,7 +2189,9 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   buttonDisabled: {
-    opacity: 0.6,
+    opacity: 0.5,
+    backgroundColor: '#14142a',
+    shadowOpacity: 0,
   },
   primaryButtonText: {
     color: T.textPrimary,

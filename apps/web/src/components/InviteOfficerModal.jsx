@@ -35,31 +35,116 @@ const INITIAL_FORM = {
 const ACCENT = '#a855f7';
 const ACCENT_HOVER = '#9333ea';
 
+// ─── Validation ──────────────────────────────────────────────────────
+// Full name: 2-80 chars, letters/spaces/hyphens/apostrophes/periods only.
+const FULL_NAME_REGEX = /^[A-Za-zÀ-ÖØ-öø-ÿÑñ.'\- ]{2,80}$/;
+
+// Invitations must come from a Gmail address. This matches the backend
+// whitelist policy (ALLOWED_EMAIL_DOMAINS=gmail.com in .env).
+const GMAIL_REGEX = /^[A-Za-z0-9._%+-]+@gmail\.com$/i;
+
+function sanitizeFullName(raw) {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .replace(/[^A-Za-zÀ-ÖØ-öø-ÿÑñ.'\- ]/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .slice(0, 80);
+}
+
+function validateForm(form) {
+  const errors = {};
+
+  const name = String(form.fullName || '').trim();
+  if (!name) {
+    errors.fullName = 'Full name is required.';
+  } else if (name.length < 2) {
+    errors.fullName = 'Full name must be at least 2 characters.';
+  } else if (/\d/.test(name)) {
+    errors.fullName = 'Full name must not contain numbers.';
+  } else if (!FULL_NAME_REGEX.test(name)) {
+    errors.fullName =
+      'Full name may only contain letters, spaces, hyphens, apostrophes, and periods.';
+  }
+
+  const email = String(form.email || '').trim();
+  if (!email) {
+    errors.email = 'Email is required.';
+  } else if (!GMAIL_REGEX.test(email)) {
+    errors.email = 'Email must be a valid @gmail.com address.';
+  }
+
+  const badge = String(form.badgeId || '').trim();
+  if (!badge) {
+    errors.badgeId = 'Badge / ID number is required.';
+  } else if (badge.length < 3) {
+    errors.badgeId = 'Badge / ID must be at least 3 characters.';
+  }
+
+  const agency = String(form.agency || '').trim();
+  if (!agency) {
+    errors.agency = 'Agency is required.';
+  } else if (agency.length < 2) {
+    errors.agency = 'Agency must be at least 2 characters.';
+  }
+
+  if (!form.jurisdiction) {
+    errors.jurisdiction = 'Please select a region / jurisdiction.';
+  }
+
+  return errors;
+}
+
 export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
   const [form, setForm] = useState(INITIAL_FORM);
   const [status, setStatus] = useState('idle'); // idle | submitting | success | error
   const [errorMessage, setErrorMessage] = useState('');
+  const [fieldErrors, setFieldErrors] = useState({});
 
   if (!isOpen) return null;
 
   const handleChange = (field) => (e) => {
-    setForm((prev) => ({ ...prev, [field]: e.target.value }));
+    const raw = e.target.value;
+    const next = field === 'fullName' ? sanitizeFullName(raw) : raw;
+    setForm((prev) => ({ ...prev, [field]: next }));
+    // Clear the field error as soon as the user edits it.
+    if (fieldErrors[field]) {
+      setFieldErrors((prev) => {
+        const copy = { ...prev };
+        delete copy[field];
+        return copy;
+      });
+    }
   };
 
   const resetAndClose = () => {
     setForm(INITIAL_FORM);
     setStatus('idle');
     setErrorMessage('');
+    setFieldErrors({});
     onClose?.();
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setStatus('submitting');
     setErrorMessage('');
 
+    const errors = validateForm(form);
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      setStatus('error');
+      setErrorMessage('Please correct the highlighted fields.');
+      return;
+    }
+
+    setStatus('submitting');
     try {
-      const response = await apiClient.post('/api/v1/admin/invite-officer', form);
+      const response = await apiClient.post('/api/v1/admin/invite-officer', {
+        fullName: form.fullName.trim(),
+        email: form.email.trim().toLowerCase(),
+        badgeId: form.badgeId.trim(),
+        agency: form.agency.trim(),
+        jurisdiction: form.jurisdiction,
+      });
       setStatus('success');
       onInvited?.(response.data?.user);
     } catch (err) {
@@ -132,8 +217,8 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
               activation email shortly.
             </div>
           ) : (
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {status === 'error' && (
+            <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+              {status === 'error' && errorMessage && (
                 <div
                   className="rounded-lg px-4 py-3 text-sm"
                   style={{
@@ -152,7 +237,7 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
                 value={form.fullName}
                 onChange={handleChange('fullName')}
                 placeholder="Juan Dela Cruz"
-                required
+                error={fieldErrors.fullName}
                 disabled={isSubmitting}
               />
               <Field
@@ -160,8 +245,9 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
                 type="email"
                 value={form.email}
                 onChange={handleChange('email')}
-                placeholder="officer@agency.gov.ph"
-                required
+                placeholder="officer@gmail.com"
+                error={fieldErrors.email}
+                hint="Must be a @gmail.com address."
                 disabled={isSubmitting}
               />
               <Field
@@ -169,7 +255,7 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
                 value={form.badgeId}
                 onChange={handleChange('badgeId')}
                 placeholder="PNP-00123"
-                required
+                error={fieldErrors.badgeId}
                 disabled={isSubmitting}
               />
               <Field
@@ -177,7 +263,7 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
                 value={form.agency}
                 onChange={handleChange('agency')}
                 placeholder="Philippine National Police"
-                required
+                error={fieldErrors.agency}
                 disabled={isSubmitting}
               />
               <label className="block">
@@ -187,12 +273,13 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
                 <select
                   value={form.jurisdiction}
                   onChange={handleChange('jurisdiction')}
-                  required
                   disabled={isSubmitting}
                   className="w-full rounded-lg px-3 py-2 text-sm outline-none transition-colors focus:ring-1"
                   style={{
                     backgroundColor: '#080810',
-                    border: '1px solid #1a1a2a',
+                    border: `1px solid ${
+                      fieldErrors.jurisdiction ? 'rgba(239,68,68,0.45)' : '#1a1a2a'
+                    }`,
                     color: '#f9fafb',
                   }}
                 >
@@ -203,6 +290,11 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
                     </option>
                   ))}
                 </select>
+                {fieldErrors.jurisdiction ? (
+                  <span className="block text-xs mt-1" style={{ color: '#f87171' }}>
+                    {fieldErrors.jurisdiction}
+                  </span>
+                ) : null}
               </label>
 
               <div className="flex items-center justify-end gap-3 pt-2">
@@ -253,7 +345,7 @@ export default function InviteOfficerModal({ isOpen, onClose, onInvited }) {
   );
 }
 
-function Field({ label, type = 'text', value, onChange, placeholder, required, disabled }) {
+function Field({ label, type = 'text', value, onChange, placeholder, error, hint, disabled }) {
   return (
     <label className="block">
       <span className="block text-xs font-medium mb-1.5" style={{ color: '#94a3b8' }}>
@@ -264,15 +356,23 @@ function Field({ label, type = 'text', value, onChange, placeholder, required, d
         value={value}
         onChange={onChange}
         placeholder={placeholder}
-        required={required}
         disabled={disabled}
         className="w-full rounded-lg px-3 py-2 text-sm outline-none transition-colors focus:ring-1"
         style={{
           backgroundColor: '#080810',
-          border: '1px solid #1a1a2a',
+          border: `1px solid ${error ? 'rgba(239,68,68,0.45)' : '#1a1a2a'}`,
           color: '#f9fafb',
         }}
       />
+      {error ? (
+        <span className="block text-xs mt-1" style={{ color: '#f87171' }}>
+          {error}
+        </span>
+      ) : hint ? (
+        <span className="block text-xs mt-1" style={{ color: '#6b7280' }}>
+          {hint}
+        </span>
+      ) : null}
     </label>
   );
 }

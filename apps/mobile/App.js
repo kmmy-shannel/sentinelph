@@ -1,7 +1,7 @@
 // apps/mobile/App.js
 import 'react-native-gesture-handler';
 import React, { useCallback, useEffect, useState } from 'react';
-import { StatusBar as RNStatusBar } from 'react-native';
+import { StatusBar as RNStatusBar, View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
@@ -23,6 +23,7 @@ import TabNavigator from './navigation/TabNavigator';
 import { initDB, pruneBlacklistCache } from './db/sqlite';
 import * as syncQueue from './db/syncQueue';
 import { ThemeProvider, useTheme } from './theme/ThemeContext';
+import AnimatedSplashScreen from './components/SplashScreen';
 
 // --- ENV DIAGNOSTIC CHECK ---
 console.log('================ [ENV CHECK START] ================');
@@ -96,6 +97,8 @@ export default function App() {
     JetBrainsMono_500Medium,
   });
   const [dbReady, setDbReady] = useState(false);
+  const [bootReady, setBootReady] = useState(false);
+  const [animatedSplashDone, setAnimatedSplashDone] = useState(false);
 
   useEffect(() => {
     async function prepareApp() {
@@ -130,12 +133,27 @@ export default function App() {
 
   const onLayoutRootView = useCallback(async () => {
     if (fontsLoaded && dbReady) {
+      // Hide the native splash exactly once. The custom AnimatedSplashScreen
+      // is already mounted underneath (see render tree below), so the user
+      // transitions directly from native splash → animated splash → app.
       await SplashScreen.hideAsync();
     }
   }, [fontsLoaded, dbReady]);
 
+  // Once fonts + DB are ready, mark boot as complete. The animated splash
+  // will then start its exit sequence and unmount.
+  useEffect(() => {
+    if (fontsLoaded && dbReady) {
+      setBootReady(true);
+    }
+  }, [fontsLoaded, dbReady]);
+
   if (!fontsLoaded || !dbReady) {
-    return null;
+    // Do NOT return null here. If we return null, the native splash is
+    // the only thing on screen — which is fine until we call hideAsync().
+    // But we want the animated splash to already be mounted so the
+    // transition is seamless. So we render a bare container.
+    return <View style={{ flex: 1, backgroundColor: '#06060f' }} />;
   }
 
   return (
@@ -145,6 +163,16 @@ export default function App() {
         <AuthProvider>
           <RootNavigator />
         </AuthProvider>
+
+        {/* Animated splash sits above the entire app tree.
+            Its `onDone` fires only after the exit animation completes.
+            While it is mounted, it blocks all touches to the app below. */}
+        {!animatedSplashDone && (
+          <AnimatedSplashScreen
+            onDone={() => setAnimatedSplashDone(true)}
+            duration={2400}
+          />
+        )}
       </ThemeProvider>
     </SafeAreaProvider>
   );

@@ -23,19 +23,79 @@ const INITIAL_FORM = {
 // the backend treats as "see everything" (see reportScope() in admin.js).
 const ADMIN_DEFAULT_JURISDICTION = 'National / Regional';
 
+// ─── Validation ──────────────────────────────────────────────────────
+// Full name: 2-80 chars, letters/spaces/hyphens/apostrophes/periods only.
+// Rejects digits, symbols, emojis.
+const FULL_NAME_REGEX = /^[A-Za-zÀ-ÖØ-öø-ÿÑñ.'\- ]{2,80}$/;
+
+// Invitations must come from a Gmail address. Matches the backend
+// whitelist policy (ALLOWED_EMAIL_DOMAINS=gmail.com in .env).
+const GMAIL_REGEX = /^[A-Za-z0-9._%+-]+@gmail\.com$/i;
+
+function sanitizeFullName(raw) {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .replace(/[^A-Za-zÀ-ÖØ-öø-ÿÑñ.'\- ]/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .slice(0, 80);
+}
+
+function validateInviteForm(form) {
+  const errors = {};
+
+  const name = String(form.fullName || '').trim();
+  if (!name) {
+    errors.fullName = 'Full name is required.';
+  } else if (name.length < 2) {
+    errors.fullName = 'Full name must be at least 2 characters.';
+  } else if (/\d/.test(name)) {
+    errors.fullName = 'Full name must not contain numbers.';
+  } else if (!FULL_NAME_REGEX.test(name)) {
+    errors.fullName =
+      'Full name may only contain letters, spaces, hyphens, apostrophes, and periods.';
+  }
+
+  const email = String(form.email || '').trim();
+  if (!email) {
+    errors.email = 'Email is required.';
+  } else if (!GMAIL_REGEX.test(email)) {
+    errors.email = 'Email must be a valid @gmail.com address.';
+  }
+
+  const badge = String(form.badgeId || '').trim();
+  if (!badge) {
+    errors.badgeId = 'Badge / ID number is required.';
+  } else if (badge.length < 3) {
+    errors.badgeId = 'Badge / ID must be at least 3 characters.';
+  }
+
+  const agency = String(form.agency || '').trim();
+  if (!agency) {
+    errors.agency = 'Agency is required.';
+  } else if (agency.length < 2) {
+    errors.agency = 'Agency must be at least 2 characters.';
+  }
+
+  if (form.role === 'officer' && !form.jurisdiction) {
+    errors.jurisdiction = 'Please select a region / jurisdiction.';
+  }
+
+  return errors;
+}
+
 export default function InviteUserModal({ isOpen, onClose, onInvited }) {
   const [form, setForm] = useState(INITIAL_FORM);
   const [status, setStatus] = useState('idle');
   const [errorMessage, setErrorMessage] = useState('');
+  const [fieldErrors, setFieldErrors] = useState({});
 
   if (!isOpen) return null;
 
   const handleChange = (field) => (e) => {
-    const value = e.target.value;
+    const raw = e.target.value;
+    const value = field === 'fullName' ? sanitizeFullName(raw) : raw;
+
     setForm((prev) => {
-      // When switching roles, reset the jurisdiction appropriately so a
-      // leftover region from an "Officer" selection doesn't get sent
-      // along with an "Admin" invite.
       if (field === 'role') {
         return {
           ...prev,
@@ -45,24 +105,46 @@ export default function InviteUserModal({ isOpen, onClose, onInvited }) {
       }
       return { ...prev, [field]: value };
     });
+
+    if (fieldErrors[field]) {
+      setFieldErrors((prev) => {
+        const copy = { ...prev };
+        delete copy[field];
+        // Switching role invalidates the region requirement.
+        if (field === 'role') delete copy.jurisdiction;
+        return copy;
+      });
+    }
   };
 
   const resetAndClose = () => {
     setForm(INITIAL_FORM);
     setStatus('idle');
     setErrorMessage('');
+    setFieldErrors({});
     onClose?.();
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setStatus('submitting');
     setErrorMessage('');
 
-    // If the role is admin, force jurisdiction to the sentinel so the
-    // backend receives a valid region value even when the field is hidden.
+    const errors = validateInviteForm(form);
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      setStatus('error');
+      setErrorMessage('Please correct the highlighted fields.');
+      return;
+    }
+
+    setStatus('submitting');
+
     const payload = {
       ...form,
+      fullName: form.fullName.trim(),
+      email: form.email.trim().toLowerCase(),
+      badgeId: form.badgeId.trim(),
+      agency: form.agency.trim(),
       jurisdiction:
         form.role === 'admin'
           ? ADMIN_DEFAULT_JURISDICTION
@@ -77,7 +159,7 @@ export default function InviteUserModal({ isOpen, onClose, onInvited }) {
       setStatus('error');
       const backendMessage = err?.response?.data?.message;
       setErrorMessage(
-        backendMessage || 'Failed to send invitation. Please check the details and try again.'
+        backendMessage || 'Failed to add user. Please check the details and try again.'
       );
     }
   };
@@ -142,8 +224,8 @@ export default function InviteUserModal({ isOpen, onClose, onInvited }) {
               activation email shortly.
             </div>
           ) : (
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {status === 'error' && (
+            <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+              {status === 'error' && errorMessage && (
                 <div
                   className="rounded-lg px-4 py-3 text-sm"
                   style={{
@@ -162,7 +244,7 @@ export default function InviteUserModal({ isOpen, onClose, onInvited }) {
                 value={form.fullName}
                 onChange={handleChange('fullName')}
                 placeholder="Juan Dela Cruz"
-                required
+                error={fieldErrors.fullName}
                 disabled={isSubmitting}
               />
               <Field
@@ -170,8 +252,9 @@ export default function InviteUserModal({ isOpen, onClose, onInvited }) {
                 type="email"
                 value={form.email}
                 onChange={handleChange('email')}
-                placeholder="user@agency.gov.ph"
-                required
+                placeholder="user@gmail.com"
+                error={fieldErrors.email}
+                hint="Must be a @gmail.com address."
                 disabled={isSubmitting}
               />
               <Field
@@ -179,7 +262,7 @@ export default function InviteUserModal({ isOpen, onClose, onInvited }) {
                 value={form.badgeId}
                 onChange={handleChange('badgeId')}
                 placeholder="PNP-00123"
-                required
+                error={fieldErrors.badgeId}
                 disabled={isSubmitting}
               />
               <Field
@@ -187,7 +270,7 @@ export default function InviteUserModal({ isOpen, onClose, onInvited }) {
                 value={form.agency}
                 onChange={handleChange('agency')}
                 placeholder="Philippine National Police"
-                required
+                error={fieldErrors.agency}
                 disabled={isSubmitting}
               />
 
@@ -198,7 +281,6 @@ export default function InviteUserModal({ isOpen, onClose, onInvited }) {
                 <select
                   value={form.role}
                   onChange={handleChange('role')}
-                  required
                   disabled={isSubmitting}
                   className="w-full rounded-lg px-3 py-2 text-sm outline-none transition-colors focus:ring-1"
                   style={{
@@ -212,10 +294,6 @@ export default function InviteUserModal({ isOpen, onClose, onInvited }) {
                 </select>
               </label>
 
-              {/* Region field is only shown for officers. Admins are
-                  agency-scoped and always operate nationally within
-                  their agency — the backend receives the
-                  "National / Regional" sentinel automatically. */}
               {showRegionField && (
                 <label className="block">
                   <span className="block text-xs font-medium mb-1.5" style={{ color: '#94a3b8' }}>
@@ -224,12 +302,13 @@ export default function InviteUserModal({ isOpen, onClose, onInvited }) {
                   <select
                     value={form.jurisdiction}
                     onChange={handleChange('jurisdiction')}
-                    required
                     disabled={isSubmitting}
                     className="w-full rounded-lg px-3 py-2 text-sm outline-none transition-colors focus:ring-1"
                     style={{
                       backgroundColor: '#080810',
-                      border: '1px solid #1a1a2a',
+                      border: `1px solid ${
+                        fieldErrors.jurisdiction ? 'rgba(239,68,68,0.45)' : '#1a1a2a'
+                      }`,
                       color: '#f9fafb',
                     }}
                   >
@@ -238,6 +317,11 @@ export default function InviteUserModal({ isOpen, onClose, onInvited }) {
                       <option key={r} value={r}>{r}</option>
                     ))}
                   </select>
+                  {fieldErrors.jurisdiction ? (
+                    <span className="block text-xs mt-1" style={{ color: '#f87171' }}>
+                      {fieldErrors.jurisdiction}
+                    </span>
+                  ) : null}
                 </label>
               )}
 
@@ -274,7 +358,7 @@ export default function InviteUserModal({ isOpen, onClose, onInvited }) {
                   className="px-4 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-60"
                   style={{ backgroundColor: '#22c55e', color: '#08200f' }}
                 >
-                  {isSubmitting ? 'Sending…' : 'Send Invitation'}
+                  {isSubmitting ? 'Adding…' : 'Add User'}
                 </button>
               </div>
             </form>
@@ -298,7 +382,7 @@ export default function InviteUserModal({ isOpen, onClose, onInvited }) {
   );
 }
 
-function Field({ label, type = 'text', value, onChange, placeholder, required, disabled }) {
+function Field({ label, type = 'text', value, onChange, placeholder, error, hint, disabled }) {
   return (
     <label className="block">
       <span className="block text-xs font-medium mb-1.5" style={{ color: '#94a3b8' }}>
@@ -309,15 +393,23 @@ function Field({ label, type = 'text', value, onChange, placeholder, required, d
         value={value}
         onChange={onChange}
         placeholder={placeholder}
-        required={required}
         disabled={disabled}
         className="w-full rounded-lg px-3 py-2 text-sm outline-none transition-colors focus:ring-1"
         style={{
           backgroundColor: '#080810',
-          border: '1px solid #1a1a2a',
+          border: `1px solid ${error ? 'rgba(239,68,68,0.45)' : '#1a1a2a'}`,
           color: '#f9fafb',
         }}
       />
+      {error ? (
+        <span className="block text-xs mt-1" style={{ color: '#f87171' }}>
+          {error}
+        </span>
+      ) : hint ? (
+        <span className="block text-xs mt-1" style={{ color: '#6b7280' }}>
+          {hint}
+        </span>
+      ) : null}
     </label>
   );
 }
