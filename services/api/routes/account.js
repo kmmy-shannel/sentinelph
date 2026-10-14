@@ -1,4 +1,4 @@
-\// services/api/routes/account.js
+// services/api/routes/account.js
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const { verifyFirebaseToken } = require('../middleware/auth');
