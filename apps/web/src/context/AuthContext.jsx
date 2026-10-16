@@ -15,8 +15,8 @@ export const ROLES = {
   SUPERADMIN: 'superadmin',
 };
 
-const INACTIVITY_MS = 5 * 60 * 1000;
-const ACTIVITY_CHECK_INTERVAL_MS = 10 * 1000;
+const INACTIVITY_MS = 5 * 1000;
+const ACTIVITY_CHECK_INTERVAL_MS = 1000;
 
 const AuthContext = createContext(null);
 
