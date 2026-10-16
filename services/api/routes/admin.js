@@ -15,11 +15,8 @@ const { PH_REGIONS, isValidRegion } = require('../../../shared/regions');
 const router = express.Router();
 
 const REQUIRED_FIELDS = ['email', 'fullName', 'badgeId', 'jurisdiction'];
-
-// Invite activation links expire in 15 minutes, same as web forgot-password.
 const ACTIVATION_TOKEN_TTL_MINUTES = 15;
 
-// (Kept for the deprecated /ai-insights/:reportId/review endpoint below.)
 const AI_REVIEW_LABELS = [
   'OTP Phishing',
   'Bank Impersonation',
@@ -32,19 +29,6 @@ const AI_REVIEW_LABELS = [
   'Unknown',
 ];
 
-// ─── Effective-category fallback chain ───────────────────────────────
-// The citizen app always sends scamType = 'UNKNOWN' — real classification
-// only happens inside the AI. Officer verdicts override the AI once
-// 2-of-3 consensus is reached. This chain picks the best available label
-// for display in the Admin "Top Scam Types" panel.
-//
-// Priority (highest first):
-//   1. officerSubtypeAggregated   (2-of-3 officer correction, terminal)
-//   2. officerSubtype             (single officer's verdict, in-flight)
-//   3. aiFlag.subtype             (Level 2 AI classification)
-//   4. aiFlag.label               (Level 1 AI tier)
-//   5. category | scamType        (citizen-declared, usually UNKNOWN)
-//   6. "UNCLASSIFIED"             (nothing is available)
 const EFFECTIVE_CATEGORY_STAGE = {
   $ifNull: [
     '$officerSubtypeAggregated',
@@ -72,11 +56,63 @@ const EFFECTIVE_CATEGORY_STAGE = {
   ],
 };
 
+// ─── 7-day trend helper ─────────────────────────────────────────────
+function buildSevenDayTrend(rows = []) {
+  const map = new Map();
+  for (const r of rows) {
+    if (r?._id) map.set(r._id, Number(r.reports) || 0);
+  }
+
+  const out = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+
+    const key = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Manila',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(d); // "2026-10-17"
+
+    const label = new Intl.DateTimeFormat('en-PH', {
+      timeZone: 'Asia/Manila',
+      month: 'short',
+      day: 'numeric',
+    }).format(d); // "Oct 17"
+
+    out.push({ day: label, sms: map.get(key) ?? 0, calls: 0 });
+  }
+  return out;
+}
+
+// ─── Regional heatmap helper ────────────────────────────────────────
+// Always show these 4 regions, in this exact order, even if they have
+// zero reports. Any region NOT in the forced list is dropped from the
+// chart — we only want these 4 visible for now.
+const FORCED_REGIONS = ['NCR', 'CAR', 'Region I', 'Region II'];
+
+function buildHeatmap(rows = []) {
+  const map = new Map();
+  for (const r of rows) {
+    if (r?._id) map.set(r._id, Number(r.reports) || 0);
+  }
+
+  // Build in forced order. Region with data → its real count.
+  // Region with no data → 0.
+  const out = FORCED_REGIONS.map((region) => ({
+    region,
+    reports: map.get(region) ?? 0,
+  }));
+
+  // Sort so the highest-report region shows first (Region I floats to
+  // the top since it has data; the empty ones follow in forced order).
+  return out.sort((a, b) => b.reports - a.reports);
+}
+
 router.use(verifyFirebaseToken);
 router.use(requireRole('admin'));
 
-// Firebase claims establish the role; MongoDB is the source of truth for the
-// agency scope. This prevents a client from choosing another agency in a form.
 router.use(async (req, res, next) => {
   try {
     const profile = await User.findOne({ firebaseUid: req.user.uid, role: 'admin' }).lean();
@@ -130,15 +166,6 @@ function normalizeAiLabel(label) {
   return 'unknown';
 }
 
-// ─── Metrics: computed from officer verdicts (ground truth) ──────────
-//
-// The pipeline that writes to AdminAiReview is deprecated. The real
-// ground-truth signal comes from officer votes, which land in
-// `Report.officerSubtypeAggregated` after 2-of-3 consensus.
-//
-// To keep the UI functioning during the transition, we merge both
-// sources: `AdminAiReview` docs (if any exist historically) AND
-// officer-verdict reports. Rows are deduped by reportId.
 function buildReviewSignals(adminReviews, officerVerdictReports) {
   const signals = [];
   const seen = new Set();
@@ -156,9 +183,7 @@ function buildReviewSignals(adminReviews, officerVerdictReports) {
 
   for (const r of officerVerdictReports || []) {
     if (!r.reportId || seen.has(r.reportId)) continue;
-    // Predicted = the AI's own subtype (or label as fallback) at submission
     const predicted = r.aiFlag?.subtype || r.aiFlag?.label || 'unavailable';
-    // Actual = the 2-of-3 officer consensus
     const actual = r.officerSubtypeAggregated || 'unavailable';
     signals.push({
       reportId: r.reportId,
@@ -239,9 +264,6 @@ function isDomainAllowed(email) {
   return getAllowedDomains().includes(domain);
 }
 
-/**
- * POST /api/v1/admin/invite-officer
- */
 router.post(
   '/invite-officer',
   async (req, res) => {
@@ -379,9 +401,6 @@ router.post(
   }
 );
 
-/**
- * GET /api/v1/admin/officers
- */
 router.get('/officers', async (req, res) => {
   try {
     const officers = await User.find({ role: 'officer' })
@@ -434,9 +453,6 @@ router.get('/profile', async (req, res) => {
   });
 });
 
-/**
- * PATCH /api/v1/admin/officers/:id
- */
 router.patch('/officers/:id', async (req, res) => {
   try {
     const officer = await User.findOne({
@@ -489,7 +505,6 @@ router.patch('/officers/:id', async (req, res) => {
   }
 });
 
-/** Live agency overview. */
 router.get('/dashboard', async (req, res) => {
   try {
     const scope = reportScope(req.adminProfile);
@@ -522,7 +537,7 @@ router.get('/dashboard', async (req, res) => {
       Report.aggregate([
         ...(Object.keys(scope).length ? [{ $match: scope }] : []),
         { $group: { _id: { $ifNull: ['$location.region', '$jurisdiction'] }, reports: { $sum: 1 } } },
-        { $sort: { reports: -1 } }, { $limit: 6 },
+        { $sort: { reports: -1 } }, { $limit: 20 },
       ]),
       Report.aggregate([
         ...(Object.keys(scope).length ? [{ $match: scope }] : []),
@@ -542,7 +557,6 @@ router.get('/dashboard', async (req, res) => {
       AdminAiReview.find({ agency: req.adminProfile.agency }).select('reportId originalLabel selectedLabel reviewedAt').lean(),
     ]);
 
-    // Officer-verdict reports for the metrics — combined with adminReviews.
     const officerVerdicts = await Report.find(
       Object.keys(scope).length
         ? { $and: [scope, { officerSubtypeAggregated: { $ne: null } }] }
@@ -572,8 +586,8 @@ router.get('/dashboard', async (req, res) => {
           activeOfficers: officers,
         },
         modelMetrics,
-        trend: trendRows.map((row) => ({ day: row._id, sms: row.reports, calls: 0 })),
-        heatmap: regions.map((row) => ({ region: row._id || 'Unknown', reports: row.reports })),
+        trend: buildSevenDayTrend(trendRows),
+        heatmap: buildHeatmap(regions),
         patterns: categories.map((row) => ({ category: row._id || 'UNCLASSIFIED', reports: row.reports })),
         flagged: flagged.map((report) => {
           const officerVerdict = report.officerSubtypeAggregated || null;
@@ -647,12 +661,10 @@ router.get('/ai-insights', async (req, res) => {
       ]),
     ]);
 
-    // Ground-truth signal = officer verdicts (primary) + historical adminReviews
     const signals = buildReviewSignals(adminReviews, officerVerdicts);
     const modelMetrics = getModelMetrics(signals);
     const metricTrend = getMetricTrend(signals);
 
-    // Per-report review lookup (officer verdict wins over admin review).
     const officerVerdictByReport = new Map();
     for (const r of officerVerdicts) {
       officerVerdictByReport.set(r.reportId, {
@@ -716,15 +728,6 @@ router.get('/ai-insights', async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────
-// DEPRECATED — POST /api/v1/admin/ai-insights/:reportId/review
-//
-// The admin-classification flow was removed by design: report review is
-// the officer's job (they see the full evidence, they hold the domain
-// expertise). This endpoint is retained for backward compatibility but
-// is no longer called by any frontend. Remove once you're sure nothing
-// depends on it.
-// ─────────────────────────────────────────────────────────────────────
 router.post('/ai-insights/:reportId/review', async (req, res) => {
   return res.status(410).json({
     success: false,
@@ -733,21 +736,7 @@ router.post('/ai-insights/:reportId/review', async (req, res) => {
       'Admin classification of AI verdicts was removed. Report review is performed by officers through the Review Queue.',
   });
 });
-/**
- * GET /api/v1/admin/reports/export
- *
- * Returns one row per report, scoped to the admin's agency + jurisdiction.
- * Supports the same filters as /reports (region, scamType, from, to) plus:
- *   - status: pending | under_review | one_approval | two_approvals |
- *             blacklisted | approved | rejected | all
- *   - limit:  1..5000 (default 1000)
- *
- * Every row carries the full audit trail: reporter, target, location,
- * AI classification, review workflow, and per-officer votes with names
- * joined from the User collection.
- *
- * No pagination — this is a snapshot for export.
- */
+
 router.get('/reports/export', async (req, res) => {
   try {
     const { region, from, to, scamType, status, limit } = req.query;
@@ -825,8 +814,6 @@ router.get('/reports/export', async (req, res) => {
       .limit(cappedLimit)
       .lean();
 
-    // Collect every distinct voter UID across all rows, then resolve
-    // names in a single query.
     const officerUids = new Set();
     for (const doc of docs) {
       for (const v of doc.votes || []) {
@@ -925,7 +912,6 @@ router.get('/reports/export', async (req, res) => {
     });
   }
 });
-
 
 router.get('/reports', async (req, res) => {
   try {

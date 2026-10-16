@@ -1,7 +1,7 @@
 // apps/web/src/pages/Admin-Tabs/AdminDashboard.jsx
 import { useEffect, useState } from "react";
 import {
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  AreaChart, Area, XAxis, YAxis, ResponsiveContainer,
   BarChart, Bar, Cell,
 } from "recharts";
 import apiClient from "../../lib/api";
@@ -19,7 +19,6 @@ function fmtPct(n) {
   return `${(n * 100).toFixed(1)}%`;
 }
 
-// Human-friendly labels for AI subtypes.
 const SUBTYPE_LABELS = {
   personal_conversational: "Personal Conversation",
   two_factor_auth: "One-Time Password",
@@ -39,7 +38,6 @@ function labelSubtype(subtype) {
   return SUBTYPE_LABELS[subtype] || subtype;
 }
 
-// Tier → color mapping for the AI TIER pill.
 const TIER_STYLES = {
   malicious: { bg: "rgba(244,63,94,0.10)", border: "rgba(244,63,94,0.35)", text: "#fb7185" },
   grey_area: { bg: "rgba(234,179,8,0.10)", border: "rgba(234,179,8,0.35)", text: "#facc15" },
@@ -143,27 +141,32 @@ export default function AdminDashboard() {
               No reports in the last 7 days.
             </div>
           ) : (
-            <ResponsiveContainer width="100%" height={180}>
-              <AreaChart data={trend} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="adminTrendGradPurple" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={A} stopOpacity={0.45} />
-                    <stop offset="95%" stopColor={A} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <XAxis dataKey="day" tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: "8px", color: "#e2e8f0", fontSize: 12 }} />
-                <Area
-                  type="monotone"
-                  dataKey="sms"
-                  stroke={A}
-                  strokeWidth={2.5}
-                  fill="url(#adminTrendGradPurple)"
-                  activeDot={{ r: 4, fill: A_SOFT, stroke: "#0e0e18", strokeWidth: 2 }}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+            <div style={{ pointerEvents: "none" }}>
+              <ResponsiveContainer width="100%" height={180}>
+                <AreaChart data={trend} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="adminTrendGradPurple" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor={A} stopOpacity={0.45} />
+                      <stop offset="95%" stopColor={A} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="day" tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <Area
+                    type="monotone"
+                    dataKey="sms"
+                    stroke={A}
+                    strokeWidth={2.5}
+                    fill="url(#adminTrendGradPurple)"
+                    isAnimationActive={true}
+                    animationBegin={0}
+                    animationDuration={900}
+                    animationEasing="ease-out"
+                    activeDot={false}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
           )}
         </div>
 
@@ -175,22 +178,30 @@ export default function AdminDashboard() {
               No regional data yet.
             </div>
           ) : (
-            <ResponsiveContainer width="100%" height={180}>
-              <BarChart data={heatmap} layout="vertical" margin={{ top: 0, right: 16, left: 0, bottom: 0 }}>
-                <XAxis type="number" tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis dataKey="region" type="category" tick={{ fill: "#6b7280", fontSize: 10 }} axisLine={false} tickLine={false} width={100} />
-                <Tooltip contentStyle={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: "8px", color: "#e2e8f0", fontSize: 12 }} />
-                <Bar dataKey="v" radius={[0, 4, 4, 0]}>
-                  {heatmap.map((_, i) => (
-                    <Cell
-                      key={i}
-                      fill={A}
-                      fillOpacity={Math.max(0.35, 0.95 - i * 0.13)}
-                    />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            <div style={{ pointerEvents: "none" }}>
+              <ResponsiveContainer width="100%" height={180}>
+                <BarChart data={heatmap} layout="vertical" margin={{ top: 0, right: 16, left: 0, bottom: 0 }}>
+                  <XAxis type="number" tick={{ fill: "#4b5563", fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <YAxis dataKey="region" type="category" tick={{ fill: "#6b7280", fontSize: 10 }} axisLine={false} tickLine={false} width={100} />
+                  <Bar
+                    dataKey="v"
+                    radius={[0, 4, 4, 0]}
+                    isAnimationActive={true}
+                    animationBegin={0}
+                    animationDuration={800}
+                    animationEasing="ease-out"
+                  >
+                    {heatmap.map((_, i) => (
+                      <Cell
+                        key={i}
+                        fill={A}
+                        fillOpacity={Math.max(0.35, 0.95 - i * 0.13)}
+                      />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           )}
         </div>
       </div>
@@ -252,7 +263,7 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      {/* AI-Flagged — every AI-classified report not yet finalized */}
+      {/* AI-Flagged */}
       <div style={card}>
         <div style={{ fontSize: "13px", fontWeight: 600, color: "#fff", marginBottom: "4px" }}>
           AI Classification — Awaiting Officer Review

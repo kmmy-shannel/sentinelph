@@ -3,42 +3,27 @@ import React, { useEffect, useState } from 'react';
 
 const A = '#3b82f6';
 
-export default function SplashScreen({ onDone, duration = 2400 }) {
-  const [phase, setPhase] = useState('enter');   // 'enter' → 'visible' → 'exit'
+export default function SplashScreen() {
+  const [entered, setEntered] = useState(false);
 
   useEffect(() => {
-    const enterTimer = setTimeout(() => setPhase('visible'), 50);
-    const holdTimer  = setTimeout(() => setPhase('exit'),    duration);
-    const exitTimer  = setTimeout(() => onDone?.(),          duration + 450);
-
-    return () => {
-      clearTimeout(enterTimer);
-      clearTimeout(holdTimer);
-      clearTimeout(exitTimer);
-    };
-  }, [duration, onDone]);
-
-  const splashOpacity = phase === 'exit' ? 0 : 1;
-  const entered = phase !== 'enter';
+    const t = setTimeout(() => setEntered(true), 50);
+    return () => clearTimeout(t);
+  }, []);
 
   return (
     <div
       style={{
         position: 'fixed',
         inset: 0,
-        zIndex: 10000,
         background: '#06060f',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        opacity: splashOpacity,
-        transition: phase === 'exit' ? 'opacity 0.45s ease' : 'none',
-        pointerEvents: phase === 'exit' ? 'none' : 'auto',
         overflow: 'hidden',
       }}
     >
-      {/* ── Stage 1: background glow expands from center ── */}
       <div
         style={{
           position: 'absolute',
@@ -63,7 +48,6 @@ export default function SplashScreen({ onDone, duration = 2400 }) {
           gap: '28px',
         }}
       >
-        {/* ── Stage 2: logo drops in from above ── */}
         <div
           style={{
             opacity: entered ? 1 : 0,
@@ -73,7 +57,7 @@ export default function SplashScreen({ onDone, duration = 2400 }) {
         >
           <img
             src="/logo.png"
-            alt="Sentinel"
+            alt="SentinelPH"
             style={{
               width: '160px',
               height: '160px',
@@ -85,7 +69,6 @@ export default function SplashScreen({ onDone, duration = 2400 }) {
           />
         </div>
 
-        {/* ── Stage 3: wordmark drops in from above ── */}
         <div
           style={{
             textAlign: 'center',
@@ -107,7 +90,7 @@ export default function SplashScreen({ onDone, duration = 2400 }) {
               display: 'inline-block',
             }}
           >
-            Sentinel
+            SentinelPH
             <span
               aria-hidden="true"
               style={{
@@ -133,11 +116,10 @@ export default function SplashScreen({ onDone, duration = 2400 }) {
                 mixBlendMode: 'screen',
               }}
             >
-              Sentinel
+              SentinelPH
             </span>
           </div>
 
-          {/* Underline draws outward */}
           <div
             style={{
               height: '2px',
@@ -149,7 +131,6 @@ export default function SplashScreen({ onDone, duration = 2400 }) {
             }}
           />
 
-          {/* Subtitle drops in */}
           <div
             style={{
               fontSize: '14px',
@@ -168,7 +149,6 @@ export default function SplashScreen({ onDone, duration = 2400 }) {
           </div>
         </div>
 
-        {/* ── Stage 4: dots drop in one by one ── */}
         <div style={{ display: 'flex', gap: '10px', marginTop: '24px' }}>
           {[0, 1, 2].map((i) => (
             <span

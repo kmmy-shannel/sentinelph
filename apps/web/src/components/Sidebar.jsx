@@ -65,8 +65,6 @@ const ChevronIcon = ({ color = '#e2e8f0', size = 16, style }) => (
 
 const COLLAPSE_KEY = 'sentinelph.sidebar.collapsed';
 
-// Longest-prefix match — /officer/queue/anything still highlights "queue",
-// and one and only one tab is ever highlighted.
 function getActiveId(pathname, items) {
   if (!items.length) return null;
   const matches = items
@@ -78,6 +76,7 @@ function getActiveId(pathname, items) {
 export default function Sidebar({ isOpen, onClose }) {
   const { user, role, logout } = useAuth();
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [badges, setBadges] = useState({});
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -93,9 +92,7 @@ export default function Sidebar({ isOpen, onClose }) {
   useEffect(() => {
     try {
       localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0');
-    } catch {
-      /* ignore */
-    }
+    } catch {}
   }, [collapsed]);
 
   const loadBadges = useCallback(async () => {
@@ -131,16 +128,18 @@ export default function Sidebar({ isOpen, onClose }) {
 
   function confirmLogout() {
     setShowLogoutConfirm(false);
-    document.body.style.transition = "opacity 0.3s ease";
-    document.body.style.opacity = "0";
-    setTimeout(() => {
-      logout();
+    setLoggingOut(true);
+
+    // Show the "Signing out…" overlay for ~1.2s, then actually sign out
+    setTimeout(async () => {
+      try {
+        await logout();
+      } catch (err) {
+        console.error('[Sidebar] logout failed:', err);
+      }
       navigate('/login');
-      setTimeout(() => {
-        document.body.style.transition = "none";
-        document.body.style.opacity = "1";
-      }, 50);
-    }, 300);
+      setLoggingOut(false);
+    }, 1200);
   }
 
   const roleColor =
@@ -385,6 +384,54 @@ export default function Sidebar({ isOpen, onClose }) {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Sign-out overlay with spinner */}
+      {loggingOut && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 9999,
+            background: "rgba(6, 6, 15, 0.85)",
+            backdropFilter: "blur(6px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            animation: "logoutOverlayIn 0.25s ease",
+          }}
+        >
+          <div style={{ textAlign: "center" }}>
+            <div
+              style={{
+                width: "44px",
+                height: "44px",
+                margin: "0 auto 20px",
+                borderRadius: "50%",
+                border: "3px solid rgba(59,130,246,0.2)",
+                borderTopColor: "#3b82f6",
+                animation: "logoutSpin 0.9s linear infinite",
+              }}
+            />
+            <div style={{ fontSize: "15px", fontWeight: 600, color: "#e2e8f0", marginBottom: "6px" }}>
+              Signing out…
+            </div>
+            <div
+              style={{
+                fontSize: "12px",
+                color: "#64748b",
+                fontFamily: "'JetBrains Mono',monospace",
+                letterSpacing: "0.04em",
+              }}
+            >
+              Please wait a moment
+            </div>
+          </div>
+          <style>{`
+            @keyframes logoutSpin { to { transform: rotate(360deg); } }
+            @keyframes logoutOverlayIn { from { opacity: 0; } to { opacity: 1; } }
+          `}</style>
         </div>
       )}
     </>

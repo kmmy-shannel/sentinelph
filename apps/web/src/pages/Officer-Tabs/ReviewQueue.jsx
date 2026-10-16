@@ -1,5 +1,6 @@
 // apps/web/src/pages/Officer-Tabs/ReviewQueue.jsx
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { fetchReports, submitReportVote } from "../../lib/api";
 import apiClient from "../../lib/api";
 import { useAuth } from "../../context/AuthContext";
@@ -16,16 +17,13 @@ const STATUS_ORDER = [
   { key: 'approved',      label: 'Approved',       color: '#22c55e' },
 ];
 
-// 10 columns: ID, NUMBER, TYPE, SUBTYPE, REPORTER, REPORTS, CHANNEL, SUBMITTED, PRIOR VOTES, ACTION
+// 10 columns
 const COL_WIDTHS = ['10%', '12%', '10%', '13%', '12%', '6%', '6%', '12%', '9%', '10%'];
 
-// ─── Prior-votes color: amber for any vote, grey only when none ──────
 function priorVotesColor(label) {
   return label === "None" ? "#4b5563" : "#f59e0b";
 }
-// ─────────────────────────────────────────────────────────────────────
 
-// ─── Action column button styles ─────────────────────────────────────
 const ACTION_BTN_BASE = {
   display: "inline-flex",
   alignItems: "center",
@@ -48,13 +46,7 @@ const ACTION_BTN_BLUE = {
   color: "#60a5fa",
 };
 const ACTION_BTN_BLUE_HOVER = { background: "rgba(59,130,246,0.22)" };
-// ─────────────────────────────────────────────────────────────────────
 
-// ─── TIER TAXONOMY (Level 1) — mirrors inference.py ──────────────────
-// inference.py emits: 'legitimate' | 'grey_area' | 'malicious' (plus
-// 'uncertain' / 'unavailable' as fallbacks). We render each as a
-// color-coded chip so the TYPE column shows the AI's tier, not the
-// raw scamType string.
 const TIER_STYLES = {
   malicious:   { dot: '#f43f5e', text: '#fb7185', bg: 'rgba(244,63,94,0.06)',   border: 'rgba(244,63,94,0.25)',   label: 'Malicious' },
   grey_area:   { dot: '#eab308', text: '#facc15', bg: 'rgba(234,179,8,0.06)',   border: 'rgba(234,179,8,0.25)',   label: 'Grey Area' },
@@ -63,8 +55,6 @@ const TIER_STYLES = {
   unavailable: { dot: '#64748b', text: '#64748b', bg: 'rgba(100,116,139,0.06)', border: 'rgba(100,116,139,0.20)', label: 'Unavailable' },
 };
 
-// Normalize whatever the backend sends (case/underscore variants) into
-// a key that exists in TIER_STYLES.
 function normalizeTierKey(raw) {
   if (!raw) return 'unavailable';
   const s = String(raw).toLowerCase().trim();
@@ -75,7 +65,6 @@ function normalizeTierKey(raw) {
   return 'unavailable';
 }
 
-// ─── SUBTYPE TAXONOMY (Level 2) ──────────────────────────────────────
 const SUBTYPES_BY_TIER = {
   legitimate: [
     'personal_conversational',
@@ -113,7 +102,6 @@ function labelSubtype(st) {
   return SUBTYPE_LABELS[st] || st;
 }
 
-// ─── SVG ICONS ───────────────────────────────────────────────────────
 const CheckIcon = ({ color, size = 14 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <path d="M20 6L9 17l-5-5" />
@@ -197,12 +185,6 @@ function mapReportToRow(r, currentUid) {
     rawStatus === "rejected"       ? "Rejected" :
     rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1);
 
-  // ── AI tier ──────────────────────────────────────────────────────
-  // inference.py emits `label` on aiFlag. Fall back through a few
-  // alternative field names in case this report was ingested through
-  // an older pipeline. Never fall back to `scamType` — that is a
-  // subtype string, not a tier, and showing it as the tier would be
-  // misleading.
   const rawTier =
     ai.label ||
     ai.tier ||
@@ -210,14 +192,11 @@ function mapReportToRow(r, currentUid) {
     null;
   const tierKey = normalizeTierKey(rawTier);
 
-  // ── Subtype ──────────────────────────────────────────────────────
   const aiSubtype = ai.subtype || r.aiSubtype || null;
 
   return {
     id: String(id),
     number: r.sender || r.scammerNumber || r.reportedNumber || "Unknown",
-    // `type` is retained for backward compatibility (CSV export, search),
-    // but the table now renders the tier chip instead.
     type: r.scamType || r.category || "UNKNOWN",
     reports: r.reportCount ?? r.reports ?? 1,
     channel: r.channel || "SMS",
@@ -236,10 +215,9 @@ function mapReportToRow(r, currentUid) {
     evidenceText: r.evidenceText || r.content || r.textData || "",
     evidenceImage: r.evidenceImage || null,
     evidenceFiles: Array.isArray(r.evidenceFiles) ? r.evidenceFiles : [],
-    // Tier fields (new)
     aiTier: tierKey,
-    aiLabel: tierKey,           // keep the old field name populated for the modal
-    aiRawLabel: rawTier,        // the raw string, for the modal's small text
+    aiLabel: tierKey,
+    aiRawLabel: rawTier,
     aiRiskLevel: ai.riskLevel || "UNKNOWN",
     aiConfidence: typeof ai.confidenceScore === "number" ? ai.confidenceScore : null,
     nullifierHash: r.nullifierHash || r.nullifier || null,
@@ -264,7 +242,9 @@ function mapReportToRow(r, currentUid) {
 
 export default function ReviewQueue() {
   const { user } = useAuth();
-  const [tab, setTab] = useState("pending");
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const [tab, setTab] = useState("all");
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -453,6 +433,24 @@ export default function ReviewQueue() {
       setLoadingDetail(false);
     }
   }
+
+  // ─── Auto-open a report when navigated here with ?open=<reportId> ─
+  useEffect(() => {
+    const openId = searchParams.get("open");
+    if (!openId) return;
+    if (loading || !reports.length) return;
+    if (voteModal) return; // don't reopen if a modal is already up
+
+    const target = reports.find((r) => r.id === openId);
+    if (target) {
+      openVoteModal(target);
+      // Clear the param so a refresh doesn't reopen
+      const next = new URLSearchParams(searchParams);
+      next.delete("open");
+      setSearchParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, reports, loading, voteModal]);
 
   const filtered = useMemo(() => {
     let list = reports;
@@ -705,7 +703,6 @@ export default function ReviewQueue() {
                 </thead>
                 <tbody>
                   {group.items.map((row) => {
-                    // TYPE column → AI tier chip (from inference.py Level 1)
                     const tier = TIER_STYLES[row.aiTier] || TIER_STYLES.unavailable;
                     return (
                       <tr
@@ -720,7 +717,6 @@ export default function ReviewQueue() {
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#3b82f6", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.id.slice(0, 12)}</td>
                         <td style={{ padding: "12px 20px", fontSize: "12px", color: "#fff", fontFamily: "'JetBrains Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.number}</td>
 
-                        {/* TYPE — Level 1 tier chip */}
                         <td style={{ padding: "12px 20px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           <span
                             style={{
@@ -744,7 +740,6 @@ export default function ReviewQueue() {
                           </span>
                         </td>
 
-                        {/* SUBTYPE — Level 2 label (matches Blacklist Registry) */}
                         <td style={{ padding: "12px 20px", fontSize: "11px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: row.aiSubtype ? "#cbd5e1" : "#4b5563" }}>
                           {labelSubtype(row.aiSubtype)}
                         </td>
@@ -826,7 +821,6 @@ export default function ReviewQueue() {
                 </div>
               )}
 
-              {/* AI CLASSIFICATION — Level 1 tier + Level 2 subtype */}
               <div style={{ marginBottom: "16px" }}>
                 <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "1px", color: "#4b5563", marginBottom: "8px", fontFamily: "'JetBrains Mono',monospace" }}>
                   AI CLASSIFICATION

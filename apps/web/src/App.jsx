@@ -1,5 +1,5 @@
 // apps/web/src/App.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -40,23 +40,64 @@ export default function App() {
     }
   });
 
-  function handleSplashDone() {
-    try {
-      sessionStorage.setItem('sentinelph.splashShown', '1');
-    } catch {
-      /* ignore */
+  const [appReady, setAppReady] = useState(false);
+  const [minTimeElapsed, setMinTimeElapsed] = useState(false);
+  const [fading, setFading] = useState(false);
+
+  const handleSplashReady = useCallback(() => {
+    setAppReady(true);
+  }, []);
+
+  // Minimum splash duration — the visual shouldn't flicker off instantly
+  useEffect(() => {
+    const t = setTimeout(() => setMinTimeElapsed(true), 1600);
+    return () => clearTimeout(t);
+  }, []);
+
+  // Once both conditions are true, start fade-out. After the fade
+  // completes, unmount the splash entirely.
+  useEffect(() => {
+    if (!showSplash) return;
+
+    const shouldHide = minTimeElapsed && appReady;
+    if (!shouldHide) {
+      // Hard cap: 8s — splash always goes away even if API is dead
+      const hardStop = setTimeout(() => {
+        try { sessionStorage.setItem('sentinelph.splashShown', '1'); } catch {}
+        setFading(true);
+      }, 8000);
+      return () => clearTimeout(hardStop);
     }
-    setShowSplash(false);
-  }
+
+    setFading(true);
+    const t = setTimeout(() => {
+      try { sessionStorage.setItem('sentinelph.splashShown', '1'); } catch {}
+      setShowSplash(false);
+    }, 500); // matches the fade-out duration below
+    return () => clearTimeout(t);
+  }, [showSplash, minTimeElapsed, appReady]);
 
   return (
     <AuthProvider>
       <BrowserRouter>
-        {showSplash && <SplashScreen onDone={handleSplashDone} duration={1600} />}
+        {showSplash && (
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 10000,
+              opacity: fading ? 0 : 1,
+              transition: 'opacity 0.5s ease',
+              pointerEvents: fading ? 'none' : 'auto',
+            }}
+          >
+            <SplashScreen />
+          </div>
+        )}
 
         <Routes>
           <Route path="/" element={<Navigate to="/login" replace />} />
-          <Route path="/login" element={<Login />} />
+          <Route path="/login" element={<Login onReady={handleSplashReady} />} />
           <Route path="/activate" element={<Activate />} />
           <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/unauthorized" element={<Unauthorized />} />

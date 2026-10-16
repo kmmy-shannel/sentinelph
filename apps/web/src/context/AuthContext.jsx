@@ -26,7 +26,9 @@ export function AuthProvider({ children }) {
   const [jurisdiction, setJurisdiction] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
+
   const lastActivityRef = useRef(Date.now());
+  const signingOutRef = useRef(false);
 
   useEffect(() => {
     setPersistence(auth, browserSessionPersistence).catch((err) => {
@@ -42,6 +44,9 @@ export function AuthProvider({ children }) {
           setFirebaseUser(fbUser);
           setRole(tokenResult.claims.role || null);
           setJurisdiction(tokenResult.claims.jurisdiction || null);
+          // Fresh login — clear the inactivity flag and the guard
+          try { sessionStorage.removeItem('sentinelph.logoutReason'); } catch {}
+          signingOutRef.current = false;
         } catch (err) {
           console.error('[AuthContext] Failed to read token claims:', err);
           setFirebaseUser(null);
@@ -53,12 +58,14 @@ export function AuthProvider({ children }) {
         setRole(null);
         setJurisdiction(null);
         setLoggingOut(false);
+        signingOutRef.current = false;
       }
       setLoading(false);
     });
     return unsubscribe;
   }, []);
 
+  // ─── Inactivity watchdog ───────────────────────────────────────────
   useEffect(() => {
     if (!firebaseUser) return;
 
@@ -71,26 +78,54 @@ export function AuthProvider({ children }) {
 
     lastActivityRef.current = Date.now();
 
+    const triggerLogout = (reason) => {
+      if (signingOutRef.current) return;
+      signingOutRef.current = true;
+
+      console.log(`[AuthContext] Inactivity sign-out (${reason}).`);
+
+      setLoggingOut(true);
+
+      setTimeout(() => {
+        setLoggingOut(false);
+        setFirebaseUser(null);
+        setRole(null);
+        setJurisdiction(null);
+
+        // Flag the reason so the Login page can show the notice.
+        try { sessionStorage.setItem('sentinelph.logoutReason', 'inactivity'); } catch {}
+
+        signOut(auth).catch((err) => {
+          console.error('[AuthContext] Background signOut failed:', err);
+        });
+      }, 1500);
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState !== 'visible') return;
+      const idleFor = Date.now() - lastActivityRef.current;
+      if (idleFor >= INACTIVITY_MS) {
+        triggerLogout('visibility-return');
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
     const intervalId = setInterval(() => {
       const idleFor = Date.now() - lastActivityRef.current;
       if (idleFor >= INACTIVITY_MS) {
-        console.log('[AuthContext] Inactivity timeout — showing logout overlay.');
-        setLoggingOut(true);
-        setTimeout(() => {
-          signOut(auth).catch((err) => {
-            console.error('[AuthContext] Sign-out on inactivity failed:', err);
-          });
-        }, 2200);
+        triggerLogout('idle-timeout');
       }
     }, ACTIVITY_CHECK_INTERVAL_MS);
 
     return () => {
       events.forEach((evt) => window.removeEventListener(evt, bump));
+      document.removeEventListener('visibilitychange', handleVisibility);
       clearInterval(intervalId);
     };
   }, [firebaseUser]);
 
   const logout = async () => {
+    try { sessionStorage.removeItem('sentinelph.logoutReason'); } catch {}
     await signOut(auth);
   };
 
@@ -146,6 +181,7 @@ function InactivityOverlay() {
         justifyContent: 'center',
         opacity: visible ? 1 : 0,
         transition: 'opacity 0.45s ease',
+        pointerEvents: 'none',
       }}
     >
       <div

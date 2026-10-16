@@ -7,7 +7,6 @@ import {
   EyeOff,
   Check,
   X,
-  LogOut,
   Shield,
   Clock,
   BadgeCheck,
@@ -23,7 +22,6 @@ const A_TINT_BORDER = "rgba(34,197,94,0.35)";
 
 const MAX_PW_LENGTH = 64;
 
-// ─── Person silhouette (replaces "SA" initials in the identity block) ─
 function PersonIcon({ size = 30, color = A }) {
   return (
     <svg
@@ -43,7 +41,6 @@ function PersonIcon({ size = 30, color = A }) {
   );
 }
 
-// ─── Eye-toggle password input ────────────────────────────────────────
 function PasswordInput({
   value,
   onChange,
@@ -102,7 +99,6 @@ function PasswordInput({
   );
 }
 
-// ─── Password strength scoring ────────────────────────────────────────
 function scorePassword(pw) {
   if (!pw) return { score: 0, label: "", color: "#374151" };
 
@@ -189,7 +185,6 @@ function PasswordStrengthMeter({ value }) {
   );
 }
 
-// ─── Profile info row ────────────────────────────────────────────────
 function InfoRow({ icon: Icon, label, value, mono = false, accent = false }) {
   return (
     <div style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
@@ -238,7 +233,7 @@ function InfoRow({ icon: Icon, label, value, mono = false, accent = false }) {
 }
 
 export default function Account() {
-  const { user, role, logout } = useAuth();
+  const { user, role } = useAuth();
 
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw] = useState("");
@@ -451,7 +446,6 @@ export default function Account() {
           </span>
         </div>
 
-        {/* Identity block — person icon instead of initials */}
         <div
           style={{
             display: "flex",
@@ -539,69 +533,25 @@ export default function Account() {
           </div>
         </div>
 
-        {/* Info grid */}
         <div
           style={{
             display: "grid",
             gridTemplateColumns: "1fr 1fr",
             gap: "20px 28px",
-            marginBottom: "24px",
           }}
         >
-          <InfoRow
-            icon={UserCircle}
-            label="DISPLAY NAME"
-            value={displayName}
-          />
-          <InfoRow
-            icon={UserCircle}
-            label="EMAIL"
-            value={displayEmail}
-            mono
-          />
+          <InfoRow icon={UserCircle} label="DISPLAY NAME" value={displayName} />
+          <InfoRow icon={UserCircle} label="EMAIL" value={displayEmail} mono />
           <InfoRow
             icon={Shield}
             label="ROLE"
             value={(role ?? "superadmin").toUpperCase()}
             accent
           />
-          <InfoRow
-            icon={BadgeCheck}
-            label="USER ID"
-            value={userUid}
-            mono
-          />
-          <InfoRow
-            icon={Check}
-            label="ACCOUNT STATUS"
-            value="Active"
-          />
-          <InfoRow
-            icon={Clock}
-            label="SESSION"
-            value="Authenticated"
-          />
+          <InfoRow icon={BadgeCheck} label="USER ID" value={userUid} mono />
+          <InfoRow icon={Check} label="ACCOUNT STATUS" value="Active" />
+          <InfoRow icon={Clock} label="SESSION" value="Authenticated" />
         </div>
-
-        <button
-          onClick={logout}
-          style={{
-            padding: "10px 20px",
-            borderRadius: "10px",
-            fontSize: "12px",
-            fontWeight: 600,
-            background: "#3f1a1a",
-            border: "1px solid #ef444440",
-            color: "#ef4444",
-            cursor: "pointer",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "8px",
-          }}
-        >
-          <LogOut size={14} />
-          Sign Out
-        </button>
       </div>
 
       {/* Change password card */}
