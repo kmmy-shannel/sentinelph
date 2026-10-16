@@ -1,35 +1,16 @@
 // apps/mobile/screens/HomeScreen.js
-//
-// Dashboard: offline/sync status, quick report CTA, four-stage review
-// counters (queued / under review / confirmed / rejected), and a live
-// feed of the most recently confirmed scam numbers across the whole
-// country.
-//
-// The feed reads from the local blacklist_cache (populated by the
-// Search tab's browse mode from GET /api/v1/blacklist/public), so it
-// works offline once anything has been cached. Tapping a feed row
-// jumps to the Search screen pre-filled with that number.
-//
-// Theme: colors come from useTheme() so the screen responds to the
-// global dark/light toggle. No data-layer code is affected.
-
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   View,
   Text,
   ScrollView,
   RefreshControl,
   TouchableOpacity,
-  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Svg, { Path, Circle } from 'react-native-svg';
-
-// NOTE: BlacklistStatusBanner import removed along with the banner.
-// Re-add if you want to bring the threat banner back.
-// import BlacklistStatusBanner from '../components/BlacklistStatusBanner';
 
 import OfflineSyncIndicator from '../components/OfflineSyncIndicator';
 import QuickReportCard from '../components/QuickReportCard';
@@ -44,7 +25,6 @@ import { useTheme, spacing as S } from '../theme/ThemeContext';
 
 const FEED_LIMIT = 5;
 
-// ─── SVG icons — vector, matched stroke weights, no emoji/text glyphs ──
 function ClockIcon({ size = 14, color = '#f59e0b' }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 16 16" fill="none">
@@ -121,7 +101,6 @@ function ChevronRight({ size = 12, color = '#818cf8' }) {
   );
 }
 
-// ─── Section header — small uppercase label + optional subtitle ───────
 function SectionHeader({ title, subtitle, right, theme }) {
   return (
     <View
@@ -147,11 +126,7 @@ function SectionHeader({ title, subtitle, right, theme }) {
         </Text>
         {subtitle ? (
           <Text
-            style={{
-              color: theme.textMuted,
-              fontSize: 12,
-              marginTop: 3,
-            }}
+            style={{ color: theme.textMuted, fontSize: 12, marginTop: 3 }}
             numberOfLines={1}
           >
             {subtitle}
@@ -163,7 +138,6 @@ function SectionHeader({ title, subtitle, right, theme }) {
   );
 }
 
-// ─── Stat counter — icon + value + label, aligned consistently ────────
 function StatCounter({ icon, label, value, color, theme }) {
   return (
     <View
@@ -223,17 +197,17 @@ function StatCounter({ icon, label, value, color, theme }) {
   );
 }
 
-// ─── Live Registry Feed — newest confirmed scam numbers ──────────────
-//
-// Defensive render: every entry is validated before its key is built.
-// Two guards prevent the "Each child in a list should have a unique
-// key" warning that fires when two rows have the same (or missing)
-// `value`:
-//   1. The parent filters entries so every row has a non-empty string
-//      identifier. Malformed rows never reach the feed.
-//   2. Even if one slipped through, the key falls back to `idx`, so
-//      the key is always unique.
-function LiveRegistryFeed({ entries, onPressEntry, onBrowseAll, theme }) {
+function LiveRegistryFeed({
+  title,
+  subtitle,
+  emptyTitle,
+  emptyBody,
+  entries,
+  kind,
+  onPressEntry,
+  onBrowseAll,
+  theme,
+}) {
   return (
     <View
       style={{
@@ -244,7 +218,6 @@ function LiveRegistryFeed({ entries, onPressEntry, onBrowseAll, theme }) {
         borderColor: theme.border,
       }}
     >
-      {/* Header */}
       <View
         style={{
           flexDirection: 'row',
@@ -266,20 +239,16 @@ function LiveRegistryFeed({ entries, onPressEntry, onBrowseAll, theme }) {
               letterSpacing: 0.1,
             }}
           >
-            Live Registry Feed
+            {title}
           </Text>
           <Text
-            style={{
-              color: theme.textMuted,
-              fontSize: 12,
-              marginTop: 3,
-            }}
+            style={{ color: theme.textMuted, fontSize: 12, marginTop: 3 }}
             numberOfLines={1}
           >
-            Latest numbers confirmed as scams
+            {subtitle}
           </Text>
         </View>
-        {entries.length > 0 && (
+        {entries.length > 0 ? (
           <TouchableOpacity
             onPress={onBrowseAll}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -303,24 +272,23 @@ function LiveRegistryFeed({ entries, onPressEntry, onBrowseAll, theme }) {
             </Text>
             <ChevronRight size={12} color={theme.primarySoft} />
           </TouchableOpacity>
-        )}
+        ) : null}
       </View>
 
-      {/* Body */}
       {entries.length === 0 ? (
         <View
           style={{
             paddingHorizontal: S.xl,
-            paddingVertical: 28,
+            paddingVertical: 24,
             alignItems: 'center',
             gap: S.md,
           }}
         >
           <View
             style={{
-              width: 44,
-              height: 44,
-              borderRadius: 14,
+              width: 40,
+              height: 40,
+              borderRadius: 12,
               alignItems: 'center',
               justifyContent: 'center',
               backgroundColor: theme.primaryFaint,
@@ -328,7 +296,7 @@ function LiveRegistryFeed({ entries, onPressEntry, onBrowseAll, theme }) {
               borderColor: theme.primaryTintBorder,
             }}
           >
-            <EyeIcon size={18} color={theme.primarySoft} />
+            <EyeIcon size={16} color={theme.primarySoft} />
           </View>
           <Text
             style={{
@@ -338,7 +306,7 @@ function LiveRegistryFeed({ entries, onPressEntry, onBrowseAll, theme }) {
               textAlign: 'center',
             }}
           >
-            No confirmed scams yet
+            {emptyTitle}
           </Text>
           <Text
             style={{
@@ -349,43 +317,16 @@ function LiveRegistryFeed({ entries, onPressEntry, onBrowseAll, theme }) {
               maxWidth: 260,
             }}
           >
-            Once officers confirm a number as a scam, it appears here so
-            you can check it before answering.
+            {emptyBody}
           </Text>
-          <TouchableOpacity
-            onPress={onBrowseAll}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            style={{
-              marginTop: 2,
-              paddingHorizontal: 16,
-              paddingVertical: 10,
-              borderRadius: 10,
-              backgroundColor: theme.primaryTint,
-              borderWidth: 1,
-              borderColor: theme.primaryTintBorder,
-            }}
-          >
-            <Text
-              style={{
-                color: theme.primarySoft,
-                fontSize: 12,
-                fontWeight: '700',
-              }}
-            >
-              Open registry
-            </Text>
-          </TouchableOpacity>
         </View>
       ) : (
         <View>
           {entries.map((entry, idx) => (
             <TouchableOpacity
-              // Composite key: value if present, idx always. Guarantees
-              // uniqueness even if the server/cache returns a malformed
-              // or duplicated `value`.
-              key={`${entry?.value || 'unknown'}::${idx}`}
+              key={`${kind}::${entry?.value || 'unknown'}::${idx}`}
               activeOpacity={0.7}
-              onPress={() => onPressEntry(entry)}
+              onPress={() => onPressEntry(entry, kind)}
               style={{
                 flexDirection: 'row',
                 alignItems: 'center',
@@ -396,7 +337,6 @@ function LiveRegistryFeed({ entries, onPressEntry, onBrowseAll, theme }) {
                 borderTopColor: theme.borderSoft,
               }}
             >
-              {/* Status dot */}
               <View
                 style={{
                   width: 32,
@@ -433,45 +373,37 @@ function LiveRegistryFeed({ entries, onPressEntry, onBrowseAll, theme }) {
                     flexWrap: 'wrap',
                   }}
                 >
-                  <View
-                    style={{
-                      paddingHorizontal: 6,
-                      paddingVertical: 2,
-                      borderRadius: 6,
-                      backgroundColor: theme.roseTint,
-                      borderWidth: 1,
-                      borderColor: theme.roseTintBorder,
-                    }}
-                  >
-                    <Text
+                  {entry.scamType ? (
+                    <View
                       style={{
-                        color: theme.roseText,
-                        fontSize: 10,
-                        fontWeight: '700',
-                        letterSpacing: 0.3,
+                        paddingHorizontal: 6,
+                        paddingVertical: 2,
+                        borderRadius: 6,
+                        backgroundColor: theme.roseTint,
+                        borderWidth: 1,
+                        borderColor: theme.roseTintBorder,
                       }}
                     >
-                      {(entry.scamType || 'Scam').toString().toUpperCase()}
-                    </Text>
-                  </View>
+                      <Text
+                        style={{
+                          color: theme.roseText,
+                          fontSize: 10,
+                          fontWeight: '700',
+                          letterSpacing: 0.3,
+                        }}
+                      >
+                        {entry.scamType.toString().toUpperCase()}
+                      </Text>
+                    </View>
+                  ) : null}
                   {entry.reportCount ? (
-                    <Text
-                      style={{
-                        color: theme.textFaint,
-                        fontSize: 11,
-                      }}
-                    >
+                    <Text style={{ color: theme.textFaint, fontSize: 11 }}>
                       {entry.reportCount} report
                       {entry.reportCount === 1 ? '' : 's'}
                     </Text>
                   ) : null}
                   {entry.region && entry.region !== 'UNCLASSIFIED' ? (
-                    <Text
-                      style={{
-                        color: theme.textFaint,
-                        fontSize: 11,
-                      }}
-                    >
+                    <Text style={{ color: theme.textFaint, fontSize: 11 }}>
                       · {entry.region}
                     </Text>
                   ) : null}
@@ -487,29 +419,27 @@ function LiveRegistryFeed({ entries, onPressEntry, onBrowseAll, theme }) {
   );
 }
 
-// ─── Screen ───────────────────────────────────────────────────────────
 export default function HomeScreen() {
   const navigation = useNavigation();
-  const { width } = useWindowDimensions();
-  void width; // reserved for future responsive tweaks
-
   const { theme } = useTheme();
 
   const [refreshing, setRefreshing] = useState(false);
-  const [threatLevel, setThreatLevel] = useState('safe');
   const [stats, setStats] = useState({
     queued: 0,
     underReview: 0,
     confirmed: 0,
     rejected: 0,
   });
-  const [feedEntries, setFeedEntries] = useState([]);
+  const [numberEntries, setNumberEntries] = useState([]);
+  const [brandEntries, setBrandEntries] = useState([]);
+
+  const loadGenRef = useRef(0);
 
   const loadDashboard = useCallback(async () => {
-    // ── Local: report counts ─────────────────────────────────────────
+    const gen = ++loadGenRef.current;
+
     try {
       await refreshReportStatuses().catch(() => {});
-
       const all = await getAllReports();
       const queued = all.filter(
         (r) => (r.reviewStatus || 'queued') === 'queued'
@@ -523,96 +453,104 @@ export default function HomeScreen() {
       const rejected = all.filter(
         (r) => r.reviewStatus === 'rejected'
       ).length;
-
       setStats({ queued, underReview, confirmed, rejected });
     } catch (err) {
       console.warn('[HomeScreen] failed to read local reports:', err?.message);
     }
 
-    // ── Cache: serve feed immediately from what's already stored ─────
+    // Cache serve
     try {
-      const cached = await getAllBlacklistCache(50);
-      const seen = new Set();
-      const safe = [];
+      const cached = await getAllBlacklistCache(80);
+      const numbers = [];
+      const brands = [];
+      const seenN = new Set();
+      const seenB = new Set();
       for (const e of cached) {
         if (!e || typeof e.value !== 'string' || e.value.length === 0) continue;
-        if (seen.has(e.value)) continue;
-        seen.add(e.value);
-        safe.push(e);
-        if (safe.length >= FEED_LIMIT) break;
+        if (e.targetKind === 'brand') {
+          if (seenB.has(e.value)) continue;
+          seenB.add(e.value);
+          brands.push(e);
+          if (brands.length >= FEED_LIMIT) continue;
+        } else {
+          if (seenN.has(e.value)) continue;
+          seenN.add(e.value);
+          numbers.push(e);
+          if (numbers.length >= FEED_LIMIT) continue;
+        }
       }
-      if (safe.length > 0) setFeedEntries(safe);
+      if (gen === loadGenRef.current) {
+        if (numbers.length > 0) setNumberEntries(numbers.slice(0, FEED_LIMIT));
+        if (brands.length > 0) setBrandEntries(brands.slice(0, FEED_LIMIT));
+      }
     } catch (err) {
       console.warn('[HomeScreen] cache read failed:', err?.message);
     }
 
-    // ── Remote: refresh registry + threat level ──────────────────────
+    // Remote refresh
     try {
-      const [registryRes, statusRes] = await Promise.all([
-        api.get('/api/v1/blacklist/public', { params: { limit: 50 } }),
-        api.get('/api/v1/status/summary'),
-      ]);
-
+      const registryRes = await api.get('/api/v1/blacklist/public', {
+        params: { limit: 60 },
+      });
       const rawEntries = registryRes.data?.data || [];
+      if (gen !== loadGenRef.current) return;
+
       if (rawEntries.length > 0) {
         await cacheBlacklistBulk(rawEntries).catch(() => {});
 
         let storedRegion = null;
         try {
-          storedRegion = await AsyncStorage.getItem(
-            '@sentinelph_user_region'
-          );
-        } catch {
-          // Non-fatal — sort falls back to date-only.
-        }
+          storedRegion = await AsyncStorage.getItem('@sentinelph_user_region');
+        } catch {}
 
         const sorted = [...rawEntries].sort((a, b) => {
-          const aLocal =
-            storedRegion && a.region === storedRegion ? 1 : 0;
-          const bLocal =
-            storedRegion && b.region === storedRegion ? 1 : 0;
+          const aLocal = storedRegion && a.region === storedRegion ? 1 : 0;
+          const bLocal = storedRegion && b.region === storedRegion ? 1 : 0;
           if (aLocal !== bLocal) return bLocal - aLocal;
-          const aT = a.blacklistedAt
-            ? new Date(a.blacklistedAt).getTime()
-            : 0;
-          const bT = b.blacklistedAt
-            ? new Date(b.blacklistedAt).getTime()
-            : 0;
+          const aT = a.blacklistedAt ? new Date(a.blacklistedAt).getTime() : 0;
+          const bT = b.blacklistedAt ? new Date(b.blacklistedAt).getTime() : 0;
           return bT - aT;
         });
 
-        const seen = new Set();
-        const safe = [];
+        const seenN = new Set();
+        const seenB = new Set();
+        const numbers = [];
+        const brands = [];
         for (const e of sorted) {
           const value = typeof e?.phoneNumber === 'string' ? e.phoneNumber : '';
-          if (!value || seen.has(value)) continue;
-          seen.add(value);
-          safe.push({
+          if (!value) continue;
+          const targetKind = e.targetKind === 'brand' ? 'brand' : 'number';
+          const row = {
             value,
+            targetKind,
+            brandName: e.brandName || null,
             scamType: e.scamType || null,
             reportCount: e.reportCount ?? 0,
             region: e.region || null,
             blacklistedAt: e.blacklistedAt || null,
             status: e.status || 'blacklisted',
-          });
-          if (safe.length >= FEED_LIMIT) break;
+          };
+          if (targetKind === 'brand') {
+            if (seenB.has(value)) continue;
+            seenB.add(value);
+            if (brands.length < FEED_LIMIT) brands.push(row);
+          } else {
+            if (seenN.has(value)) continue;
+            seenN.add(value);
+            if (numbers.length < FEED_LIMIT) numbers.push(row);
+          }
         }
-        if (safe.length > 0) setFeedEntries(safe);
-      }
 
-      // threatLevel is still fetched (harmless) so re-enabling the
-      // banner later only requires uncommenting the render line below.
-      setThreatLevel(statusRes.data?.threatLevel || 'safe');
+        if (gen === loadGenRef.current) {
+          if (numbers.length > 0) setNumberEntries(numbers);
+          if (brands.length > 0) setBrandEntries(brands);
+        }
+      }
     } catch (err) {
       if (err instanceof OfflineError) {
-        // Silent — cache already served.
-      } else if (err?.response?.status === 404) {
-        console.warn('[HomeScreen] dashboard endpoints not available yet');
-      } else {
-        console.warn(
-          '[HomeScreen] failed to load remote dashboard data:',
-          err?.message
-        );
+        // silent
+      } else if (err?.response?.status !== 404) {
+        console.warn('[HomeScreen] remote dashboard failed:', err?.message);
       }
     }
   }, []);
@@ -629,13 +567,20 @@ export default function HomeScreen() {
     setRefreshing(false);
   };
 
-  // Tapping a feed row jumps to Search pre-filled with that number.
-  const openInSearch = useCallback(
-    (entry) => {
+  const openDetail = useCallback(
+    (entry, kind) => {
       if (!entry?.value) return;
-      navigation.navigate('Search', {
-        initialQuery: entry.value,
+      navigation.navigate('BlacklistDetail', {
+        identifier: entry.value,
+        targetKind: kind,
       });
+    },
+    [navigation]
+  );
+
+  const openSearchKind = useCallback(
+    (kind) => {
+      navigation.navigate('Search', { initialKind: kind });
     },
     [navigation]
   );
@@ -644,23 +589,8 @@ export default function HomeScreen() {
     navigation.navigate('Search');
   }, [navigation]);
 
-  // Keep threatLevel referenced to avoid unused-variable warnings if you
-  // later decide to remove the state entirely.
-  void threatLevel;
-
   return (
-    <SafeAreaView
-      edges={['top']}
-      style={{ flex: 1, backgroundColor: theme.bg }}
-    >
-      {/*
-        Threat banner removed for a cleaner home screen.
-        To restore: uncomment the import at the top of this file and
-        the single line below.
-
-        <BlacklistStatusBanner level={threatLevel} />
-      */}
-
+    <SafeAreaView edges={['top']} style={{ flex: 1, backgroundColor: theme.bg }}>
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{
@@ -690,19 +620,13 @@ export default function HomeScreen() {
           }
         />
 
-        {/* Four-stage counters */}
         <View>
           <SectionHeader
             theme={theme}
             title="Your Reports"
             subtitle="Track your submissions through officer review"
           />
-          <View
-            style={{
-              flexDirection: 'row',
-              gap: S.sm,
-            }}
-          >
+          <View style={{ flexDirection: 'row', gap: S.sm }}>
             <StatCounter
               theme={theme}
               icon={<ClockIcon />}
@@ -737,14 +661,42 @@ export default function HomeScreen() {
         <View>
           <SectionHeader
             theme={theme}
-            title="Community Registry"
-            subtitle="Numbers recently confirmed by officers"
+            title="Blacklisted Numbers"
+            subtitle={`${numberEntries.length} number${
+              numberEntries.length === 1 ? '' : 's'
+            } confirmed as scams`}
           />
           <LiveRegistryFeed
             theme={theme}
-            entries={feedEntries}
-            onPressEntry={openInSearch}
-            onBrowseAll={openSearch}
+            kind="number"
+            title="Numbers"
+            subtitle="Confirmed scam numbers and SMS headers"
+            emptyTitle="No confirmed scam numbers yet"
+            emptyBody="Once officers confirm a number, it appears here so you can check it before answering."
+            entries={numberEntries}
+            onPressEntry={openDetail}
+            onBrowseAll={() => openSearchKind('number')}
+          />
+        </View>
+
+        <View>
+          <SectionHeader
+            theme={theme}
+            title="Impersonated Brands"
+            subtitle={`${brandEntries.length} brand${
+              brandEntries.length === 1 ? '' : 's'
+            } flagged for impersonation`}
+          />
+          <LiveRegistryFeed
+            theme={theme}
+            kind="brand"
+            title="Brands"
+            subtitle="Brands used in impersonation scams"
+            emptyTitle="No impersonated brands yet"
+            emptyBody="When a scam SMS pretends to be a bank, telco, or government agency, the brand appears here."
+            entries={brandEntries}
+            onPressEntry={openDetail}
+            onBrowseAll={() => openSearchKind('brand')}
           />
         </View>
       </ScrollView>

@@ -1,14 +1,4 @@
 // apps/mobile/navigation/TabNavigator.js
-//
-// Custom bottom tab bar (not the default RN Navigation tab bar UI — we
-// render our own via tabBar prop) so the central "Report" button can float
-// above the bar exactly as in the Figma Make prototype, and tapping it
-// pushes the ReportScreen modally instead of switching tabs.
-//
-// UI: colors come from useTheme() so the whole bar (background, border,
-// active tint, inactive tint, floating Report button) responds to the
-// global dark/light toggle. All icons are SVG — no emoji, no text glyphs.
-
 import React from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -20,12 +10,10 @@ import AlertsScreen from '../screens/AlertsScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import MyReportsScreen from '../screens/MyReportsScreen';
 import ReportScreen from '../screens/ReportScreen';
+import BlacklistDetailScreen from '../screens/BlacklistDetailScreen';
 import { useTheme, spacing as S } from '../theme/ThemeContext';
 
 const Tab = createBottomTabNavigator();
-
-// ─── Icons ────────────────────────────────────────────────────────────
-// All icons share the same 1.3–1.4 stroke weight as the rest of the app.
 
 function ReportIcon({ size = 18, color = '#ffffff' }) {
   return (
@@ -101,8 +89,6 @@ function ProfileNavIcon({ active, theme }) {
   );
 }
 
-// Theme icons (used by the Profile screen's Appearance toggle, but
-// exported here too so any future "quick theme" button can reuse them).
 export function MoonIcon({ size = 18, color = '#e2e8f0' }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 20 20" fill="none">
@@ -133,12 +119,6 @@ export function SunIcon({ size = 18, color = '#e2e8f0' }) {
   );
 }
 
-// ─── Custom tab bar ───────────────────────────────────────────────────
-/**
- * Custom tab bar. Renders the 5 route icons + the floating central Report
- * button. The Report "tab" is not a real screen in the tab stack — pressing
- * it instead navigates to the ReportScreen route pushed above the tabs.
- */
 const VISIBLE_TABS = ['Home', 'Search', 'Alerts', 'Profile'];
 
 function CustomTabBar({ state, descriptors, navigation }) {
@@ -165,7 +145,6 @@ function CustomTabBar({ state, descriptors, navigation }) {
 
   const labelFor = (routeName) => routeName;
 
-  // Split visible routes around the midpoint so the Report button sits dead center.
   const leftRoutes = visibleRoutes.slice(0, 2);
   const rightRoutes = visibleRoutes.slice(2);
 
@@ -183,7 +162,6 @@ function CustomTabBar({ state, descriptors, navigation }) {
       }
     };
 
-    const tint = isFocused ? theme.primarySoft : theme.textFaint;
     const labelTint = isFocused ? theme.primarySoft : theme.textMuted;
 
     return (
@@ -232,7 +210,6 @@ function CustomTabBar({ state, descriptors, navigation }) {
         >
           {labelFor(route.name)}
         </Text>
-        {/* Active indicator pill */}
         <View
           style={{
             width: isFocused ? 16 : 0,
@@ -330,6 +307,11 @@ export default function TabNavigator() {
       <Tab.Screen
         name="MyReports"
         component={MyReportsScreen}
+        options={{ tabBarButton: () => null }}
+      />
+      <Tab.Screen
+        name="BlacklistDetail"
+        component={BlacklistDetailScreen}
         options={{ tabBarButton: () => null }}
       />
     </Tab.Navigator>

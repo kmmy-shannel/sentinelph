@@ -1,20 +1,4 @@
 // apps/mobile/screens/AlertsScreen.js
-//
-// Personal activity feed + nearby scam alerts.
-//
-// Section A — "Your Reports":
-//   Synthesized from local SQLite reviewStatus. Every time a report you
-//   submitted moves from queued → under_review → confirmed | rejected,
-//   a synthetic alert fires. Read state is tracked per-alert in
-//   AsyncStorage. Tapping "Mark all read" flips every unread alert to
-//   read WITHOUT removing it — the row dims, unbolds, and its unread
-//   dot fades out with a short layout animation (Messenger-style).
-//
-// Section B — "Nearby Scams":
-//   Pulled from GET /api/v1/blacklist/public using the citizen's stored
-//   region from ProfileScreen. Best-effort — offline shows the last
-//   cached list (or nothing if never fetched).
-
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   View,
@@ -37,8 +21,6 @@ import { getAllReports } from '../db/sqlite';
 import { UNCLASSIFIED_REGION } from '../lib/regionResolver';
 import { useTheme, spacing as S } from '../theme/ThemeContext';
 
-// Enable LayoutAnimation on Android — required for the read-state
-// transition to animate there. Safe no-op on iOS.
 if (
   Platform.OS === 'android' &&
   UIManager.setLayoutAnimationEnabledExperimental
@@ -50,11 +32,7 @@ const SEEN_STATE_KEY = '@sentinelph_alerts_seen_state';
 
 function Badge({ label, color, theme }) {
   const palette = {
-    rose: {
-      text: theme.rose,
-      bg: theme.roseTint,
-      border: theme.roseTintBorder,
-    },
+    rose: { text: theme.rose, bg: theme.roseTint, border: theme.roseTintBorder },
     amber: {
       text: theme.amber,
       bg: 'rgba(245,158,11,0.12)',
@@ -84,7 +62,14 @@ function Badge({ label, color, theme }) {
         alignSelf: 'flex-start',
       }}
     >
-      <Text style={{ color: s.text, fontSize: 10, fontWeight: '700', letterSpacing: 0.3 }}>
+      <Text
+        style={{
+          color: s.text,
+          fontSize: 10,
+          fontWeight: '700',
+          letterSpacing: 0.3,
+        }}
+      >
         {label}
       </Text>
     </View>
@@ -107,11 +92,9 @@ function formatRelative(iso) {
   });
 }
 
-// Maps a reviewStatus value into a citizen-friendly alert.
 function reviewStatusToAlert(report) {
   const rs = report.reviewStatus || 'queued';
-  const sender =
-    report.senderNumber || report.reportedNumber || 'unknown sender';
+  const sender = report.senderNumber || report.reportedNumber || 'unknown sender';
   const shortId = report.serverReportId
     ? report.serverReportId.slice(-6)
     : `LOCAL-${String(report.localId || '').slice(0, 6).toUpperCase()}`;
@@ -152,10 +135,6 @@ function reviewStatusToAlert(report) {
   return null;
 }
 
-// ─── Single row. Owns its own Animated.Value for the unread dot, and
-//     reads `isRead` from the parent so a "Mark all read" tap re-renders
-//     it as read. When `isRead` flips, the dot fades out with a spring
-//     and the title/body unbold. ─────────────────────────────────────
 function AlertRow({ item, isRead, onPress, theme }) {
   const dotOpacity = useRef(new Animated.Value(isRead ? 0 : 1)).current;
 
@@ -185,7 +164,6 @@ function AlertRow({ item, isRead, onPress, theme }) {
         backgroundColor: isRead ? 'transparent' : theme.primaryFaint,
       }}
     >
-      {/* Unread dot — fades out when read */}
       <View style={{ paddingTop: 6, width: 8 }}>
         <Animated.View
           style={{
@@ -225,11 +203,7 @@ function AlertRow({ item, isRead, onPress, theme }) {
           </Text>
         </View>
         <Text
-          style={{
-            color: bodyColor,
-            fontSize: 12,
-            lineHeight: 17,
-          }}
+          style={{ color: bodyColor, fontSize: 12, lineHeight: 17 }}
           numberOfLines={3}
         >
           {item.body}
@@ -255,22 +229,18 @@ export default function AlertsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [personalAlerts, setPersonalAlerts] = useState([]);
-  const [nearbyAlerts, setNearbyAlerts] = useState([]);
-
-  // readIds: { [alertId]: true } — persists across app restarts.
-  // An alert that is not in this map is UNREAD.
+  const [nearbyNumbers, setNearbyNumbers] = useState([]);
+  const [nearbyBrands, setNearbyBrands] = useState([]);
   const [readIds, setReadIds] = useState({});
 
   const load = useCallback(async () => {
     setLoading(true);
 
-    // ── Load read state from AsyncStorage ────────────────────────────
     let persistedRead = {};
     try {
       const raw = await AsyncStorage.getItem(SEEN_STATE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        // Backwards-compat: older builds stored { seen, dismissed }.
         persistedRead = parsed.read || {};
         if (parsed.dismissed) {
           persistedRead = { ...persistedRead, ...parsed.dismissed };
@@ -281,13 +251,9 @@ export default function AlertsScreen() {
     }
     setReadIds(persistedRead);
 
-    // ── Section A — synthesize personal alerts from local reports ────
     try {
       const all = await getAllReports();
-      const synthetic = all
-        .map(reviewStatusToAlert)
-        .filter(Boolean);
-
+      const synthetic = all.map(reviewStatusToAlert).filter(Boolean);
       synthetic.sort(
         (a, b) => new Date(b.when).getTime() - new Date(a.when).getTime()
       );
@@ -299,44 +265,64 @@ export default function AlertsScreen() {
       );
     }
 
-    // ── Section B — nearby blacklisted numbers in the citizen's region ─
     try {
-      const storedRegion = await AsyncStorage.getItem(
-        '@sentinelph_user_region'
-      );
+      const storedRegion = await AsyncStorage.getItem('@sentinelph_user_region');
       const region = storedRegion || UNCLASSIFIED_REGION;
 
       const response = await api.get('/api/v1/blacklist/public', {
-        params: { region, limit: 20 },
+        params: { region, limit: 40 },
       });
 
       const entries = response.data?.data || [];
-      const nearby = entries.map((e) => ({
-        id: `nearby:${e.phoneNumber}`,
-        title: `${e.phoneNumber} confirmed as scam`,
-        body: e.scamType
-          ? `${e.scamType}${e.reportCount ? ` · ${e.reportCount} reports` : ''}`
-          : 'Reported and confirmed in your region.',
-        level: 'rose',
-        badgeLabel: 'Nearby Scam',
-        when: e.blacklistedAt || e.updatedAt || e.createdAt,
-        phoneNumber: e.phoneNumber,
-      }));
-      setNearbyAlerts(nearby);
+      const numbers = [];
+      const brands = [];
+
+      for (const e of entries) {
+        const kind = e.targetKind === 'brand' ? 'brand' : 'number';
+        const label =
+          kind === 'brand'
+            ? e.brandName || 'Unknown brand'
+            : e.phoneNumber;
+
+        const row = {
+          id: `nearby:${kind}:${e.phoneNumber}`,
+          title:
+            kind === 'brand'
+              ? `${label} impersonation reported`
+              : `${label} confirmed as scam`,
+          body: e.scamType
+            ? `${e.scamType}${
+                e.reportCount ? ` · ${e.reportCount} reports` : ''
+              }`
+            : kind === 'brand'
+            ? `Scam SMS impersonating ${label}. Reported from ${e.phoneNumber}.`
+            : 'Reported and confirmed in your region.',
+          level: 'rose',
+          badgeLabel: kind === 'brand' ? 'Impersonated Brand' : 'Nearby Scam',
+          when: e.blacklistedAt || e.updatedAt || e.createdAt,
+          phoneNumber: e.phoneNumber,
+          targetKind: kind,
+        };
+
+        if (kind === 'brand') brands.push(row);
+        else numbers.push(row);
+      }
+
+      setNearbyNumbers(numbers);
+      setNearbyBrands(brands);
     } catch (err) {
       if (err instanceof OfflineError) {
-        // Offline: leave nearbyAlerts as-is (previous fetch if any).
-      } else if (
-        err?.response?.status === 403 ||
-        err?.response?.status === 404
-      ) {
-        setNearbyAlerts([]);
+        // keep previous
+      } else if (err?.response?.status === 403 || err?.response?.status === 404) {
+        setNearbyNumbers([]);
+        setNearbyBrands([]);
       } else {
         console.warn(
           '[AlertsScreen] failed to load nearby alerts:',
           err?.message
         );
-        setNearbyAlerts([]);
+        setNearbyNumbers([]);
+        setNearbyBrands([]);
       }
     }
 
@@ -355,13 +341,9 @@ export default function AlertsScreen() {
     setRefreshing(false);
   };
 
-  // Persists the current read map to AsyncStorage.
   const persistRead = useCallback(async (next) => {
     try {
-      await AsyncStorage.setItem(
-        SEEN_STATE_KEY,
-        JSON.stringify({ read: next })
-      );
+      await AsyncStorage.setItem(SEEN_STATE_KEY, JSON.stringify({ read: next }));
     } catch (err) {
       console.warn('[AlertsScreen] failed to persist read state:', err?.message);
     }
@@ -370,11 +352,7 @@ export default function AlertsScreen() {
   const markOneRead = useCallback(
     async (alertId) => {
       if (readIds[alertId]) return;
-
-      LayoutAnimation.configureNext(
-        LayoutAnimation.Presets.easeInEaseOut
-      );
-
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       const next = { ...readIds, [alertId]: true };
       setReadIds(next);
       await persistRead(next);
@@ -384,14 +362,9 @@ export default function AlertsScreen() {
 
   const markAllRead = useCallback(async () => {
     if (personalAlerts.length === 0) return;
-
-    LayoutAnimation.configureNext(
-      LayoutAnimation.Presets.easeInEaseOut
-    );
-
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     const next = { ...readIds };
     for (const a of personalAlerts) next[a.id] = true;
-
     setReadIds(next);
     await persistRead(next);
   }, [personalAlerts, readIds, persistRead]);
@@ -405,15 +378,22 @@ export default function AlertsScreen() {
         isPersonal: true,
       });
     }
-    if (nearbyAlerts.length > 0) {
+    if (nearbyNumbers.length > 0) {
       out.push({
-        title: 'NEARBY SCAMS',
-        data: nearbyAlerts,
+        title: 'NEARBY NUMBERS',
+        data: nearbyNumbers,
+        isPersonal: false,
+      });
+    }
+    if (nearbyBrands.length > 0) {
+      out.push({
+        title: 'NEARBY BRANDS',
+        data: nearbyBrands,
         isPersonal: false,
       });
     }
     return out;
-  }, [personalAlerts, nearbyAlerts]);
+  }, [personalAlerts, nearbyNumbers, nearbyBrands]);
 
   const totalUnread = useMemo(
     () => personalAlerts.filter((a) => !readIds[a.id]).length,
@@ -423,11 +403,7 @@ export default function AlertsScreen() {
   const hasUnread = totalUnread > 0;
 
   return (
-    <SafeAreaView
-      edges={['top']}
-      style={{ flex: 1, backgroundColor: theme.bg }}
-    >
-      {/* Header */}
+    <SafeAreaView edges={['top']} style={{ flex: 1, backgroundColor: theme.bg }}>
       <View
         style={{
           flexDirection: 'row',
@@ -457,7 +433,7 @@ export default function AlertsScreen() {
           >
             Alerts
           </Text>
-          {totalUnread > 0 && (
+          {totalUnread > 0 ? (
             <View
               style={{
                 minWidth: 22,
@@ -469,15 +445,13 @@ export default function AlertsScreen() {
                 backgroundColor: theme.rose,
               }}
             >
-              <Text
-                style={{ fontSize: 11, color: 'white', fontWeight: '700' }}
-              >
+              <Text style={{ fontSize: 11, color: 'white', fontWeight: '700' }}>
                 {totalUnread}
               </Text>
             </View>
-          )}
+          ) : null}
         </View>
-        {personalAlerts.length > 0 && (
+        {personalAlerts.length > 0 ? (
           <TouchableOpacity
             onPress={markAllRead}
             disabled={!hasUnread}
@@ -494,13 +468,11 @@ export default function AlertsScreen() {
               Mark all read
             </Text>
           </TouchableOpacity>
-        )}
+        ) : null}
       </View>
 
       {loading ? (
-        <View
-          style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}
-        >
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator color={theme.primary} />
         </View>
       ) : sections.length === 0 ? (
@@ -547,8 +519,8 @@ export default function AlertsScreen() {
               lineHeight: 18,
             }}
           >
-            When officers review your reports or a scam is confirmed near
-            you, it will appear here.
+            When officers review your reports or a scam is confirmed near you,
+            it will appear here.
           </Text>
         </View>
       ) : (
@@ -586,7 +558,14 @@ export default function AlertsScreen() {
           renderItem={({ item, section }) => {
             if (!section.isPersonal) {
               return (
-                <View
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={() =>
+                    navigation.navigate('BlacklistDetail', {
+                      identifier: item.phoneNumber,
+                      targetKind: item.targetKind,
+                    })
+                  }
                   style={{
                     flexDirection: 'row',
                     gap: S.md,
@@ -628,7 +607,13 @@ export default function AlertsScreen() {
                       >
                         {item.title}
                       </Text>
-                      <Text style={{ color: theme.textFaint, fontSize: 10, marginTop: 2 }}>
+                      <Text
+                        style={{
+                          color: theme.textFaint,
+                          fontSize: 10,
+                          marginTop: 2,
+                        }}
+                      >
                         {formatRelative(item.when)}
                       </Text>
                     </View>
@@ -643,10 +628,14 @@ export default function AlertsScreen() {
                       {item.body}
                     </Text>
                     <View style={{ marginTop: 10 }}>
-                      <Badge label={item.badgeLabel} color={item.level} theme={theme} />
+                      <Badge
+                        label={item.badgeLabel}
+                        color={item.level}
+                        theme={theme}
+                      />
                     </View>
                   </View>
-                </View>
+                </TouchableOpacity>
               );
             }
 
@@ -658,9 +647,7 @@ export default function AlertsScreen() {
                 theme={theme}
                 onPress={() => {
                   if (!isRead) markOneRead(item.id);
-                  if (item.reportLocalId) {
-                    navigation.navigate('MyReports');
-                  }
+                  if (item.reportLocalId) navigation.navigate('MyReports');
                 }}
               />
             );

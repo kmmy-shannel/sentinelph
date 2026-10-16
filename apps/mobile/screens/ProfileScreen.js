@@ -22,7 +22,6 @@ import {
   TouchableOpacity,
   ScrollView,
   Alert,
-  ActivityIndicator,
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -31,7 +30,7 @@ import { signOut } from 'firebase/auth';
 import Svg, { Circle, Path, Line, Rect } from 'react-native-svg';
 import { auth } from '../config/firebase';
 
-import { getAllReports, clearAllReports } from '../db/sqlite';
+import { getAllReports } from '../db/sqlite';
 import { getOrCreateDeviceSecret } from '../lib/zkp/nullifierGenerator';
 import { UNCLASSIFIED_REGION } from '../lib/regionResolver';
 import { useTheme, spacing as S } from '../theme/ThemeContext';
@@ -284,7 +283,6 @@ export default function ProfileScreen() {
   });
   const [queuedCount, setQueuedCount] = useState(0);
   const [region, setRegion] = useState(UNCLASSIFIED_REGION);
-  const [clearing, setClearing] = useState(false);
 
   // Firebase user fields for the name / email rows
   const currentUser = auth.currentUser;
@@ -325,26 +323,6 @@ export default function ProfileScreen() {
       load();
     }, [load])
   );
-
-  const handleClearCache = () => {
-    Alert.alert(
-      'Clear offline cache?',
-      'This removes all locally cached reports and blacklist data. Reports already synced to the server are unaffected.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Clear',
-          style: 'destructive',
-          onPress: async () => {
-            setClearing(true);
-            await clearAllReports();
-            setQueuedCount(0);
-            setClearing(false);
-          },
-        },
-      ]
-    );
-  };
 
   const handleSignOut = () => {
     Alert.alert(
@@ -506,28 +484,6 @@ export default function ProfileScreen() {
             }
           />
         </View>
-
-        {/* Clear cache */}
-        <TouchableOpacity
-          onPress={handleClearCache}
-          disabled={clearing}
-          style={{
-            paddingVertical: 15,
-            borderRadius: 14,
-            alignItems: 'center',
-            backgroundColor: theme.surface,
-            borderWidth: 1,
-            borderColor: theme.border,
-          }}
-        >
-          {clearing ? (
-            <ActivityIndicator color={theme.textDim} />
-          ) : (
-            <Text style={{ color: theme.textDim, fontSize: 13, fontWeight: '600' }}>
-              Clear Offline Cache
-            </Text>
-          )}
-        </TouchableOpacity>
 
         {/* Sign out */}
         <TouchableOpacity

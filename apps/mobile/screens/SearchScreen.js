@@ -1,22 +1,4 @@
 // apps/mobile/screens/SearchScreen.js
-//
-// Blacklist registry + lookup. Two modes, one screen:
-//
-//   BROWSE MODE (default)
-//     Shows every cached blacklisted entry — no query required. Refreshed
-//     on focus from GET /api/v1/blacklist/public (citizen-safe). Works
-//     offline against the local blacklist_cache table.
-//
-//   SEARCH MODE (typing)
-//     Filters the cached list in real time (LIKE query). Also fires a
-//     live lookup for the exact identifier via
-//     GET /api/v1/blacklist/:id/status to catch entries that aren't in
-//     cache yet.
-//
-// Route params:
-//   initialQuery (string) — pre-fill the search box. Used by HomeScreen's
-//   Live Registry Feed: tapping a row navigates here with that number.
-
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
@@ -26,10 +8,9 @@ import {
   FlatList,
   ActivityIndicator,
   RefreshControl,
-  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect, useRoute } from '@react-navigation/native';
+import { useFocusEffect, useRoute, useNavigation } from '@react-navigation/native';
 import Svg, { Circle, Line } from 'react-native-svg';
 
 import api, { OfflineError } from '../lib/api';
@@ -37,7 +18,6 @@ import {
   cacheBlacklistEntry,
   cacheBlacklistBulk,
   getAllBlacklistCache,
-  searchBlacklistCache,
 } from '../db/sqlite';
 import { useTheme, spacing as S } from '../theme/ThemeContext';
 
@@ -63,11 +43,7 @@ function SearchIcon({ size = 18, color = '#64748b' }) {
 
 function Badge({ label, color, theme }) {
   const palette = {
-    rose: {
-      text: theme.rose,
-      bg: theme.roseTint,
-      border: theme.roseTintBorder,
-    },
+    rose: { text: theme.rose, bg: theme.roseTint, border: theme.roseTintBorder },
     amber: {
       text: theme.amber,
       bg: 'rgba(245,158,11,0.12)',
@@ -83,6 +59,11 @@ function Badge({ label, color, theme }) {
       bg: 'rgba(148,163,184,0.12)',
       border: 'rgba(148,163,184,0.25)',
     },
+    indigo: {
+      text: theme.primarySoft,
+      bg: theme.primaryTint,
+      border: theme.primaryTintBorder,
+    },
   };
   const s = palette[color] || palette.slate;
   return (
@@ -97,7 +78,14 @@ function Badge({ label, color, theme }) {
         alignSelf: 'flex-start',
       }}
     >
-      <Text style={{ color: s.text, fontSize: 10, fontWeight: '700', letterSpacing: 0.3 }}>
+      <Text
+        style={{
+          color: s.text,
+          fontSize: 10,
+          fontWeight: '700',
+          letterSpacing: 0.3,
+        }}
+      >
         {label}
       </Text>
     </View>
@@ -105,18 +93,12 @@ function Badge({ label, color, theme }) {
 }
 
 function statusToBadge(status) {
-  if (status === 'blacklisted' || status === 'approved') {
+  if (status === 'blacklisted' || status === 'approved')
     return { label: 'Blacklisted', color: 'rose' };
-  }
-  if (status === 'under_review') {
-    return { label: 'Under Review', color: 'amber' };
-  }
-  if (status === 'pending') {
-    return { label: 'Reported', color: 'amber' };
-  }
-  if (status === 'not_found' || status === 'unknown') {
+  if (status === 'under_review') return { label: 'Under Review', color: 'amber' };
+  if (status === 'pending') return { label: 'Reported', color: 'amber' };
+  if (status === 'not_found' || status === 'unknown')
     return { label: 'No Record', color: 'slate' };
-  }
   return { label: 'Unknown', color: 'slate' };
 }
 
@@ -131,25 +113,34 @@ function formatBlacklistedDate(iso) {
   });
 }
 
-function BlacklistRow({ item, theme }) {
+function BlacklistRow({ item, onPress, theme }) {
   const badge = statusToBadge(item.status);
   const dateStr = formatBlacklistedDate(item.blacklistedAt);
+  const isBrand = item.targetKind === 'brand';
 
-  const iconBg =
-    badge.color === 'rose'
-      ? theme.roseTint
-      : badge.color === 'amber'
-      ? 'rgba(245,158,11,0.12)'
-      : 'rgba(148,163,184,0.12)';
-  const iconColor =
-    badge.color === 'rose'
-      ? theme.rose
-      : badge.color === 'amber'
-      ? theme.amber
-      : theme.textDim;
+  const iconBg = isBrand
+    ? theme.primaryTint
+    : badge.color === 'rose'
+    ? theme.roseTint
+    : badge.color === 'amber'
+    ? 'rgba(245,158,11,0.12)'
+    : 'rgba(148,163,184,0.12)';
+  const iconColor = isBrand
+    ? theme.primarySoft
+    : badge.color === 'rose'
+    ? theme.rose
+    : badge.color === 'amber'
+    ? theme.amber
+    : theme.textDim;
+
+  const rowId = isBrand
+    ? item.brandName || item.value
+    : item.value;
 
   return (
-    <View
+    <TouchableOpacity
+      activeOpacity={0.7}
+      onPress={onPress}
       style={{
         flexDirection: 'row',
         alignItems: 'center',
@@ -173,27 +164,57 @@ function BlacklistRow({ item, theme }) {
         }}
       >
         <Text style={{ color: iconColor, fontSize: 16, fontWeight: '700' }}>
-          {badge.color === 'rose' ? '!' : badge.color === 'amber' ? '…' : '?'}
+          {isBrand ? 'B' : badge.color === 'rose' ? '!' : badge.color === 'amber' ? '…' : '?'}
         </Text>
       </View>
 
       <View style={{ flex: 1, minWidth: 0 }}>
-        <Text
-          style={{
-            color: theme.text,
-            fontSize: 13,
-            fontFamily: 'JetBrainsMono_400Regular',
-          }}
-          numberOfLines={1}
-        >
-          {item.value}
-        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          {isBrand ? (
+            <View
+              style={{
+                paddingHorizontal: 6,
+                paddingVertical: 2,
+                borderRadius: 6,
+                backgroundColor: theme.primaryTint,
+                borderWidth: 1,
+                borderColor: theme.primaryTintBorder,
+              }}
+            >
+              <Text
+                style={{
+                  color: theme.primarySoft,
+                  fontSize: 9,
+                  fontWeight: '700',
+                  letterSpacing: 0.3,
+                }}
+              >
+                BRAND
+              </Text>
+            </View>
+          ) : null}
+          <Text
+            style={{
+              color: theme.text,
+              fontSize: 13,
+              fontFamily: 'JetBrainsMono_400Regular',
+              flex: 1,
+            }}
+            numberOfLines={1}
+          >
+            {rowId}
+          </Text>
+        </View>
         <Text
           style={{ color: theme.textMuted, fontSize: 11, marginTop: 3 }}
           numberOfLines={1}
         >
           {item.scamType
-            ? `${item.scamType}${item.reportCount ? ` · ${item.reportCount} reports` : ''}`
+            ? `${item.scamType}${
+                item.reportCount ? ` · ${item.reportCount} reports` : ''
+              }`
+            : isBrand
+            ? `Impersonated brand · reported from ${item.value}`
             : 'Phone number / SMS header'}
         </Text>
         <View
@@ -205,43 +226,94 @@ function BlacklistRow({ item, theme }) {
             flexWrap: 'wrap',
           }}
         >
-          {item.region && item.region !== 'UNCLASSIFIED' && (
+          {item.region && item.region !== 'UNCLASSIFIED' ? (
             <Text style={{ color: theme.textFaint, fontSize: 10 }}>
               {item.region}
             </Text>
-          )}
-          {dateStr && (
+          ) : null}
+          {dateStr ? (
             <Text style={{ color: theme.textFaint, fontSize: 10 }}>
               Blacklisted {dateStr}
             </Text>
-          )}
+          ) : null}
         </View>
       </View>
 
       <Badge label={badge.label} color={badge.color} theme={theme} />
+    </TouchableOpacity>
+  );
+}
+
+function FilterChips({ value, onChange, theme }) {
+  const opts = [
+    { key: 'all', label: 'All' },
+    { key: 'number', label: 'Numbers' },
+    { key: 'brand', label: 'Brands' },
+  ];
+  return (
+    <View style={{ flexDirection: 'row', gap: S.sm, marginBottom: S.md }}>
+      {opts.map((o) => {
+        const active = value === o.key;
+        return (
+          <TouchableOpacity
+            key={o.key}
+            onPress={() => onChange(o.key)}
+            style={{
+              paddingHorizontal: 14,
+              paddingVertical: 8,
+              borderRadius: 999,
+              backgroundColor: active ? theme.primaryTint : theme.surface,
+              borderWidth: 1,
+              borderColor: active ? theme.primaryTintBorder : theme.border,
+            }}
+          >
+            <Text
+              style={{
+                color: active ? theme.primarySoft : theme.textMuted,
+                fontSize: 12,
+                fontWeight: '700',
+              }}
+            >
+              {o.label}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
     </View>
   );
 }
 
 export default function SearchScreen() {
-  const { width } = useWindowDimensions();
-  const isWide = width >= 480;
   const route = useRoute();
+  const navigation = useNavigation();
   const { theme } = useTheme();
 
   const [query, setQuery] = useState(route.params?.initialQuery || '');
+  const [kindFilter, setKindFilter] = useState(
+    route.params?.initialKind === 'brand'
+      ? 'brand'
+      : route.params?.initialKind === 'number'
+      ? 'number'
+      : 'all'
+  );
   const [allEntries, setAllEntries] = useState([]);
-  const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const debounceRef = useRef(null);
 
   useEffect(() => {
-    if (route.params?.initialQuery) {
-      setQuery(route.params.initialQuery);
+    if (route.params?.initialQuery) setQuery(route.params.initialQuery);
+    if (route.params?.initialKind) {
+      setKindFilter(
+        route.params.initialKind === 'brand'
+          ? 'brand'
+          : route.params.initialKind === 'number'
+          ? 'number'
+          : 'all'
+      );
     }
-  }, [route.params?.initialQuery]);
+  }, [route.params?.initialQuery, route.params?.initialKind]);
 
   const loadRegistry = useCallback(async () => {
     try {
@@ -258,11 +330,12 @@ export default function SearchScreen() {
         params: { limit: BROWSE_LIMIT },
       });
       const entries = response.data?.data || [];
-
       await cacheBlacklistBulk(entries).catch(() => {});
 
       const normalized = entries.map((e) => ({
         value: e.phoneNumber,
+        targetKind: e.targetKind === 'brand' ? 'brand' : 'number',
+        brandName: e.brandName || null,
         type: 'number',
         risk:
           e.status === 'blacklisted' || e.status === 'approved'
@@ -300,93 +373,65 @@ export default function SearchScreen() {
 
   useEffect(() => {
     clearTimeout(debounceRef.current);
-    const q = query.trim();
+    const q = query.trim().toLowerCase();
+
+    // Filter by kind first
+    const byKind =
+      kindFilter === 'all'
+        ? allEntries
+        : allEntries.filter((e) =>
+            kindFilter === 'brand'
+              ? e.targetKind === 'brand'
+              : e.targetKind !== 'brand'
+          );
 
     if (q.length < 2) {
-      setResults(allEntries);
       setError(null);
       return;
     }
 
-    const lower = q.toLowerCase();
-    const local = allEntries.filter(
-      (e) =>
-        (e.value || '').toLowerCase().includes(lower) ||
-        (e.scamType || '').toLowerCase().includes(lower)
-    );
-    setResults(local);
+    // Live lookup when the query looks like a phone number or header
+    if (/^[\d\s\-+()]+$/.test(q) && q.replace(/\D/g, '').length >= 7) {
+      debounceRef.current = setTimeout(() => runLiveLookup(q.trim()), DEBOUNCE_MS);
+    }
+  }, [query, allEntries, kindFilter]);
 
-    debounceRef.current = setTimeout(() => runLiveLookup(q, local), DEBOUNCE_MS);
-    return () => clearTimeout(debounceRef.current);
-  }, [query, allEntries]);
-
-  const runLiveLookup = async (q, local) => {
+  const runLiveLookup = async (q) => {
     setLoading(true);
     try {
       const response = await api.get(
         `/api/v1/blacklist/${encodeURIComponent(q)}/status`
       );
       const data = response.data?.data;
-
       if (data && data.phoneNumber) {
         await cacheBlacklistEntry(data).catch(() => {});
-
-        const live = {
-          value: data.phoneNumber,
-          type: 'number',
-          risk:
-            data.status === 'blacklisted' || data.status === 'approved'
-              ? 'high'
-              : data.status === 'under_review' || data.status === 'pending'
-              ? 'medium'
-              : 'low',
-          status: data.status,
-          reportCount: data.reportCount ?? 0,
-          scamType: data.scamType || null,
-          region: data.region || null,
-          blacklistedAt: data.blacklistedAt || null,
-          source: 'live',
-        };
-
-        const merged = [live, ...local.filter((c) => c.value !== live.value)];
-        setResults(merged);
-      } else if (local.length === 0) {
-        setResults([
-          {
-            value: q,
-            type: 'number',
-            risk: 'low',
-            status: 'not_found',
-            reportCount: 0,
-            scamType: null,
-            region: null,
-            blacklistedAt: null,
-            source: 'live',
-          },
-        ]);
-      }
-    } catch (err) {
-      if (err instanceof OfflineError) {
-        if (local.length === 0) {
-          setError('Offline — no cached match for this identifier.');
-        }
-      } else if (err?.response?.status === 404) {
-        if (local.length === 0) {
-          setResults([
+        setAllEntries((prev) => {
+          const filtered = prev.filter((c) => c.value !== data.phoneNumber);
+          return [
             {
-              value: q,
+              value: data.phoneNumber,
+              targetKind: data.targetKind === 'brand' ? 'brand' : 'number',
+              brandName: data.brandName || null,
               type: 'number',
-              risk: 'low',
-              status: 'not_found',
-              reportCount: 0,
-              scamType: null,
-              region: null,
-              blacklistedAt: null,
+              risk:
+                data.status === 'blacklisted' || data.status === 'approved'
+                  ? 'high'
+                  : data.status === 'under_review' || data.status === 'pending'
+                  ? 'medium'
+                  : 'low',
+              status: data.status,
+              reportCount: data.reportCount ?? 0,
+              scamType: data.scamType || null,
+              region: data.region || null,
+              blacklistedAt: data.blacklistedAt || null,
               source: 'live',
             },
-          ]);
-        }
-      } else {
+            ...filtered,
+          ];
+        });
+      }
+    } catch (err) {
+      if (!(err instanceof OfflineError)) {
         console.warn('[SearchScreen] live lookup failed:', err?.message);
       }
     } finally {
@@ -400,8 +445,23 @@ export default function SearchScreen() {
     setRefreshing(false);
   };
 
-  const isSearchMode = query.trim().length >= 2;
-  const listData = isSearchMode ? results : allEntries;
+  const q = query.trim().toLowerCase();
+  const isSearchMode = q.length >= 2;
+
+  const visible = allEntries
+    .filter((e) => {
+      if (kindFilter === 'brand') return e.targetKind === 'brand';
+      if (kindFilter === 'number') return e.targetKind !== 'brand';
+      return true;
+    })
+    .filter((e) => {
+      if (!isSearchMode) return true;
+      return (
+        (e.value || '').toLowerCase().includes(q) ||
+        (e.brandName || '').toLowerCase().includes(q) ||
+        (e.scamType || '').toLowerCase().includes(q)
+      );
+    });
 
   return (
     <SafeAreaView edges={['top']} style={{ flex: 1, backgroundColor: theme.bg }}>
@@ -410,9 +470,6 @@ export default function SearchScreen() {
           flex: 1,
           paddingHorizontal: S.lg,
           paddingTop: S.lg,
-          maxWidth: isWide ? 720 : undefined,
-          alignSelf: isWide ? 'center' : 'stretch',
-          width: '100%',
         }}
       >
         <View
@@ -431,13 +488,13 @@ export default function SearchScreen() {
               letterSpacing: 1.2,
             }}
           >
-            {isSearchMode ? 'SEARCH RESULTS' : 'BLACKLIST REGISTRY'}
+            {isSearchMode ? 'SEARCH RESULTS' : 'REGISTRY'}
           </Text>
-          {!isSearchMode && allEntries.length > 0 && (
+          {!isSearchMode && visible.length > 0 ? (
             <Text style={{ color: theme.textFaint, fontSize: 11 }}>
-              {allEntries.length} entries
+              {visible.length} entries
             </Text>
-          )}
+          ) : null}
         </View>
 
         <View
@@ -448,7 +505,7 @@ export default function SearchScreen() {
             paddingHorizontal: 14,
             paddingVertical: 4,
             borderRadius: 14,
-            marginBottom: S.lg,
+            marginBottom: S.md,
             backgroundColor: theme.surface,
             borderWidth: 1,
             borderColor: theme.border,
@@ -459,7 +516,7 @@ export default function SearchScreen() {
           <TextInput
             value={query}
             onChangeText={setQuery}
-            placeholder="Search a number or SMS header…"
+            placeholder="Search a number, SMS header, or brand…"
             placeholderTextColor={theme.textFaint}
             style={{
               flex: 1,
@@ -469,10 +526,10 @@ export default function SearchScreen() {
             }}
             autoCorrect={false}
             autoCapitalize="none"
-            keyboardType="default"
           />
-          {loading && <ActivityIndicator size="small" color={theme.primary} />}
-          {!loading && query.length > 0 && (
+          {loading ? (
+            <ActivityIndicator size="small" color={theme.primary} />
+          ) : query.length > 0 ? (
             <TouchableOpacity
               onPress={() => setQuery('')}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -487,10 +544,12 @@ export default function SearchScreen() {
             >
               <Text style={{ color: theme.textMuted, fontSize: 12 }}>✕</Text>
             </TouchableOpacity>
-          )}
+          ) : null}
         </View>
 
-        {error && (
+        <FilterChips value={kindFilter} onChange={setKindFilter} theme={theme} />
+
+        {error ? (
           <View
             style={{
               marginBottom: S.md,
@@ -503,11 +562,11 @@ export default function SearchScreen() {
           >
             <Text style={{ color: theme.amber, fontSize: 12 }}>{error}</Text>
           </View>
-        )}
+        ) : null}
 
         <FlatList
-          data={listData}
-          keyExtractor={(item, i) => `${item.value}-${i}`}
+          data={visible}
+          keyExtractor={(item, i) => `${item.targetKind}-${item.value}-${i}`}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -517,7 +576,18 @@ export default function SearchScreen() {
           }
           contentContainerStyle={{ gap: S.sm, paddingBottom: 24 }}
           keyboardShouldPersistTaps="handled"
-          renderItem={({ item }) => <BlacklistRow item={item} theme={theme} />}
+          renderItem={({ item }) => (
+            <BlacklistRow
+              item={item}
+              theme={theme}
+              onPress={() =>
+                navigation.navigate('BlacklistDetail', {
+                  identifier: item.value,
+                  targetKind: item.targetKind,
+                })
+              }
+            />
+          )}
           ListEmptyComponent={
             <View
               style={{
@@ -542,7 +612,9 @@ export default function SearchScreen() {
               >
                 <SearchIcon size={24} color={theme.primarySoft} />
               </View>
-              <Text style={{ color: theme.text, fontSize: 15, fontWeight: '600' }}>
+              <Text
+                style={{ color: theme.text, fontSize: 15, fontWeight: '600' }}
+              >
                 {isSearchMode ? 'No matching entries' : 'Registry is empty'}
               </Text>
               <Text
@@ -555,8 +627,8 @@ export default function SearchScreen() {
                 }}
               >
                 {isSearchMode
-                  ? 'Nothing in the blacklist matches this query.'
-                  : 'Once officers confirm a number as a scam, it appears here.'}
+                  ? 'Nothing in the registry matches this query.'
+                  : 'Once officers confirm a number or brand, it appears here.'}
               </Text>
             </View>
           }

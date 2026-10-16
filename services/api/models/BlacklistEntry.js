@@ -13,23 +13,20 @@ const { Schema } = mongoose;
  * read-model for the blacklist registry and is populated by
  * upsertFromReport() once a Report reaches quorum.
  *
- * Its registerVote() logic already implements the correct 2-of-3 quorum
- * rule (finalize on the 2nd decisive vote; the 3rd is optional), which
- * matches Report.castVote().
+ * TARGET KIND (number vs brand)
+ *   targetKind — 'number' | 'brand'. Determined at report submission time
+ *                by utils/targetClassifier.classifyTarget() and inherited
+ *                here when the report reaches quorum. Legacy entries
+ *                without this field are treated as 'number'.
+ *   brandName  — When targetKind === 'brand', the canonical brand being
+ *                impersonated (e.g. 'GCash', 'Maya', 'BDO'). Null for
+ *                'number' targets.
  *
  * AI CLASSIFICATION FIELDS
- *   aiLabel    — Level 1 tier produced by services/ai/app/inference.py.
- *                Values: 'legitimate' | 'grey_area' | 'malicious' |
- *                'uncertain' | 'unavailable' | null
- *   aiSubtype  — Level 2 subtype key. Examples: 'phishing_link',
- *                'fake_prize_lottery', 'delivery_tracking'. See
- *                inference.py's SUBTYPE_TAXONOMY for the full set.
- *   aiRiskLevel— Derived risk: 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN'
+ *   aiLabel    — Level 1 tier from services/ai/app/inference.py.
+ *   aiSubtype  — Level 2 subtype key.
+ *   aiRiskLevel— 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN'
  *   aiConfidence — Float 0..1 from the Level 1 model.
- *
- * These are snapshots taken at finalization. The registry route also
- * falls back to the source Report's aiFlag at read time, so legacy
- * entries render correctly without a mandatory backfill.
  */
 const VOTE_DECISIONS = ['approve', 'reject'];
 const STATUSES = ['pending', 'under_review', 'blacklisted', 'rejected'];
@@ -68,7 +65,23 @@ const BlacklistEntrySchema = new Schema(
       index: true,
     },
 
-    // ─── AI classification snapshot (see header docblock) ────────────
+    // ─── TARGET KIND (number vs brand) ─────────────────────────────
+    targetKind: {
+      type: String,
+      enum: ['number', 'brand', null],
+      default: 'number',
+      index: true,
+    },
+    brandName: {
+      type: String,
+      trim: true,
+      maxlength: 80,
+      default: null,
+      index: true,
+    },
+    // ────────────────────────────────────────────────────────────────
+
+    // ─── AI classification snapshot ─────────────────────────────────
     aiLabel: {
       type: String,
       trim: true,
@@ -92,7 +105,7 @@ const BlacklistEntrySchema = new Schema(
       max: 1,
       default: null,
     },
-    // ─────────────────────────────────────────────────────────────────
+    // ────────────────────────────────────────────────────────────────
 
     votes: { type: [VoteSchema], default: [] },
     approvingOfficers: { type: [String], default: [] },
@@ -143,8 +156,6 @@ BlacklistEntrySchema.methods.registerVote = function registerVote(
   const approvals = this.votes.filter((v) => v.decision === 'approve').length;
   const rejections = this.votes.filter((v) => v.decision === 'reject').length;
 
-  // 2-of-3 quorum: finalize on the 2nd decisive vote. The 3rd vote is
-  // optional and only matters as a tiebreaker when the first two disagree.
   if (approvals >= APPROVALS_REQUIRED) {
     this.status = 'blacklisted';
     this.blacklistedAt = new Date();
@@ -164,6 +175,8 @@ BlacklistEntrySchema.methods.registerVote = function registerVote(
     const payload = JSON.stringify({
       phoneNumber: this.phoneNumber,
       status: this.status,
+      targetKind: this.targetKind || 'number',
+      brandName: this.brandName || null,
       approvingOfficers: this.approvingOfficers,
       reportCount: this.reportCount,
       finalizedAt: this.blacklistedAt,
@@ -208,6 +221,13 @@ BlacklistEntrySchema.statics.upsertFromReport = async function upsertFromReport(
     votedAt: v.votedAt || new Date(),
   }));
 
+  // ─── Target kind (inherited from the source report) ─────────────
+  const targetKind =
+    report.targetKind === 'brand' ? 'brand' : 'number';
+  const brandName =
+    targetKind === 'brand' ? (report.brandName || null) : null;
+  // ────────────────────────────────────────────────────────────────
+
   // ─── AI classification snapshot ─────────────────────────────────
   const ai = report.aiFlag || {};
   const aiLabel = ai.label || null;
@@ -224,6 +244,8 @@ BlacklistEntrySchema.statics.upsertFromReport = async function upsertFromReport(
       phoneNumber,
       region: report.jurisdiction || null,
       status: finalStatus,
+      targetKind,
+      brandName,
       votes: voteSnapshot,
       approvingOfficers,
       reportCount,
@@ -241,6 +263,8 @@ BlacklistEntrySchema.statics.upsertFromReport = async function upsertFromReport(
       entry.approvingOfficers = approvingOfficers;
       entry.reportCount = reportCount;
       entry.notes = notes;
+      entry.targetKind = targetKind;
+      entry.brandName = brandName;
       entry.aiLabel = aiLabel;
       entry.aiSubtype = aiSubtype;
       entry.aiRiskLevel = aiRiskLevel;
@@ -250,7 +274,8 @@ BlacklistEntrySchema.statics.upsertFromReport = async function upsertFromReport(
       }
     } else {
       entry.reportCount = reportCount;
-      // Backfill AI fields on entries that predate these columns.
+      if (!entry.targetKind) entry.targetKind = targetKind;
+      if (!entry.brandName && brandName) entry.brandName = brandName;
       if (!entry.aiLabel && aiLabel) entry.aiLabel = aiLabel;
       if (!entry.aiSubtype && aiSubtype) entry.aiSubtype = aiSubtype;
       if (!entry.aiRiskLevel && aiRiskLevel) entry.aiRiskLevel = aiRiskLevel;
@@ -264,6 +289,8 @@ BlacklistEntrySchema.statics.upsertFromReport = async function upsertFromReport(
   const payload = JSON.stringify({
     phoneNumber: entry.phoneNumber,
     status: entry.status,
+    targetKind: entry.targetKind || 'number',
+    brandName: entry.brandName || null,
     approvingOfficers: entry.approvingOfficers,
     reportCount: entry.reportCount,
     finalizedAt: entry.blacklistedAt,
@@ -277,6 +304,8 @@ BlacklistEntrySchema.statics.upsertFromReport = async function upsertFromReport(
 BlacklistEntrySchema.index({ status: 1, updatedAt: -1 });
 BlacklistEntrySchema.index({ phoneNumber: 1, status: 1 });
 BlacklistEntrySchema.index({ aiLabel: 1, status: 1 });
+BlacklistEntrySchema.index({ targetKind: 1, status: 1, blacklistedAt: -1 });
+BlacklistEntrySchema.index({ targetKind: 1, region: 1, status: 1 });
 
 const BlacklistEntry =
   mongoose.models.BlacklistEntry ||

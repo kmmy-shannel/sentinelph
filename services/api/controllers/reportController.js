@@ -8,14 +8,12 @@ const Report = require('../models/Report');
 const { getAiScamAssessment, forwardImageForOcr } = require('../utils/aiServiceClient');
 const { getGenesisHash } = require('../utils/hashChain');
 const { computeCitizenHash } = require('../utils/citizenHash');
+const { classifyTarget } = require('../utils/targetClassifier');
 
 const DEFAULT_SCAM_TYPE = 'UNKNOWN';
 const PENDING_STATUS = 'pending';
 const SCREENSHOT_PLACEHOLDER = '[screenshot attached]';
 
-// Sybil / spam guard: max reports one pseudonymous citizen may file per
-// rolling hour. Enforced against the database (not process memory), so it
-// holds across restarts and multiple API instances.
 const CITIZEN_RATE_WINDOW_MS = 60 * 60 * 1000;
 const CITIZEN_MAX_REPORTS_PER_WINDOW = (() => {
   const parsed = parseInt(process.env.CITIZEN_MAX_REPORTS_PER_HOUR, 10);
@@ -44,9 +42,9 @@ function normalizeAiFlag(aiFlag) {
     riskLevel: aiFlag.riskLevel ?? aiFlag.risk_level ?? 'UNKNOWN',
     explanationReasons: aiFlag.explanationReasons ?? aiFlag.explanation_reasons ?? [],
     label: aiFlag.label ?? null,
-    subtype: aiFlag.subtype ?? null,                                       // NEW
-    subtypeConfidence: aiFlag.subtypeConfidence ?? null,                   // NEW
-    subtypeModelVersion: aiFlag.subtypeModelVersion ?? null,               // NEW
+    subtype: aiFlag.subtype ?? null,
+    subtypeConfidence: aiFlag.subtypeConfidence ?? null,
+    subtypeModelVersion: aiFlag.subtypeModelVersion ?? null,
     ocrText: aiFlag.ocrText ?? aiFlag.ocr_text ?? null,
   };
 }
@@ -55,13 +53,10 @@ async function createReport(req, res, next) {
   try {
     const body = req.body || {};
 
-    // ─── Sender normalization (must also become `reportedNumber` below) ──
     const sender =
       body.sender ?? body.senderNumber ?? body.reportedNumber ?? body.scammerNumber ?? null;
     const scamType = normalizeScamType(body.scamType ?? body.category);
 
-    // Sender is required (Option A). Return 400 with a clear message
-    // instead of letting Mongoose throw a raw 500 ValidationError.
     if (!sender || typeof sender !== 'string' || sender.trim().length === 0) {
       return res.status(400).json({
         error: 'SENDER_REQUIRED',
@@ -86,12 +81,21 @@ async function createReport(req, res, next) {
       });
     }
 
-    // ─── Pseudonymous citizen identity (Sybil prevention) ──────────────
-    // citizenHash = HMAC-SHA256(CITIZEN_SALT, req.user.uid || req.ip).
-    // The raw uid / IP is never stored; only the keyed hash is, which lets
-    // us rate-limit per citizen without a plain identity link in Report.
-    // The check runs BEFORE the AI call so a throttled citizen cannot burn
-    // metered FastAPI / Hugging Face quota.
+    // ─── TARGET KIND CLASSIFICATION ────────────────────────────────
+    // 'number' for phone numbers and alphanumeric SMS headers,
+    // 'brand' when the message body impersonates a known PH brand.
+    const { targetKind, brandName } = classifyTarget({
+      sender,
+      content:
+        body.content ||
+        body.reportText ||
+        body.textData ||
+        body.evidenceText ||
+        body.text ||
+        '',
+    });
+    // ────────────────────────────────────────────────────────────────
+
     const citizenHash = computeCitizenHash(req);
 
     if (citizenHash) {
@@ -111,12 +115,6 @@ async function createReport(req, res, next) {
       }
     }
 
-    // ─── REPORTER IDENTITY (new) ──────────────────────────────────────
-    // The mobile app sends reporterName + reporterEmail only when the
-    // citizen explicitly opts in. If they decline, both fields arrive as
-    // null and the report is stored anonymous. Fallback to the Firebase
-    // token's name/email claims only when the citizen enabled sharing
-    // but didn't type a name — this keeps "anonymous" truly anonymous.
     const reporterShared = body.reporterShared === true;
     let reporterName = null;
     let reporterEmail = null;
@@ -130,9 +128,8 @@ async function createReport(req, res, next) {
           ? body.reporterEmail.trim().toLowerCase().slice(0, 254)
           : (req.user && req.user.email) || null);
     }
-    // ──────────────────────────────────────────────────────────────────
 
-    // ─── AI assessment (unchanged) ────────────────────────────────────
+    // ─── AI assessment ────────────────────────────────────────────
     let aiFlag = null;
     let aiOcrText = null;
 
@@ -159,14 +156,6 @@ async function createReport(req, res, next) {
       aiFlag = normalizeAiFlag(await getAiScamAssessment({ text: content }));
     }
 
-    // ─── Location normalization ────────────────────────────────────────
-    // The mobile client sends latitude/longitude (from GPS) plus an
-    // already-resolved `region` string (from the bundled bounding-box
-    // resolver). We persist all three so:
-    //   1. The officer queue's region filter can match the report.
-    //   2. The public alert feed can show "NCR" instead of raw coords.
-    //   3. A report whose region couldn't be resolved still lands in the
-    //      queue via the UNCLASSIFIED sentinel.
     const rawLocation = body.location && typeof body.location === 'object' ? body.location : {};
     const rawLatitude =
       rawLocation.latitude ?? rawLocation.lat ?? body.latitude ?? null;
@@ -192,11 +181,6 @@ async function createReport(req, res, next) {
       ? [body.evidenceFiles]
       : [];
 
-    // ─── Fetch the chain tail so the required immutable fields ─────────
-    // The Report model's `pre('save')` hook computes `hash` from
-    // `previousHash` + the canonical payload, so we must set `previousHash`
-    // and `sequence` BEFORE the first save. This mirrors exactly what
-    // verifyReportChain expects when it reads the chain back.
     const tail = await Report.findOne()
       .sort({ sequence: -1 })
       .select('sequence hash')
@@ -205,17 +189,17 @@ async function createReport(req, res, next) {
     const previousHash = tail && tail.hash ? tail.hash : getGenesisHash();
     const nextSequence = tail && typeof tail.sequence === 'number' ? tail.sequence + 1 : 0;
 
-    // ─── Build the document with every required field populated ────────
     const report = new Report({
       reportId: body.reportId || `RPT-${crypto.randomBytes(4).toString('hex').toUpperCase()}`,
 
-      // Chain anchor (required, immutable, participates in the hash)
       previousHash,
       sequence: nextSequence,
 
-      // Required by the model — this is the same value as `sender` but
-      // stored under the model's canonical field name.
       reportedNumber: sender || null,
+
+      // Target kind classification (number vs brand impersonation)
+      targetKind,
+      brandName,
 
       // Hashed canonical fields
       textData: content || null,
@@ -245,37 +229,24 @@ async function createReport(req, res, next) {
           ? aiFlag.probabilityScore
           : null,
 
-      // Pseudonymous reporter identifier (not part of the hash payload).
       citizenHash,
 
-      // ─── REPORTER IDENTITY (new) ────────────────────────────────────
       reporterName,
       reporterEmail,
       reporterShared: Boolean(reporterShared && (reporterName || reporterEmail)),
-      // ────────────────────────────────────────────────────────────────
 
-      // Region always wins over any legacy `jurisdiction` field.
-      // Priority: canonical location.region → legacy body.jurisdiction → UNCLASSIFIED.
       jurisdiction:
         (location && location.region) ||
         body.jurisdiction ||
         'UNCLASSIFIED',
       status: PENDING_STATUS,
       consensusState: { approvals: 0, rejections: 0, required: 2 },
-      // createdAt is set by the model's `timestamps` option, but we set it
-      // here explicitly so it's available to the `pre('save')` hash hook.
       createdAt: new Date(),
     });
 
-    // ─── First (and only) save. The pre-save hook computes `report.hash` ─
-        // ─── First (and only) save. The pre-save hook computes `report.hash` ─
     try {
       await report.save();
     } catch (err) {
-      // Duplicate nullifier = this exact report (same content, same
-      // sender, same moment) was already accepted once. Return 409 with
-      // the existing report ID instead of a raw 500 so the client can
-      // treat it as "already submitted" and enqueue locally.
       if (err && err.code === 11000 && err.keyPattern?.nullifier) {
         const existing = await Report.findOne({ nullifier: nullifier })
           .select('reportId sequence hash status')
@@ -291,18 +262,6 @@ async function createReport(req, res, next) {
       throw err;
     }
 
-    // Note: the previous version called `appendToChain` and then tried a
-    // second `report.save()` to persist the returned chain entry. That
-    // second save was rejected by the model's immutability guard and
-    // silently swallowed in the try/catch, so `previousHash`/`sequence`/
-    // `hash` were never written. The chain is now written directly by the
-    // model's `pre('save')` hook on the single save above, using the same
-    // computeHash + getGenesisHash utilities, so the chain stays valid
-    // and `verifyReportChain` continues to pass.
-
-    // Never echo the pseudonymous identifier OR the reporter identity
-    // back to the citizen. Officers fetch those through their own
-    // explicitly-projected endpoints.
     const reportPayload = report.toObject();
     delete reportPayload.citizenHash;
     delete reportPayload.reporterName;
@@ -315,6 +274,8 @@ async function createReport(req, res, next) {
       id: report._id.toString(),
       status: report.status,
       scamType: report.scamType,
+      targetKind: report.targetKind,
+      brandName: report.brandName,
       sequence: report.sequence,
       hash: report.hash,
       previousHash: report.previousHash,
@@ -325,12 +286,6 @@ async function createReport(req, res, next) {
   }
 }
 
-/**
- * POST /api/v1/reports/analyze
- * Layer 1 instant preview — advisory only, no persistence. Response shape
- * is normalized (see normalizeAiFlag) so `ocrText` is always present when
- * the AI service extracted text from a screenshot.
- */
 async function analyzeReportPreview(req, res, next) {
   try {
     const { text, imageBase64 } = req.body || {};
@@ -344,9 +299,6 @@ async function analyzeReportPreview(req, res, next) {
   }
 }
 
-/**
- * POST /api/v1/reports/ocr
- */
 async function analyzeReportImage(req, res, next) {
   try {
     const file = req.file || (Array.isArray(req.files) ? req.files[0] : null);

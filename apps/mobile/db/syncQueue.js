@@ -1,37 +1,4 @@
 // apps/mobile/db/syncQueue.js
-//
-// Coordinates flushing the local reports_outbox to
-// POST /api/v1/reports whenever connectivity is available.
-//
-// FIX (offline sender/region loss — CRITICAL): previously this file only
-// forwarded scamType, content, evidenceFiles, evidenceImage, nullifier,
-// zkpHash, and clientCreatedAt to the server. `senderNumber` was never
-// sent at all, and `location` only ever carried latitude/longitude (never
-// region), and only when both were non-null. Since reportController.js
-// requires a sender (400 SENDER_REQUIRED otherwise), every offline-queued
-// report was guaranteed to fail sync permanently — it would just retry
-// until sync_attempts hit MAX_SYNC_ATTEMPTS and then silently stop.
-// Both senderNumber and region (now read from sqlite.js's new columns via
-// getPendingReports()) are forwarded on every sync attempt, in the same
-// shape ReportScreen.js already sends on the live/online submission path
-// (a `location` object carrying region, plus a top-level `region` field —
-// reportController.js accepts either).
-//
-// FIX (review lifecycle): after flushing the outbox, syncNow() also calls
-// refreshReportStatuses(), which pulls GET /api/v1/reports/mine and
-// updates each local row's review_status. This is what makes the
-// My Reports / Home four-stage lifecycle (queued → under_review →
-// confirmed | rejected) reflect the latest officer votes.
-//
-// NEW (officer subtype verdict — Phase 4 continuous learning):
-// refreshReportStatuses() now also pulls officerVerifiedAt,
-// officerSubtype, officerSubtypeAction, and officerDecision from each
-// row in GET /api/v1/reports/mine, and writes them into the local
-// SQLite row via updateReportOfficerVerdictByNullifier. This lets
-// MyReportsScreen show the citizen the officer's correction (e.g.
-// "Your report helped improve the model — corrected to Phishing Link")
-// once the review is finalized.
-
 import NetInfo from '@react-native-community/netinfo';
 import api, { OfflineError } from '../lib/api';
 import {
@@ -40,7 +7,9 @@ import {
   markReportSyncFailed,
   updateReportReviewStatusByNullifier,
   updateReportOfficerVerdictByNullifier,
+  upsertReportsFromServer,
 } from './sqlite';
+export { setActiveUser, getActiveUserId } from './sqlite';
 
 const DEFAULT_SCAM_TYPE = 'UNKNOWN';
 const DEFAULT_REGION = 'UNCLASSIFIED';
@@ -73,10 +42,6 @@ function normalizeScamType(value) {
   return trimmed.length > 0 ? trimmed : DEFAULT_SCAM_TYPE;
 }
 
-// FIX: mirrors normalizeScamType()'s defensive pattern for region, so a
-// row with a blank/legacy value still forwards something the officer
-// queue's region filter can match against — 'UNCLASSIFIED' is the same
-// sentinel reportController.js falls back to server-side.
 function normalizeRegion(value) {
   if (typeof value !== 'string') return DEFAULT_REGION;
   const trimmed = value.trim();
@@ -138,27 +103,24 @@ export async function syncNow() {
 
         const response = await api.post('/api/v1/reports', {
           scamType,
-          // FIX: previously omitted entirely — this is what caused every
-          // offline report to be rejected with 400 SENDER_REQUIRED.
           senderNumber: report.senderNumber || undefined,
           content: report.content,
           evidenceFiles: report.evidenceFiles,
           evidenceImage: report.evidenceImage,
-          // FIX: always send a location object carrying `region`, not just
-          // lat/lng, and not gated on both being present — matches the
-          // shape ReportScreen.js already sends on the online path.
           location: {
             latitude: report.latitude ?? null,
             longitude: report.longitude ?? null,
             region,
           },
-          // FIX: also send region at the top level, mirroring
-          // ReportScreen.js's online payload — reportController.js
-          // accepts either location.region or body.region.
           region,
           nullifier: report.nullifier,
           zkpHash: report.zkpHash,
           clientCreatedAt: report.createdAt,
+          // Target kind — server classifier may override; this is a
+          // hint so sync'd reports inherit the same kind they were
+          // classified with on-device (when known).
+          targetKind: report.targetKind === 'brand' ? 'brand' : 'number',
+          brandName: report.brandName || undefined,
         });
 
         const serverReportId = response.data?.reportId || response.data?.id;
@@ -175,8 +137,6 @@ export async function syncNow() {
 
     const remaining = (await getPendingReports()).length;
 
-    // After flushing the outbox, pull fresh review statuses for the
-    // citizen's own reports. Non-fatal if it fails (offline, server down).
     await refreshReportStatuses().catch(() => {});
 
     emitStatus({ phase: 'idle', lastSyncedAt: new Date().toISOString(), synced, failed, remaining });
@@ -187,60 +147,23 @@ export async function syncNow() {
   }
 }
 
-/**
- * Pulls the citizen's own reports from GET /api/v1/reports/mine and
- * updates the local review_status for each matching row. Called on app
- * open and on pull-to-refresh in My Reports. Safe to call offline —
- * OfflineError is swallowed.
- *
- * Matching key: nullifier. This is the ZKP one-time-reporter proof the
- * server stores on every Report and returns from /reports/mine. localId
- * is mobile-only and never reaches the server.
- *
- * NEW: when the server returns officer verdict fields on a row
- * (officerVerifiedAt, officerSubtype, officerSubtypeAction,
- * officerDecision), those are written into the local row too. This is
- * what lets MyReportsScreen display "An officer corrected the AI's
- * subtype to Phishing Link" once the review is finalized.
- *
- * NOTE: The server only populates these fields AFTER the review is
- * finalized (2-of-3 consensus reached or rejected). Before that, they
- * remain absent and we skip the update — the AI verdict alone is shown.
- */
 export async function refreshReportStatuses() {
   try {
     const response = await api.get('/api/v1/reports/mine');
     const reports = response.data?.reports;
-    if (!Array.isArray(reports) || reports.length === 0) return { updated: 0 };
-
-    let updated = 0;
-    for (const r of reports) {
-      if (!r?.nullifier) continue;
-
-      // 1. Update the review_status (queued / under_review / confirmed /
-      //    rejected). This always runs when the server sends a value.
-      if (r.reviewStatus) {
-        await updateReportReviewStatusByNullifier(r.nullifier, r.reviewStatus);
-      }
-
-      // 2. Update officer verdict fields only when they exist — this is
-      //    the continuous-learning signal, mirrored back to the citizen.
-      if (r.officerVerifiedAt) {
-        await updateReportOfficerVerdictByNullifier(r.nullifier, {
-          officerVerifiedAt: r.officerVerifiedAt,
-          officerSubtype: r.officerSubtype || null,
-          officerSubtypeAction: r.officerSubtypeAction || null,
-          officerDecision: r.officerDecision || null,
-        });
-      }
-
-      updated += 1;
+    if (!Array.isArray(reports) || reports.length === 0) {
+      return { updated: 0, inserted: 0 };
     }
-    return { updated };
+
+    const { inserted, updated } = await upsertReportsFromServer(reports);
+
+    return { updated, inserted, total: reports.length };
   } catch (err) {
-    if (err instanceof OfflineError) return { updated: 0, offline: true };
+    if (err instanceof OfflineError) {
+      return { updated: 0, inserted: 0, offline: true };
+    }
     console.warn('[syncQueue] refreshReportStatuses failed:', err?.message);
-    return { updated: 0, error: err?.message };
+    return { updated: 0, inserted: 0, error: err?.message };
   }
 }
 

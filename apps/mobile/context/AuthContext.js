@@ -2,25 +2,12 @@
 //
 // SentinelPH Citizen App — Auth state management (Email/Password via Firebase).
 //
-// Firebase Email/Password auth (firebase/auth v10+). Enable the
-// Email/Password provider for this project in the Firebase console
-// before testing.
-//
-// FIX (see HUGGINGFACE... no — see chat diagnosis): `isEmailVerified` is
-// now tracked as its own boolean state, updated explicitly by
-// onAuthStateChanged and by checkVerificationStatus(), rather than
-// derived by spreading the Firebase User object (which drops prototype
-// methods like getIdToken()/reload() and doesn't reliably trigger a
-// re-render since reload() mutates the same object in place).
-//
-// `currentScreen` is now driven by auth state, not just user actions:
-// any time a signed-in user's emailVerified is false — right after
-// sign-up, after signing into an existing unverified account, or on a
-// cold start that restores a stale unverified session — onAuthStateChanged
-// forces currentScreen to 'verify'. App.js's RootNavigator gates the
-// Dashboard on `isAuthenticated && isEmailVerified`, so an unverified user
-// can never reach TabNavigator regardless of what currentScreen is doing;
-// currentScreen only controls which *view* renders inside AuthScreen.
+// FIX (multi-account report leak — CRITICAL): onAuthStateChanged now
+// calls setActiveUser(uid) from db/sqlite.js whenever Firebase reports a
+// signed-in user, and setActiveUser(null) when it reports none. This is
+// what scopes every reports_outbox read/write to the currently-signed-in
+// account, so a different Firebase user on the same phone never sees the
+// previous account's local reports in Your Reports or Alerts.
 
 import React, {
   createContext,
@@ -44,13 +31,12 @@ import {
 
 import { auth } from '../config/firebase';
 import { bootstrapCitizenRole } from '../lib/api';
+import { setActiveUser } from '../db/sqlite';
 
 const AuthContext = createContext(null);
 
 const REMEMBER_ME_KEY = '@sentinelph_remember_me';
 
-// Deliberately generic — never reveals whether a given email address
-// already has an account, or whether an email vs. password was wrong.
 const GENERIC_AUTH_ERROR = 'Invalid email or password.';
 
 function mapFirebaseAuthError(code) {
@@ -63,8 +49,6 @@ function mapFirebaseAuthError(code) {
       return 'Too many attempts. Please wait a moment and try again.';
     case 'auth/network-request-failed':
       return 'Network error — check your connection and try again.';
-    // Collapsed into ONE generic message — do not let a client
-    // distinguish these cases from one another (user-enumeration defense).
     case 'auth/user-not-found':
     case 'auth/wrong-password':
     case 'auth/invalid-credential':
@@ -85,20 +69,17 @@ export function AuthProvider({ children }) {
   const [error, setError] = useState(null);
   const [rememberMe, setRememberMeState] = useState(true);
 
-  const [currentScreen, setCurrentScreen] = useState('signin'); // "signin" | "signup" | "verify"
+  const [currentScreen, setCurrentScreen] = useState('signin');
   const [emailForVerification, setEmailForVerification] = useState('');
 
-  // Restores the session on cold start and keeps `user`/`emailVerified` in
-  // sync with sign-in/sign-out from anywhere in the app. Critically, this
-  // is also what forces an unverified user onto the 'verify' screen —
-  // right after sign-up, after logging into an existing unverified
-  // account, or after the session is restored on a cold start.
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser);
       setInitializing(false);
 
       if (firebaseUser) {
+        setActiveUser(firebaseUser.uid);
+
         setEmailVerified(Boolean(firebaseUser.emailVerified));
         if (firebaseUser.emailVerified) {
           setEmailForVerification('');
@@ -107,6 +88,8 @@ export function AuthProvider({ children }) {
           setCurrentScreen('verify');
         }
       } else {
+        setActiveUser(null);
+
         setEmailVerified(false);
         setEmailForVerification('');
         setCurrentScreen('signin');
@@ -115,7 +98,6 @@ export function AuthProvider({ children }) {
     return unsubscribe;
   }, []);
 
-  // Loads the persisted "remember me" preference once at startup.
   useEffect(() => {
     (async () => {
       try {
@@ -129,8 +111,6 @@ export function AuthProvider({ children }) {
     })();
   }, []);
 
-  // Tracks connectivity so screens can show an offline banner rather than
-  // let an auth call fail with a confusing network error mid-flow.
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
       setIsOffline(!(state.isConnected && state.isInternetReachable !== false));
@@ -168,9 +148,6 @@ export function AuthProvider({ children }) {
         assertOnline();
         const credential = await signInWithEmailAndPassword(auth, email, password);
         await persistRememberMe(rememberMeArg);
-        // onAuthStateChanged (above) is what actually routes to 'verify'
-        // if this account turns out to be unverified — no need to
-        // duplicate that logic here.
         return credential.user;
       } catch (signInError) {
         const message = signInError.code
@@ -199,23 +176,12 @@ export function AuthProvider({ children }) {
           throw new Error(message);
         }
 
-               const credential = await createUserWithEmailAndPassword(auth, email, password);
+        const credential = await createUserWithEmailAndPassword(auth, email, password);
 
         if (fullName) {
           await updateProfile(credential.user, { displayName: fullName });
         }
 
-        // ─── FIX: Assign the `role: 'citizen'` custom claim ─────────────
-        // Firebase client SDK cannot set custom claims (Admin SDK only).
-        // We call our Express gateway, which assigns the claim and returns
-        // success. Then we force-refresh the ID token so the claim is
-        // present in the token the app will send on every subsequent
-        // request (e.g. POST /api/v1/reports). Without this, those
-        // requests hit 403 at verifyFirebaseToken.
-        //
-        // Non-fatal: if this fails, the user is still created and can
-        // retry later (e.g. on next sign-in, or via a manual backfill
-        // script). We log the error but do not block signup.
         try {
           await bootstrapCitizenRole();
           await credential.user.getIdToken(true);
@@ -225,23 +191,11 @@ export function AuthProvider({ children }) {
             bootstrapErr?.message
           );
         }
-        // ────────────────────────────────────────────────────────────────
 
-        // IMPORTANT: this call is now guaranteed to actually be reachable
-        // and its errors visible — previously, onAuthStateChanged firing
-        // as soon as createUserWithEmailAndPassword resolved caused
-        // RootNavigator to swap straight to the Dashboard (isAuthenticated
-        // was true), unmounting AuthScreen/SignUpScreen before this line
-        // even ran its course, and silently swallowing any error thrown
-        // here. RootNavigator now also requires isEmailVerified, so the
-        // navigator stays on AuthScreen for the whole signUp() call.
         await sendEmailVerification(credential.user);
 
         setEmailForVerification(email);
         setCurrentScreen('verify');
-        // user/emailVerified state is also set by onAuthStateChanged, but
-        // we set them here too so the UI updates on this same tick rather
-        // than waiting an extra listener round-trip.
         setUser(credential.user);
         setEmailVerified(Boolean(credential.user.emailVerified));
 
@@ -258,8 +212,7 @@ export function AuthProvider({ children }) {
     },
     [assertOnline]
   );
-   // ─── OTP-based Password Reset (3 stages) ─────────────────────────
-  // Stage 1: request a 6-digit code via email
+
   const requestPasswordOtp = useCallback(
     async (email) => {
       setError(null);
@@ -289,7 +242,6 @@ export function AuthProvider({ children }) {
     [assertOnline]
   );
 
-  // Stage 2: verify the 6-digit code, returns { resetSessionToken }
   const verifyPasswordOtp = useCallback(
     async (email, otp) => {
       setError(null);
@@ -320,7 +272,6 @@ export function AuthProvider({ children }) {
     [assertOnline]
   );
 
-  // Stage 3: set the new password using the reset session token
   const resetPasswordWithOtp = useCallback(
     async (resetSessionToken, newPassword) => {
       setError(null);
@@ -379,16 +330,6 @@ export function AuthProvider({ children }) {
     }
   }, [assertOnline]);
 
-  // Verification happens via a link the citizen opens outside the app, so
-  // we need an explicit way to re-pull the emailVerified flag once they
-  // return — Firebase's local user object is not pushed updates for this.
-  //
-  // FIX: emailVerified is tracked as its own state variable rather than
-  // derived by spreading auth.currentUser. reload() mutates the SAME
-  // User instance in place, so setUser(auth.currentUser) alone would not
-  // reliably trigger a re-render (same object reference), and spreading
-  // it (`{ ...auth.currentUser }`) drops prototype methods like
-  // getIdToken()/reload() from anything that reads `user` off context.
   const checkVerificationStatus = useCallback(async () => {
     setError(null);
     setIsLoading(true);
@@ -413,6 +354,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   const logout = useCallback(async () => {
+    setActiveUser(null);
     await firebaseSignOut(auth);
     setUser(null);
     setEmailVerified(false);
@@ -421,10 +363,6 @@ export function AuthProvider({ children }) {
     setCurrentScreen('signin');
   }, []);
 
-  // Convenience accessor so screens/services don't need to import Firebase
-  // directly just to read a token. Reads auth.currentUser directly rather
-  // than context's `user` state, so it's unaffected by the state-update
-  // timing discussed above.
   const getIdToken = useCallback(async (forceRefresh = false) => {
     if (!auth.currentUser) return null;
     return auth.currentUser.getIdToken(forceRefresh);
@@ -447,7 +385,7 @@ export function AuthProvider({ children }) {
     checkVerificationStatus,
     resendVerification,
     logout,
-     getIdToken,
+    getIdToken,
     requestPasswordOtp,
     verifyPasswordOtp,
     resetPasswordWithOtp,

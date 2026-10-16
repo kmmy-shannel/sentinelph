@@ -15,24 +15,6 @@ function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/**
- * For each blacklist entry, attach fields derived from the most recent
- * Report filed against the same number:
- *
- *   evidenceImage — the base64 data-URI screenshot (or null)
- *   aiLabel       — Level 1 tier from services/ai/app/inference.py
- *   aiSubtype     — Level 2 subtype key
- *   aiRiskLevel   — HIGH | MEDIUM | LOW | UNKNOWN
- *   aiConfidence  — Level 1 confidence score
- *
- * Entry-level fields take precedence; the Report is the fallback source
- * for legacy entries that predate these columns. Screenshots live on the
- * Report (not on BlacklistEntry), so the join is required either way.
- *
- * Implemented as a separate query (not a Mongo $lookup) because the
- * screenshot is a base64 data-URI (potentially MBs each) and we don't
- * want to always pay the cost — only when listing.
- */
 async function attachReportDerivedFields(entries) {
   if (!entries.length) return entries;
 
@@ -44,7 +26,6 @@ async function attachReportDerivedFields(entries) {
     .sort({ createdAt: -1 })
     .lean();
 
-  // Newest report per phone number.
   const byNumber = new Map();
   for (const r of reports) {
     if (!byNumber.has(r.reportedNumber)) {
@@ -71,7 +52,7 @@ async function attachReportDerivedFields(entries) {
 }
 
 // =====================================================================
-// POST /api/v1/blacklist/candidates — Open (or fetch) a candidate
+// POST /api/v1/blacklist/candidates
 // =====================================================================
 router.post(
   '/candidates',
@@ -139,6 +120,13 @@ router.post(
 
 // =====================================================================
 // GET /api/v1/blacklist/public — Citizen-safe public registry
+//
+// Query params:
+//   ?limit=<n>            default 100, max 500
+//   ?kind=number|brand    optional filter; default both
+//   ?region=<r>           optional region filter
+//   ?q=<text>             optional search across phoneNumber, brandName,
+//                         and aiSubtype
 // =====================================================================
 router.get(
   '/public',
@@ -153,6 +141,10 @@ router.get(
 
     const query = { status: { $in: ['blacklisted', 'approved'] } };
 
+    if (req.query.kind === 'number' || req.query.kind === 'brand') {
+      query.targetKind = req.query.kind;
+    }
+
     if (req.query.region) {
       query.region = String(req.query.region);
     }
@@ -162,6 +154,7 @@ router.get(
       if (pattern) {
         query.$or = [
           { phoneNumber: { $regex: pattern, $options: 'i' } },
+          { brandName: { $regex: pattern, $options: 'i' } },
           { aiSubtype: { $regex: pattern, $options: 'i' } },
         ];
       }
@@ -170,12 +163,14 @@ router.get(
     const items = await BlacklistEntry.find(query)
       .sort({ blacklistedAt: -1, updatedAt: -1 })
       .limit(limit)
-      .select('phoneNumber status aiLabel aiSubtype aiRiskLevel reportCount region blacklistedAt')
+      .select('phoneNumber status targetKind brandName aiLabel aiSubtype aiRiskLevel reportCount region blacklistedAt')
       .lean();
 
     const publicItems = items.map((e) => ({
       phoneNumber: e.phoneNumber,
       status: e.status,
+      targetKind: e.targetKind || 'number',
+      brandName: e.brandName || null,
       aiLabel: e.aiLabel || null,
       aiSubtype: e.aiSubtype || null,
       aiRiskLevel: e.aiRiskLevel || null,
@@ -217,6 +212,8 @@ router.get(
         data: {
           phoneNumber: entry.phoneNumber,
           status: entry.status,
+          targetKind: entry.targetKind || 'number',
+          brandName: entry.brandName || null,
           aiLabel: entry.aiLabel || null,
           aiSubtype: entry.aiSubtype || null,
           aiRiskLevel: entry.aiRiskLevel || null,
@@ -232,8 +229,96 @@ router.get(
 );
 
 // =====================================================================
+// GET /api/v1/blacklist/:phoneNumber/detail — Citizen-facing detail
+//
+// Returns everything a citizen needs to understand WHY this target is
+// flagged: the AI verdict (with explanation reasons), the officer
+// verdict (with any subtype correction), the report count, region, and
+// blacklisted-at timestamp.
+//
+// Never returns officer IDs, reporter identity, or any PII.
+// =====================================================================
+router.get(
+  '/:phoneNumber/detail',
+  verifyFirebaseToken,
+  enforceAuditorReadOnly,
+  requireRole('citizen', 'officer', 'analyst', 'auditor'),
+  asyncHandler(async (req, res) => {
+    const phoneNumber = String(req.params.phoneNumber);
+    const entry = await BlacklistEntry.findOne({ phoneNumber }).lean();
+
+    if (!entry) {
+      throw new ApiError(
+        404,
+        `No blacklist entry found for "${phoneNumber}".`,
+        'NOT_FOUND'
+      );
+    }
+
+    // Newest report against this target carries the freshest AI verdict
+    // and the freshest officer subtype correction.
+    const sourceReport = await Report.findOne({ reportedNumber: phoneNumber })
+      .sort({ createdAt: -1 })
+      .select(
+        'aiFlag officerSubtype officerSubtypeAction officerDecision ' +
+          'officerVerifiedAt officerSubtypeAggregated officerSubtypeAgreement ' +
+          'createdAt'
+      )
+      .lean();
+
+    const ai = sourceReport?.aiFlag || {};
+    const aiFlag = {
+      available: ai.available !== false,
+      label: ai.label || entry.aiLabel || null,
+      subtype: ai.subtype || entry.aiSubtype || null,
+      subtypeConfidence:
+        typeof ai.subtypeConfidence === 'number' ? ai.subtypeConfidence : null,
+      subtypeModelVersion: ai.subtypeModelVersion || null,
+      riskLevel: ai.riskLevel || entry.aiRiskLevel || 'UNKNOWN',
+      confidenceScore:
+        typeof ai.confidenceScore === 'number'
+          ? ai.confidenceScore
+          : typeof entry.aiConfidence === 'number'
+          ? entry.aiConfidence
+          : null,
+      isScam: ai.isScam ?? null,
+      explanationReasons: Array.isArray(ai.explanationReasons)
+        ? ai.explanationReasons
+        : [],
+    };
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        phoneNumber: entry.phoneNumber,
+        status: entry.status,
+        targetKind: entry.targetKind || 'number',
+        brandName: entry.brandName || null,
+        region: entry.region || UNCLASSIFIED,
+        reportCount: entry.reportCount ?? 0,
+        blacklistedAt: entry.blacklistedAt || null,
+        aiFlag,
+        officerVerdict: sourceReport
+          ? {
+              verifiedAt: sourceReport.officerVerifiedAt || null,
+              subtype: sourceReport.officerSubtype || null,
+              subtypeAction: sourceReport.officerSubtypeAction || null,
+              decision: sourceReport.officerDecision || null,
+              aggregatedSubtype:
+                sourceReport.officerSubtypeAggregated || null,
+              agreement:
+                typeof sourceReport.officerSubtypeAgreement === 'number'
+                  ? sourceReport.officerSubtypeAgreement
+                  : 0,
+            }
+          : null,
+      },
+    });
+  })
+);
+
+// =====================================================================
 // GET /api/v1/blacklist — List candidates/entries with filters
-//   (Officer, Analyst, Auditor)
 // =====================================================================
 router.get(
   '/',
@@ -255,6 +340,10 @@ router.get(
       else if (statuses.length > 1) query.status = { $in: statuses };
     }
 
+    if (req.query.kind === 'number' || req.query.kind === 'brand') {
+      query.targetKind = req.query.kind;
+    }
+
     if (req.user.role === 'officer' && req.user.jurisdiction) {
       query.region = { $in: [req.user.jurisdiction, UNCLASSIFIED, null] };
     } else if (req.query.region) {
@@ -266,6 +355,7 @@ router.get(
       if (pattern) {
         query.$or = [
           { phoneNumber: { $regex: pattern, $options: 'i' } },
+          { brandName: { $regex: pattern, $options: 'i' } },
           { aiSubtype: { $regex: pattern, $options: 'i' } },
           { aiLabel: { $regex: pattern, $options: 'i' } },
         ];

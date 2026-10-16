@@ -170,6 +170,32 @@ const ReportSchema = new Schema(
       maxlength: 40,
       immutable: true,
     },
+
+    // ─── TARGET KIND (number vs brand impersonation) ───────────────
+    // 'number'  — the reported sender IS the scam target (a phone
+    //             number, short code, or alphanumeric SMS header like
+    //             'GCashAlert').
+    // 'brand'   — the SMS body impersonates a known brand; the sender
+    //             is a human name or unrelated number that is not
+    //             itself the target. brandName records which brand is
+    //             being impersonated (e.g. 'GCash', 'Maya', 'BDO').
+    targetKind: {
+      type: String,
+      enum: ['number', 'brand'],
+      default: 'number',
+      index: true,
+      immutable: true,
+    },
+    brandName: {
+      type: String,
+      trim: true,
+      maxlength: 80,
+      default: null,
+      index: true,
+      immutable: true,
+    },
+    // ────────────────────────────────────────────────────────────────
+
     location: {
       type: LocationSchema,
       default: () => ({}),
@@ -232,14 +258,7 @@ const ReportSchema = new Schema(
       default: null,
     },
 
-    // ─── REPORTER IDENTITY (from earlier merges) ──────────────────
-    // Human-readable reporter identity for officer transparency.
-    // NOT part of getCanonicalPayload() — deliberately excluded from
-    // the hash chain. Citizens opt in via the mobile app; if they
-    // decline, both fields are stored as null.
-    //
-    // Visibility is controlled at the query level (see LIST_SELECT /
-    // DETAIL_SELECT in reportReviewController.js).
+    // ─── REPORTER IDENTITY ────────────────────────────────────────
     reporterName: {
       type: String,
       trim: true,
@@ -258,7 +277,7 @@ const ReportSchema = new Schema(
       default: false,
     },
 
-    // ─── OFFICER REVIEW FIELDS (per-report final verdict) ──────────
+    // ─── OFFICER REVIEW FIELDS ────────────────────────────────────
     officerAction: {
       type: String,
       enum: ['confirmed', 'corrected', 'unsure', 'spam', null],
@@ -303,12 +322,6 @@ const ReportSchema = new Schema(
     // ──────────────────────────────────────────────────────────────
 
     // ---- Workflow state ----
-    // 'pending' → 'under_review' | 'one_approval'
-    // Once 2 decisive votes are cast → 'blacklisted' | 'rejected' (terminal)
-    // 'approved' is retained as an alias for 'blacklisted' so the vote
-    // route can map its decision without loss. 'two_approvals' is kept
-    // in the enum for backward-compatibility with older documents but
-    // is no longer produced by the voting pipelines.
     status: {
       type: String,
       enum: [
@@ -338,6 +351,13 @@ ReportSchema.path('createdAt', { immutable: true });
 ReportSchema.index({ reportedNumber: 1, status: 1 });
 ReportSchema.index({ status: 1, sequence: -1 });
 ReportSchema.index({ status: 1, resolvedAt: -1 });
+
+// Target-kind indexes. Support the two-section registry split on the
+// mobile Home screen: one list of confirmed scam numbers, one list of
+// impersonated brands. Also used by the /public registry route when
+// ?kind=number or ?kind=brand is supplied.
+ReportSchema.index({ targetKind: 1, status: 1 });
+ReportSchema.index({ targetKind: 1, brandName: 1 });
 
 ReportSchema.methods.getCanonicalPayload = function getCanonicalPayload() {
   return {
@@ -397,12 +417,6 @@ ReportSchema.pre('findOneAndRemove', blockDirectMutation);
 
 /**
  * CANONICAL VOTE ENTRY POINT — 2-of-3 Quorum
- *
- * Finalizes IMMEDIATELY once 2 officers agree on the same decision.
- * The third vote is optional and only relevant as a tiebreaker when
- * the first two officers disagree.
- *
- * Accepts optional subtype verification fields (continuous learning).
  */
 ReportSchema.statics.castVote = async function castVote(
   reportId,
@@ -468,8 +482,6 @@ ReportSchema.statics.castVote = async function castVote(
       },
     },
     {
-      // ── FINALIZE AT 2 DECISIVE VOTES ───────────────────────────────
-      // No `$size: '$votes' >= 3` guard. The 3rd officer is optional.
       $set: {
         status: {
           $switch: {
@@ -484,7 +496,6 @@ ReportSchema.statics.castVote = async function castVote(
       },
     },
     {
-      // resolvedAt fires the moment a decision reaches quorum.
       $set: {
         resolvedAt: {
           $cond: [
@@ -543,11 +554,6 @@ ReportSchema.statics.castVote = async function castVote(
 
 /**
  * CHANGE VOTE — Option A (replace-in-place)
- * Edit an existing vote. Preserves votedAt, stamps editedAt, and
- * supports the same subtype verification fields as castVote.
- *
- * NOTE: once a report reaches quorum (2 decisive votes), it is terminal
- * and changeVote will refuse — see REPORT_FINALIZED below.
  */
 ReportSchema.statics.changeVote = async function changeVote(
   reportId,
@@ -629,7 +635,6 @@ ReportSchema.statics.changeVote = async function changeVote(
       },
     },
     {
-      // ── FINALIZE AT 2 DECISIVE VOTES (same rule as castVote) ───────
       $set: {
         status: {
           $switch: {

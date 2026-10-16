@@ -1,63 +1,19 @@
 // apps/mobile/db/sqlite.js
 //
 // Local SQLite outbox for offline-first report submission.
-// Reports created while offline are enqueued here, then flushed by
-// db/syncQueue.js once connectivity returns.
+// See the file's evolution in git history for the full fix log.
 //
-// Uses the new expo-sqlite async API (SDK 51+): openDatabaseAsync +
-// runAsync/getAllAsync/execAsync.
+// NEW (targetKind): reports_outbox and blacklist_cache now carry a
+// target_kind ('number' | 'brand') and brand_name column so the mobile
+// Home screen can split the registry feed into two sections:
+//   1. Blacklisted Numbers — phone numbers and SMS headers
+//   2. Impersonated Brands — brands impersonated in scam SMS
 //
-// FIX (offline sender/region loss — CRITICAL): the reports_outbox table
-// previously had no columns for `sender_number` or `region`. ReportScreen.js
-// already builds an offline payload containing both `senderNumber` and a
-// GPS-resolved `region`, but enqueueReport()'s INSERT silently dropped them
-// because the columns didn't exist. Since reportController.js REQUIRES a
-// sender (400 SENDER_REQUIRED otherwise), every offline-queued report was
-// guaranteed to fail permanently once syncQueue.js tried to flush it. Both
-// fields are now first-class columns: persisted on enqueue, migrated in
-// for existing installs (ALTER TABLE, guarded like the existing
-// evidence_image migration below), returned by deserializeRow(), and
-// forwarded by syncQueue.js's POST payload.
-//
-// FIX (AI verdict not persisting): ReportScreen.js already puts
-// `aiRiskLevel` and `aiConfidenceScore` into the payload on every submit,
-// but the table had no columns for them, so the INSERT silently dropped
-// both and the My Reports modal showed "AI analysis was not available"
-// even for reports the analyze endpoint had scored. Both fields are now
-// first-class columns: created in CREATE TABLE, migrated via ALTER TABLE
-// for existing installs, written by enqueueReport(), and returned by
-// deserializeRow().
-//
-// FIX (review lifecycle): the citizen-visible status is a four-stage
-// lifecycle — queued → under_review → confirmed | rejected — that is
-// driven by officer votes on the server, NOT by the local `synced` flag.
-// The `review_status` column stores the last-known value from
-// GET /api/v1/reports/mine; refreshReportStatuses() in syncQueue.js
-// updates it. Two helpers below update a single row by local_id or by
-// nullifier (the identifier both sides share).
-//
-// NEW (blacklist cache): blacklist_cache caches blacklist lookups so the
-// SearchScreen works offline and serves repeat queries instantly. Four
-// helpers:
-//   cacheBlacklistEntry       — write a single lookup result
-//   cacheBlacklistBulk        — write the full public registry list
-//   searchBlacklistCache      — read filtered results (LIKE query)
-//   getAllBlacklistCache      — read the whole cache (browse mode)
-//   pruneBlacklistCache       — age out rows >30 days
-// Called from SearchScreen.js and App.js.
-//
-// NEW (Level 2 subtype + officer verdict — Phase 4 continuous learning):
-// Nine new columns persist the AI's Level 2 subtype prediction and the
-// officer's verified subtype verdict, so MyReportsScreen.js can show the
-// citizen a subtype-specific verdict AND surface the officer's correction
-// when it happens. These fields are the citizen-facing mirror of the
-// training signal that feeds the monthly retrain:
-//   ai_subtype, ai_subtype_confidence, ai_subtype_model_version,
-//   ai_explanation_reasons, ai_label,
-//   officer_verified_at, officer_subtype, officer_subtype_action,
-//   officer_decision
-// All are written by ReportScreen.js on enqueue, refreshed by
-// syncQueue.js's refreshReportStatuses(), and read by MyReportsScreen.js.
+// FIX (INSERT column/value drift): both INSERT statements into
+// reports_outbox are now built from a single array of [column, value]
+// tuples. This guarantees the column list, the placeholder list, and
+// the values array cannot go out of sync (which was producing the
+// "N values for M columns" SQLiteError on the online-fetch path).
 
 import * as SQLite from 'expo-sqlite';
 
@@ -68,6 +24,16 @@ const DEFAULT_REGION = 'UNCLASSIFIED';
 
 let dbInstance = null;
 
+let activeUserId = null;
+
+export function setActiveUser(uid) {
+  activeUserId = typeof uid === 'string' && uid.length > 0 ? uid : null;
+}
+
+export function getActiveUserId() {
+  return activeUserId;
+}
+
 async function getDb() {
   if (!dbInstance) {
     dbInstance = await SQLite.openDatabaseAsync(DB_NAME);
@@ -75,10 +41,34 @@ async function getDb() {
   return dbInstance;
 }
 
-/**
- * Creates the reports outbox table if it doesn't already exist.
- * Call once on app boot (e.g. in App.tsx's root effect).
- */
+async function getTableColumns(db, tableName) {
+  const rows = await db.getAllAsync(`PRAGMA table_info(${tableName})`);
+  return new Set(rows.map((r) => r.name));
+}
+
+async function ensureColumn(db, tableName, columnName, columnDefinition) {
+  try {
+    const cols = await getTableColumns(db, tableName);
+    if (cols.has(columnName)) return;
+
+    await db.execAsync(
+      `ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`
+    );
+
+    const after = await getTableColumns(db, tableName);
+    if (!after.has(columnName)) {
+      console.error(
+        `[sqlite] migration: ${tableName}.${columnName} still missing after ALTER`
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[sqlite] migration failed for ${tableName}.${columnName}:`,
+      err?.message || err
+    );
+  }
+}
+
 export async function initDB() {
   const db = await getDb();
 
@@ -87,6 +77,7 @@ export async function initDB() {
 
     CREATE TABLE IF NOT EXISTS reports_outbox (
       local_id TEXT PRIMARY KEY NOT NULL,
+      user_id TEXT,
       scam_type TEXT NOT NULL DEFAULT '${DEFAULT_SCAM_TYPE}',
       sender_number TEXT NOT NULL DEFAULT '',
       region TEXT NOT NULL DEFAULT '${DEFAULT_REGION}',
@@ -127,105 +118,65 @@ export async function initDB() {
       ON blacklist_cache (identifier);
   `);
 
-  // ─── EXISTING MIGRATIONS (kept for backward compat) ─────────────
+  // ─── MIGRATIONS ─────────────────────────────────────────────────
+  await ensureColumn(db, 'reports_outbox', 'scam_type_default', 'TEXT');
+  await ensureColumn(db, 'reports_outbox', 'evidence_image', 'TEXT');
+  await ensureColumn(db, 'reports_outbox', 'sender_number', "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(
+    db,
+    'reports_outbox',
+    'region',
+    `TEXT NOT NULL DEFAULT '${DEFAULT_REGION}'`
+  );
+  await ensureColumn(db, 'reports_outbox', 'ai_risk_level', 'TEXT');
+  await ensureColumn(db, 'reports_outbox', 'ai_confidence_score', 'REAL');
+  await ensureColumn(
+    db,
+    'reports_outbox',
+    'review_status',
+    "TEXT NOT NULL DEFAULT 'queued'"
+  );
+
+  await ensureColumn(db, 'reports_outbox', 'user_id', 'TEXT');
+
   try {
-    await db.execAsync(
-      `ALTER TABLE reports_outbox ADD COLUMN scam_type_default TEXT`
+    await db.runAsync(
+      `UPDATE reports_outbox SET user_id = '' WHERE user_id IS NULL`
     );
-  } catch {}
+  } catch (err) {
+    console.error('[sqlite] user_id backfill failed:', err?.message || err);
+  }
 
   try {
     await db.execAsync(
-      `ALTER TABLE reports_outbox ADD COLUMN evidence_image TEXT`
+      `CREATE INDEX IF NOT EXISTS idx_reports_outbox_user_id
+         ON reports_outbox (user_id)`
     );
-  } catch {}
+  } catch (err) {
+    console.error('[sqlite] user_id index creation failed:', err?.message || err);
+  }
+
+  await ensureColumn(db, 'reports_outbox', 'ai_subtype', 'TEXT');
+  await ensureColumn(db, 'reports_outbox', 'ai_subtype_confidence', 'REAL');
+  await ensureColumn(db, 'reports_outbox', 'ai_subtype_model_version', 'TEXT');
+  await ensureColumn(db, 'reports_outbox', 'ai_explanation_reasons', 'TEXT');
+  await ensureColumn(db, 'reports_outbox', 'ai_label', 'TEXT');
+  await ensureColumn(db, 'reports_outbox', 'officer_verified_at', 'TEXT');
+  await ensureColumn(db, 'reports_outbox', 'officer_subtype', 'TEXT');
+  await ensureColumn(db, 'reports_outbox', 'officer_subtype_action', 'TEXT');
+  await ensureColumn(db, 'reports_outbox', 'officer_decision', 'TEXT');
+
+  // ─── Target kind (number vs brand impersonation) ────────────────
+  await ensureColumn(db, 'reports_outbox', 'target_kind', 'TEXT');
+  await ensureColumn(db, 'reports_outbox', 'brand_name', 'TEXT');
+  await ensureColumn(db, 'blacklist_cache', 'target_kind', 'TEXT');
+  await ensureColumn(db, 'blacklist_cache', 'brand_name', 'TEXT');
 
   try {
-    await db.execAsync(
-      `ALTER TABLE reports_outbox ADD COLUMN sender_number TEXT NOT NULL DEFAULT ''`
-    );
-  } catch {}
-
-  try {
-    await db.execAsync(
-      `ALTER TABLE reports_outbox ADD COLUMN region TEXT NOT NULL DEFAULT '${DEFAULT_REGION}'`
-    );
-  } catch {}
-
-  try {
-    await db.execAsync(
-      `ALTER TABLE reports_outbox ADD COLUMN ai_risk_level TEXT`
-    );
-  } catch {}
-
-  try {
-    await db.execAsync(
-      `ALTER TABLE reports_outbox ADD COLUMN ai_confidence_score REAL`
-    );
-  } catch {}
-
-  try {
-    await db.execAsync(
-      `ALTER TABLE reports_outbox ADD COLUMN review_status TEXT NOT NULL DEFAULT 'queued'`
-    );
-  } catch {}
-
-  // ─── NEW MIGRATIONS (Level 2 subtype + officer verdict) ─────────
-  // AI Level 2 subtype and its metadata
-  try {
-    await db.execAsync(
-      `ALTER TABLE reports_outbox ADD COLUMN ai_subtype TEXT`
-    );
-  } catch {}
-
-  try {
-    await db.execAsync(
-      `ALTER TABLE reports_outbox ADD COLUMN ai_subtype_confidence REAL`
-    );
-  } catch {}
-
-  try {
-    await db.execAsync(
-      `ALTER TABLE reports_outbox ADD COLUMN ai_subtype_model_version TEXT`
-    );
-  } catch {}
-
-  try {
-    await db.execAsync(
-      `ALTER TABLE reports_outbox ADD COLUMN ai_explanation_reasons TEXT`
-    );
-  } catch {}
-
-  try {
-    await db.execAsync(
-      `ALTER TABLE reports_outbox ADD COLUMN ai_label TEXT`
-    );
-  } catch {}
-
-  // Officer verdict (populated by refreshReportStatuses once reviewed)
-  try {
-    await db.execAsync(
-      `ALTER TABLE reports_outbox ADD COLUMN officer_verified_at TEXT`
-    );
-  } catch {}
-
-  try {
-    await db.execAsync(
-      `ALTER TABLE reports_outbox ADD COLUMN officer_subtype TEXT`
-    );
-  } catch {}
-
-  try {
-    await db.execAsync(
-      `ALTER TABLE reports_outbox ADD COLUMN officer_subtype_action TEXT`
-    );
-  } catch {}
-
-  try {
-    await db.execAsync(
-      `ALTER TABLE reports_outbox ADD COLUMN officer_decision TEXT`
-    );
-  } catch {}
+    await db.runAsync(`DELETE FROM reports_outbox WHERE user_id = ''`);
+  } catch (err) {
+    console.warn('[sqlite] pre-migration row cleanup failed:', err?.message || err);
+  }
 
   return db;
 }
@@ -260,8 +211,34 @@ function normalizeString(value) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function requireActiveUserId() {
+  if (!activeUserId) {
+    throw new Error(
+      '[sqlite] setActiveUser(uid) must be called before writing a report.'
+    );
+  }
+  return activeUserId;
+}
+
+/**
+ * Build an INSERT statement for reports_outbox from an ordered list of
+ * [columnName, value] tuples. This is the only safe way to keep the
+ * column list, the placeholder count, and the values array in sync.
+ * Hand-written placeholder strings drift; tuples do not.
+ */
+function buildInsert(columns) {
+  const colNames = columns.map((c) => c[0]).join(', ');
+  const placeholders = columns.map(() => '?').join(', ');
+  const values = columns.map((c) => c[1]);
+  return {
+    sql: `INSERT INTO reports_outbox (${colNames}) VALUES (${placeholders})`,
+    values,
+  };
+}
+
 export async function enqueueReport(report) {
   const db = await getDb();
+  const userId = requireActiveUserId();
   const createdAt = new Date().toISOString();
 
   const scamType = normalizeScamType(report.scamType);
@@ -273,75 +250,72 @@ export async function enqueueReport(report) {
       : null;
   const aiConfidenceScore = normalizeConfidence(report.aiConfidenceScore);
 
-  // ─── NEW: Level 2 subtype + explanation reasons ─────────────────
   const aiSubtype = normalizeString(report.aiSubtype);
   const aiSubtypeConfidence = normalizeConfidence(report.aiSubtypeConfidence);
   const aiSubtypeModelVersion = normalizeString(report.aiSubtypeModelVersion);
   const aiLabel = normalizeString(report.aiLabel);
 
-  // aiExplanationReasons is stored as JSON. Accept either an array
-  // (from ReportScreen) or a pre-stringified value.
   let aiExplanationReasonsJson = null;
   if (Array.isArray(report.aiExplanationReasons)) {
     aiExplanationReasonsJson = JSON.stringify(report.aiExplanationReasons);
-  } else if (typeof report.aiExplanationReasons === 'string' && report.aiExplanationReasons.length > 0) {
+  } else if (
+    typeof report.aiExplanationReasons === 'string' &&
+    report.aiExplanationReasons.length > 0
+  ) {
     aiExplanationReasonsJson = report.aiExplanationReasons;
   }
 
-  // ─── NEW: Officer verdict (may already be present if refresh ran) ─
   const officerVerifiedAt = normalizeString(report.officerVerifiedAt);
   const officerSubtype = normalizeString(report.officerSubtype);
   const officerSubtypeAction = normalizeString(report.officerSubtypeAction);
   const officerDecision = normalizeString(report.officerDecision);
 
+  const targetKind = report.targetKind === 'brand' ? 'brand' : 'number';
+  const brandName = normalizeString(report.brandName);
+
   const alreadySynced = Boolean(report.serverReportId);
   const syncedFlag = alreadySynced ? 1 : 0;
 
-  await db.runAsync(
-    `INSERT INTO reports_outbox
-      (local_id, scam_type, sender_number, region, content,
-       evidence_files, evidence_image, voice_note_uri,
-       latitude, longitude,
-       nullifier, zkp_hash,
-       ai_risk_level, ai_confidence_score,
-       ai_subtype, ai_subtype_confidence, ai_subtype_model_version,
-       ai_explanation_reasons, ai_label,
-       officer_verified_at, officer_subtype, officer_subtype_action, officer_decision,
-       review_status, created_at, synced, sync_attempts, server_report_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-    [
-      report.localId,
-      scamType,
-      senderNumber,
-      region,
-      report.content,
-      JSON.stringify(report.evidenceFiles || []),
-      report.evidenceImage || null,
-      report.voiceNoteUri || null,
-      report.latitude ?? null,
-      report.longitude ?? null,
-      report.nullifier,
-      report.zkpHash || null,
-      aiRiskLevel,
-      aiConfidenceScore,
-      aiSubtype,
-      aiSubtypeConfidence,
-      aiSubtypeModelVersion,
-      aiExplanationReasonsJson,
-      aiLabel,
-      officerVerifiedAt,
-      officerSubtype,
-      officerSubtypeAction,
-      officerDecision,
-      'queued',
-      createdAt,
-      syncedFlag,
-      report.serverReportId || null,
-    ]
-  );
+  const { sql, values } = buildInsert([
+    ['local_id', report.localId],
+    ['user_id', userId],
+    ['scam_type', scamType],
+    ['sender_number', senderNumber],
+    ['region', region],
+    ['content', report.content],
+    ['evidence_files', JSON.stringify(report.evidenceFiles || [])],
+    ['evidence_image', report.evidenceImage || null],
+    ['voice_note_uri', report.voiceNoteUri || null],
+    ['latitude', report.latitude ?? null],
+    ['longitude', report.longitude ?? null],
+    ['nullifier', report.nullifier],
+    ['zkp_hash', report.zkpHash || null],
+    ['ai_risk_level', aiRiskLevel],
+    ['ai_confidence_score', aiConfidenceScore],
+    ['ai_subtype', aiSubtype],
+    ['ai_subtype_confidence', aiSubtypeConfidence],
+    ['ai_subtype_model_version', aiSubtypeModelVersion],
+    ['ai_explanation_reasons', aiExplanationReasonsJson],
+    ['ai_label', aiLabel],
+    ['officer_verified_at', officerVerifiedAt],
+    ['officer_subtype', officerSubtype],
+    ['officer_subtype_action', officerSubtypeAction],
+    ['officer_decision', officerDecision],
+    ['target_kind', targetKind],
+    ['brand_name', brandName],
+    ['review_status', 'queued'],
+    ['created_at', createdAt],
+    ['synced', syncedFlag],
+    ['sync_attempts', 0],
+    ['last_error', null],
+    ['server_report_id', report.serverReportId || null],
+  ]);
+
+  await db.runAsync(sql, values);
 
   return {
     ...report,
+    userId,
     scamType,
     senderNumber,
     region,
@@ -356,6 +330,8 @@ export async function enqueueReport(report) {
     officerSubtype,
     officerSubtypeAction,
     officerDecision,
+    targetKind,
+    brandName,
     createdAt,
     synced: Boolean(syncedFlag),
     serverReportId: report.serverReportId || null,
@@ -363,90 +339,105 @@ export async function enqueueReport(report) {
 }
 
 export async function getPendingReports() {
+  if (!activeUserId) return [];
   const db = await getDb();
   const rows = await db.getAllAsync(
-    `SELECT * FROM reports_outbox WHERE synced = 0 ORDER BY created_at ASC`
+    `SELECT * FROM reports_outbox
+      WHERE synced = 0 AND user_id = ?
+      ORDER BY created_at ASC`,
+    [activeUserId]
   );
   return rows.map(deserializeRow);
 }
 
 export async function getAllReports() {
+  if (!activeUserId) return [];
   const db = await getDb();
   const rows = await db.getAllAsync(
-    `SELECT * FROM reports_outbox ORDER BY created_at DESC`
+    `SELECT * FROM reports_outbox
+      WHERE user_id = ?
+      ORDER BY created_at DESC`,
+    [activeUserId]
   );
   return rows.map(deserializeRow);
 }
 
 export async function markReportSynced(localId, serverReportId) {
+  if (!activeUserId) return;
   const db = await getDb();
   await db.runAsync(
-    `UPDATE reports_outbox SET synced = 1, server_report_id = ?, last_error = NULL WHERE local_id = ?`,
-    [serverReportId, localId]
+    `UPDATE reports_outbox
+        SET synced = 1, server_report_id = ?, last_error = NULL
+      WHERE local_id = ? AND user_id = ?`,
+    [serverReportId, localId, activeUserId]
   );
 }
 
 export async function markReportSyncFailed(localId, errorMessage) {
+  if (!activeUserId) return;
   const db = await getDb();
   await db.runAsync(
     `UPDATE reports_outbox
-     SET sync_attempts = sync_attempts + 1, last_error = ?
-     WHERE local_id = ?`,
-    [errorMessage, localId]
+        SET sync_attempts = sync_attempts + 1, last_error = ?
+      WHERE local_id = ? AND user_id = ?`,
+    [errorMessage, localId, activeUserId]
   );
 }
 
 export async function deleteSyncedReport(localId) {
+  if (!activeUserId) return;
   const db = await getDb();
-  await db.runAsync(`DELETE FROM reports_outbox WHERE local_id = ? AND synced = 1`, [localId]);
+  await db.runAsync(
+    `DELETE FROM reports_outbox
+      WHERE local_id = ? AND synced = 1 AND user_id = ?`,
+    [localId, activeUserId]
+  );
 }
 
 export async function clearAllReports() {
+  if (!activeUserId) return;
   const db = await getDb();
-  await db.runAsync(`DELETE FROM reports_outbox`);
+  await db.runAsync(
+    `DELETE FROM reports_outbox WHERE user_id = ?`,
+    [activeUserId]
+  );
 }
 
 export async function updateReportReviewStatus(localId, reviewStatus) {
+  if (!activeUserId) return;
   if (typeof localId !== 'string' || localId.length === 0) return;
   const allowed = ['queued', 'under_review', 'confirmed', 'rejected'];
   if (!allowed.includes(reviewStatus)) return;
 
   const db = await getDb();
   await db.runAsync(
-    `UPDATE reports_outbox SET review_status = ? WHERE local_id = ?`,
-    [reviewStatus, localId]
+    `UPDATE reports_outbox
+        SET review_status = ?
+      WHERE local_id = ? AND user_id = ?`,
+    [reviewStatus, localId, activeUserId]
   );
 }
 
 export async function updateReportReviewStatusByNullifier(nullifier, reviewStatus) {
+  if (!activeUserId) return;
   if (typeof nullifier !== 'string' || nullifier.length === 0) return;
   const allowed = ['queued', 'under_review', 'confirmed', 'rejected'];
   if (!allowed.includes(reviewStatus)) return;
 
   const db = await getDb();
   await db.runAsync(
-    `UPDATE reports_outbox SET review_status = ? WHERE nullifier = ?`,
-    [reviewStatus, nullifier]
+    `UPDATE reports_outbox
+        SET review_status = ?
+      WHERE nullifier = ? AND user_id = ?`,
+    [reviewStatus, nullifier, activeUserId]
   );
 }
 
-// ─── NEW: officer verdict updaters (called by refreshReportStatuses) ─
-
-/**
- * Updates a report row with the officer's final subtype verdict,
- * after the server has finalized the review. Called from
- * syncQueue.js's refreshReportStatuses().
- *
- * Accepts the citizen-safe fields returned by GET /api/v1/reports/mine:
- *   officerVerifiedAt    ISO string or null
- *   officerSubtype       string or null
- *   officerSubtypeAction 'confirmed' | 'corrected' | 'unsure' | null
- *   officerDecision      'approve' | 'reject' | null
- */
 export async function updateReportOfficerVerdict(
   localId,
   { officerVerifiedAt, officerSubtype, officerSubtypeAction, officerDecision }
 ) {
+  if (!activeUserId) return;
   if (typeof localId !== 'string' || localId.length === 0) return;
   const db = await getDb();
   await db.runAsync(
@@ -455,26 +446,23 @@ export async function updateReportOfficerVerdict(
             officer_subtype = ?,
             officer_subtype_action = ?,
             officer_decision = ?
-      WHERE local_id = ?`,
+      WHERE local_id = ? AND user_id = ?`,
     [
       officerVerifiedAt || null,
       officerSubtype || null,
       officerSubtypeAction || null,
       officerDecision || null,
       localId,
+      activeUserId,
     ]
   );
 }
 
-/**
- * Same as updateReportOfficerVerdict but keyed on nullifier, which is
- * the identifier both client and server share regardless of local_id
- * drift after a reinstall.
- */
 export async function updateReportOfficerVerdictByNullifier(
   nullifier,
   { officerVerifiedAt, officerSubtype, officerSubtypeAction, officerDecision }
 ) {
+  if (!activeUserId) return;
   if (typeof nullifier !== 'string' || nullifier.length === 0) return;
   const db = await getDb();
   await db.runAsync(
@@ -483,22 +471,236 @@ export async function updateReportOfficerVerdictByNullifier(
             officer_subtype = ?,
             officer_subtype_action = ?,
             officer_decision = ?
-      WHERE nullifier = ?`,
+      WHERE nullifier = ? AND user_id = ?`,
     [
       officerVerifiedAt || null,
       officerSubtype || null,
       officerSubtypeAction || null,
       officerDecision || null,
       nullifier,
+      activeUserId,
     ]
   );
 }
 
-/**
- * Caches a single blacklist lookup result. Called by the SearchScreen
- * after a live GET /api/v1/blacklist/:id/status. The server returns a
- * citizen-safe shape (no officer details).
- */
+export async function upsertReportsFromServer(serverReports) {
+  if (!activeUserId) return { inserted: 0, updated: 0 };
+  if (!Array.isArray(serverReports) || serverReports.length === 0) {
+    return { inserted: 0, updated: 0 };
+  }
+
+  const db = await getDb();
+  let inserted = 0;
+  let updated = 0;
+
+  const ALLOWED_STATUSES = ['queued', 'under_review', 'confirmed', 'rejected'];
+
+  for (const r of serverReports) {
+    if (!r || typeof r.nullifier !== 'string' || r.nullifier.length === 0) {
+      continue;
+    }
+
+    const serverReportId =
+      typeof r.reportId === 'string' ? r.reportId : null;
+
+    const reviewStatus =
+      typeof r.reviewStatus === 'string' &&
+      ALLOWED_STATUSES.includes(r.reviewStatus)
+        ? r.reviewStatus
+        : null;
+
+    const officerVerifiedAt =
+      typeof r.officerVerifiedAt === 'string' ? r.officerVerifiedAt : null;
+    const officerSubtype =
+      typeof r.officerSubtype === 'string' ? r.officerSubtype : null;
+    const officerSubtypeAction =
+      typeof r.officerSubtypeAction === 'string'
+        ? r.officerSubtypeAction
+        : null;
+    const officerDecision =
+      typeof r.officerDecision === 'string' ? r.officerDecision : null;
+
+    const existing = await db.getAllAsync(
+      `SELECT local_id FROM reports_outbox
+        WHERE nullifier = ? AND user_id = ?
+        LIMIT 1`,
+      [r.nullifier, activeUserId]
+    );
+
+    if (existing.length > 0) {
+      const localId = existing[0].local_id;
+
+      try {
+        if (reviewStatus) {
+          await db.runAsync(
+            `UPDATE reports_outbox SET review_status = ? WHERE local_id = ?`,
+            [reviewStatus, localId]
+          );
+        }
+
+        if (officerVerifiedAt) {
+          await db.runAsync(
+            `UPDATE reports_outbox
+                SET officer_verified_at = ?,
+                    officer_subtype = ?,
+                    officer_subtype_action = ?,
+                    officer_decision = ?
+              WHERE local_id = ?`,
+            [
+              officerVerifiedAt,
+              officerSubtype,
+              officerSubtypeAction,
+              officerDecision,
+              localId,
+            ]
+          );
+        }
+
+        if (serverReportId) {
+          await db.runAsync(
+            `UPDATE reports_outbox
+                SET server_report_id = ?, synced = 1
+              WHERE local_id = ?`,
+            [serverReportId, localId]
+          );
+        }
+
+        updated += 1;
+      } catch (err) {
+        console.warn(
+          '[sqlite] upsertReportsFromServer update failed:',
+          r.nullifier,
+          err?.message
+        );
+      }
+      continue;
+    }
+
+    const localId =
+      r.localId ||
+      (serverReportId
+        ? `srv-${serverReportId}`
+        : `srv-${r.nullifier.slice(2, 14)}`);
+
+    const scamType = normalizeScamType(r.scamType || r.category);
+    const senderNumber = normalizeSenderNumber(
+      r.reportedNumber || r.sender || ''
+    );
+    const region = normalizeRegion(
+      r.region || (r.location && r.location.region) || r.jurisdiction
+    );
+
+    let content;
+    if (typeof r.content === 'string' && r.content.length > 0) {
+      content = r.content;
+    } else if (typeof r.textData === 'string' && r.textData.length > 0) {
+      content = r.textData;
+    } else if (r.hasEvidenceImage || r.evidenceImage) {
+      content = '[screenshot attached]';
+    } else {
+      content = '[report from server]';
+    }
+
+    const ai = r.aiFlag || {};
+    const aiRiskLevel =
+      typeof ai.riskLevel === 'string' && ai.riskLevel.length > 0
+        ? ai.riskLevel.trim()
+        : null;
+    const aiConfidenceScore =
+      typeof ai.confidenceScore === 'number' ? ai.confidenceScore : null;
+    const aiSubtype = typeof ai.subtype === 'string' ? ai.subtype : null;
+    const aiSubtypeConfidence =
+      typeof ai.subtypeConfidence === 'number' ? ai.subtypeConfidence : null;
+    const aiSubtypeModelVersion =
+      typeof ai.subtypeModelVersion === 'string'
+        ? ai.subtypeModelVersion
+        : null;
+    const aiLabel = typeof ai.label === 'string' ? ai.label : null;
+
+    let aiExplanationReasonsJson = null;
+    if (
+      Array.isArray(ai.explanationReasons) &&
+      ai.explanationReasons.length > 0
+    ) {
+      aiExplanationReasonsJson = JSON.stringify(ai.explanationReasons);
+    }
+
+    const createdAt =
+      typeof r.createdAt === 'string' && r.createdAt.length > 0
+        ? r.createdAt
+        : new Date().toISOString();
+
+    const reviewStatusForInsert = reviewStatus || 'queued';
+
+    const evidenceImage =
+      typeof r.evidenceImage === 'string' && r.evidenceImage.length > 0
+        ? r.evidenceImage
+        : null;
+
+    const latitude =
+      r.location && typeof r.location.latitude === 'number'
+        ? r.location.latitude
+        : null;
+    const longitude =
+      r.location && typeof r.location.longitude === 'number'
+        ? r.location.longitude
+        : null;
+
+    const targetKindForInsert =
+      r.targetKind === 'brand' ? 'brand' : 'number';
+    const brandNameForInsert =
+      targetKindForInsert === 'brand' ? (r.brandName || null) : null;
+
+    try {
+      const { sql, values } = buildInsert([
+        ['local_id', localId],
+        ['user_id', activeUserId],
+        ['scam_type', scamType],
+        ['sender_number', senderNumber],
+        ['region', region],
+        ['content', content],
+        ['evidence_files', JSON.stringify([])],
+        ['evidence_image', evidenceImage],
+        ['voice_note_uri', null],
+        ['latitude', latitude],
+        ['longitude', longitude],
+        ['nullifier', r.nullifier],
+        ['zkp_hash', null],
+        ['ai_risk_level', aiRiskLevel],
+        ['ai_confidence_score', aiConfidenceScore],
+        ['ai_subtype', aiSubtype],
+        ['ai_subtype_confidence', aiSubtypeConfidence],
+        ['ai_subtype_model_version', aiSubtypeModelVersion],
+        ['ai_explanation_reasons', aiExplanationReasonsJson],
+        ['ai_label', aiLabel],
+        ['officer_verified_at', officerVerifiedAt],
+        ['officer_subtype', officerSubtype],
+        ['officer_subtype_action', officerSubtypeAction],
+        ['officer_decision', officerDecision],
+        ['target_kind', targetKindForInsert],
+        ['brand_name', brandNameForInsert],
+        ['review_status', reviewStatusForInsert],
+        ['created_at', createdAt],
+        ['synced', 1],
+        ['sync_attempts', 0],
+        ['last_error', null],
+        ['server_report_id', serverReportId],
+      ]);
+
+      await db.runAsync(sql, values);
+      inserted += 1;
+    } catch (err) {
+      console.warn(
+        '[sqlite] upsertReportsFromServer insert failed:',
+        r.nullifier,
+        err?.message
+      );
+    }
+  }
+
+  return { inserted, updated };
+}
+
 export async function cacheBlacklistEntry(entry) {
   if (!entry || typeof entry !== 'object') return;
   const identifier = String(entry.phoneNumber || entry.identifier || '').trim();
@@ -517,12 +719,14 @@ export async function cacheBlacklistEntry(entry) {
     typeof entry.reportCount === 'number' ? entry.reportCount : 0;
   const region = typeof entry.region === 'string' ? entry.region.trim() : null;
   const blacklistedAt = entry.blacklistedAt || null;
+  const targetKind = entry.targetKind === 'brand' ? 'brand' : 'number';
+  const brandName = normalizeString(entry.brandName);
 
   const db = await getDb();
   await db.runAsync(
     `INSERT OR REPLACE INTO blacklist_cache
-       (identifier, type, risk_level, status, report_count, scam_type, region, blacklisted_at, cached_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (identifier, type, risk_level, status, report_count, scam_type, region, blacklisted_at, cached_at, target_kind, brand_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       identifier,
       'number',
@@ -533,6 +737,8 @@ export async function cacheBlacklistEntry(entry) {
       region,
       blacklistedAt,
       new Date().toISOString(),
+      targetKind,
+      brandName,
     ]
   );
 }
@@ -555,12 +761,14 @@ export async function cacheBlacklistBulk(entries) {
         : status === 'under_review' || status === 'pending'
         ? 'medium'
         : 'low';
+    const targetKind = entry.targetKind === 'brand' ? 'brand' : 'number';
+    const brandName = normalizeString(entry.brandName);
 
     try {
       await db.runAsync(
         `INSERT OR REPLACE INTO blacklist_cache
-           (identifier, type, risk_level, status, report_count, scam_type, region, blacklisted_at, cached_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (identifier, type, risk_level, status, report_count, scam_type, region, blacklisted_at, cached_at, target_kind, brand_name)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           identifier,
           'number',
@@ -571,6 +779,8 @@ export async function cacheBlacklistBulk(entries) {
           typeof entry.region === 'string' ? entry.region.trim() : null,
           entry.blacklistedAt || null,
           now,
+          targetKind,
+          brandName,
         ]
       );
       written += 1;
@@ -585,7 +795,7 @@ export async function cacheBlacklistBulk(entries) {
 export async function getAllBlacklistCache(limit = 200) {
   const db = await getDb();
   const rows = await db.getAllAsync(
-    `SELECT identifier, type, risk_level, status, report_count, scam_type, region, blacklisted_at
+    `SELECT identifier, type, risk_level, status, report_count, scam_type, region, blacklisted_at, target_kind, brand_name
        FROM blacklist_cache
       ORDER BY cached_at DESC
       LIMIT ?`,
@@ -601,6 +811,8 @@ export async function getAllBlacklistCache(limit = 200) {
     scamType: r.scam_type || null,
     region: r.region || null,
     blacklistedAt: r.blacklisted_at || null,
+    targetKind: r.target_kind || 'number',
+    brandName: r.brand_name || null,
     source: 'cache',
   }));
 }
@@ -611,12 +823,12 @@ export async function searchBlacklistCache(query) {
 
   const db = await getDb();
   const rows = await db.getAllAsync(
-    `SELECT identifier, type, risk_level, status, report_count, scam_type, region, blacklisted_at
+    `SELECT identifier, type, risk_level, status, report_count, scam_type, region, blacklisted_at, target_kind, brand_name
        FROM blacklist_cache
-      WHERE identifier LIKE ?
+      WHERE identifier LIKE ? OR brand_name LIKE ?
       ORDER BY cached_at DESC
       LIMIT 50`,
-    [`%${q}%`]
+    [`%${q}%`, `%${q}%`]
   );
 
   return rows.map((r) => ({
@@ -628,6 +840,8 @@ export async function searchBlacklistCache(query) {
     scamType: r.scam_type || null,
     region: r.region || null,
     blacklistedAt: r.blacklisted_at || null,
+    targetKind: r.target_kind || 'number',
+    brandName: r.brand_name || null,
     source: 'cache',
   }));
 }
@@ -643,8 +857,6 @@ export async function pruneBlacklistCache() {
 }
 
 function deserializeRow(row) {
-  // ai_explanation_reasons is stored as JSON — parse defensively so a
-  // malformed legacy value never crashes the whole list render.
   let aiExplanationReasons = [];
   if (typeof row.ai_explanation_reasons === 'string' && row.ai_explanation_reasons.length > 0) {
     try {
@@ -657,6 +869,7 @@ function deserializeRow(row) {
 
   return {
     localId: row.local_id,
+    userId: row.user_id || null,
     scamType: row.scam_type || DEFAULT_SCAM_TYPE,
     senderNumber: row.sender_number || '',
     region: row.region || DEFAULT_REGION,
@@ -673,7 +886,6 @@ function deserializeRow(row) {
       typeof row.ai_confidence_score === 'number'
         ? row.ai_confidence_score
         : null,
-    // ─── NEW: Level 2 subtype fields ──────────────────────────────
     aiSubtype: row.ai_subtype || null,
     aiSubtypeConfidence:
       typeof row.ai_subtype_confidence === 'number'
@@ -682,12 +894,12 @@ function deserializeRow(row) {
     aiSubtypeModelVersion: row.ai_subtype_model_version || null,
     aiExplanationReasons,
     aiLabel: row.ai_label || null,
-    // ─── NEW: officer verdict fields ──────────────────────────────
     officerVerifiedAt: row.officer_verified_at || null,
     officerSubtype: row.officer_subtype || null,
     officerSubtypeAction: row.officer_subtype_action || null,
     officerDecision: row.officer_decision || null,
-    // ──────────────────────────────────────────────────────────────
+    targetKind: row.target_kind || 'number',
+    brandName: row.brand_name || null,
     reviewStatus: row.review_status || 'queued',
     createdAt: row.created_at,
     synced: Boolean(row.synced),

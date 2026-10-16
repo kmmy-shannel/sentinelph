@@ -1365,7 +1365,6 @@ function SignInScreen() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [rememberMe, setRememberMe] = useState(true);
   const [focusedField, setFocusedField] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
   const [banner, setBanner] = useState(null);
@@ -1387,7 +1386,7 @@ function SignInScreen() {
     setBanner(null);
     if (!validate()) return;
     try {
-      await signIn(email.trim(), password, rememberMe);
+      await signIn(email.trim(), password);
     } catch (err) {
       setBanner({ type: 'error', message: err.message || 'Invalid email or password.' });
     }
@@ -1458,20 +1457,6 @@ function SignInScreen() {
       />
 
       <View style={styles.rowBetween}>
-        <TouchableOpacity
-          style={styles.rememberMeRow}
-          onPress={() => setRememberMe((v) => !v)}
-          accessibilityRole="checkbox"
-          accessibilityState={{ checked: rememberMe }}
-        >
-          <Ionicons
-            name={rememberMe ? 'checkbox' : 'square-outline'}
-            size={18}
-            color={rememberMe ? T.indigo : T.textMuted}
-          />
-          <Text style={styles.rememberMeText}>Remember me</Text>
-        </TouchableOpacity>
-
         <TouchableOpacity onPress={() => setShowForgotSheet(true)}>
           <Text style={styles.forgotPasswordText}>Forgot password?</Text>
         </TouchableOpacity>
@@ -2139,21 +2124,12 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
 
-  // Remember me / forgot password
+  // Forgot password row
   rowBetween: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-end',
     marginTop: 16,
-  },
-  rememberMeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  rememberMeText: {
-    fontSize: 13,
-    color: T.textBody,
   },
   forgotPasswordText: {
     fontSize: 13,
