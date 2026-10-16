@@ -1,9 +1,14 @@
 // apps/web/src/pages/Login.jsx
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useAuth } from "../context/AuthContext";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "../config/firebase";
 import apiClient from "../lib/api";
+import {
+  requestPasswordResetOtp,
+  verifyPasswordResetOtp,
+  resetPasswordWithOtp,
+} from "../lib/api";
 
 const ROLE_COLOR = {
   officer: "#3b82f6",
@@ -21,8 +26,115 @@ const ROLE_REDIRECT = {
 
 const DEFAULT_ACCENT = "#6366f1";
 
+// ─── Password strength scoring ────────────────────────────────────────
+// Mirrors the scoring in Admin-Tabs/Account.jsx, Officer-Tabs/Account.jsx,
+// and SuperAdmin-Tabs/Account.jsx so all four password inputs across the
+// app behave identically.
+//
+// Rules:
+//   • Whitespace anywhere forces the score to 1 (WEAK) — a password with
+//     spaces is not accepted by the backend, so showing it as strong is
+//     misleading. A password made entirely of spaces also collapses to
+//     the same bucket.
+//   • Otherwise, score accumulates from length tiers and character class
+//     variety, capped at 5.
+//   • Score ≤ 1 → WEAK, 2 → MEDIUM, 3 → STRONG, ≥ 4 → VERY STRONG.
+function scorePassword(pw) {
+  if (!pw) return { score: 0, label: "", color: "#374151" };
+
+  // Whitespace disqualifies the password regardless of other characters.
+  if (/\s/.test(pw)) {
+    return { score: 1, label: "WEAK", color: "#ef4444" };
+  }
+
+  let score = 0;
+  if (pw.length >= 8) score += 1;
+  if (pw.length >= 12) score += 1;
+
+  const hasLower = /[a-z]/.test(pw);
+  const hasUpper = /[A-Z]/.test(pw);
+  const hasNumber = /[0-9]/.test(pw);
+  const hasSpecial = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(pw);
+
+  if (hasLower && hasUpper) score += 1;
+  if (hasNumber) score += 1;
+  if (hasSpecial) score += 1;
+
+  if (score > 5) score = 5;
+
+  if (score <= 1) return { score: 1, label: "WEAK", color: "#ef4444" };
+  if (score === 2) return { score: 2, label: "MEDIUM", color: "#f59e0b" };
+  if (score === 3) return { score: 3, label: "STRONG", color: "#22c55e" };
+  return { score: 4, label: "VERY STRONG", color: "#16a34a" };
+}
+
+function PasswordStrengthMeter({ value }) {
+  const { score, label, color } = useMemo(() => scorePassword(value), [value]);
+
+  // Never render when empty, so the field stays clean until the user
+  // starts typing.
+  if (!value) return null;
+
+  return (
+    <div style={{ marginTop: "10px" }}>
+      <div style={{ display: "flex", gap: "4px", height: "3px", marginBottom: "6px" }}>
+        {[0, 1, 2, 3].map((i) => (
+          <div
+            key={i}
+            style={{
+              flex: 1,
+              borderRadius: "2px",
+              background: i < score ? color : "#1c1c2e",
+              transition: "background 0.2s",
+            }}
+          />
+        ))}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          fontSize: "10px",
+          fontFamily: "'JetBrains Mono',monospace",
+          color,
+        }}
+      >
+        <span style={{ fontWeight: 600, letterSpacing: "0.04em" }}>
+          {label}
+        </span>
+        <span style={{ color: "#4b5563" }}>
+          {[
+            { ok: value.length >= 8 && value.length <= 64, label: "8–64" },
+            { ok: /[a-z]/.test(value), label: "a-z" },
+            { ok: /[A-Z]/.test(value), label: "A-Z" },
+            { ok: /[0-9]/.test(value), label: "0-9" },
+            {
+              ok: /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(value),
+              label: "!@#",
+            },
+            { ok: !/\s/.test(value) && value.length > 0, label: "no-space" },
+          ].map((c) => (
+            <span
+              key={c.label}
+              style={{
+                marginLeft: "6px",
+                color: c.ok ? "#22c55e" : "#374151",
+                fontWeight: c.ok ? 700 : 500,
+              }}
+            >
+              {c.label}
+            </span>
+          ))}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export default function Login() {
-  const { isAuthenticated, role: authRole, loading: authLoading, requestPasswordReset } = useAuth();
+  const { isAuthenticated, role: authRole, loading: authLoading } = useAuth();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
@@ -34,14 +146,23 @@ export default function Login() {
   const accent = detectedRole ? (ROLE_COLOR[detectedRole] || DEFAULT_ACCENT) : DEFAULT_ACCENT;
 
   const [blockedAccount, setBlockedAccount] = useState(null);
-
   const [stats, setStats] = useState({ reportsFiled: 0, casesClosed: 0, uptime: 99.97, version: "2.4.1" });
 
+  // ── Forgot password (OTP flow) ────────────────────────────────
+  // stage: 'email' | 'otp' | 'password' | 'done'
   const [showForgotPw, setShowForgotPw] = useState(false);
+  const [forgotStage, setForgotStage] = useState("email");
   const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotOtp, setForgotOtp] = useState("");
+  const [forgotSession, setForgotSession] = useState("");
+  const [forgotNewPw, setForgotNewPw] = useState("");
+  const [forgotConfirmPw, setForgotConfirmPw] = useState("");
+  const [forgotShowPw, setForgotShowPw] = useState(false);
   const [forgotError, setForgotError] = useState(null);
-  const [forgotSuccess, setForgotSuccess] = useState(false);
   const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotCooldown, setForgotCooldown] = useState(0);
+  const [forgotResending, setForgotResending] = useState(false);
+  // ── End forgot password ───────────────────────────────────────
 
   const canSubmit = email && password && !loading;
 
@@ -66,6 +187,124 @@ export default function Login() {
     }
   }, [authLoading, isAuthenticated, authRole]);
 
+  // Forgot-password cooldown
+  useEffect(() => {
+    if (forgotCooldown <= 0) return;
+    const id = setInterval(() => setForgotCooldown((c) => Math.max(0, c - 1)), 1000);
+    return () => clearInterval(id);
+  }, [forgotCooldown]);
+
+  // ── Forgot password handlers ─────────────────────────────────
+
+  function resetForgotState() {
+    setForgotStage('email');
+    setForgotEmail('');
+    setForgotOtp('');
+    setForgotSession('');
+    setForgotNewPw('');
+    setForgotConfirmPw('');
+    setForgotShowPw(false);
+    setForgotError(null);
+    setForgotLoading(false);
+    setForgotCooldown(0);
+    setForgotResending(false);
+  }
+
+  async function handleForgotSendOtp() {
+    if (!forgotEmail.trim() || !forgotEmail.includes('@')) {
+      setForgotError('Please enter a valid email address.');
+      return;
+    }
+    setForgotError(null);
+    setForgotLoading(true);
+    try {
+      await requestPasswordResetOtp(forgotEmail.trim().toLowerCase());
+      setForgotStage('otp');
+      setForgotCooldown(60);
+    } catch (err) {
+      setForgotError(err?.response?.data?.message || 'Could not send the code. Please try again.');
+    } finally {
+      setForgotLoading(false);
+    }
+  }
+
+  async function handleForgotResendOtp() {
+    if (forgotCooldown > 0 || forgotResending) return;
+    setForgotError(null);
+    setForgotResending(true);
+    try {
+      await requestPasswordResetOtp(forgotEmail.trim().toLowerCase());
+      setForgotOtp('');
+      setForgotCooldown(60);
+    } catch (err) {
+      setForgotError(err?.response?.data?.message || 'Could not resend the code.');
+    } finally {
+      setForgotResending(false);
+    }
+  }
+
+  async function handleForgotVerifyOtp() {
+    if (forgotOtp.length !== 6) {
+      setForgotError('Please enter the 6-digit code.');
+      return;
+    }
+    setForgotError(null);
+    setForgotLoading(true);
+    try {
+      const res = await verifyPasswordResetOtp(forgotEmail.trim().toLowerCase(), forgotOtp);
+      const session = res?.resetSessionToken;
+      if (!session) {
+        setForgotError('Verification failed. Please request a new code.');
+        return;
+      }
+      setForgotSession(session);
+      setForgotStage('password');
+    } catch (err) {
+      setForgotError(err?.response?.data?.message || 'Incorrect code. Please try again.');
+      setForgotOtp('');
+    } finally {
+      setForgotLoading(false);
+    }
+  }
+
+  async function handleForgotResetPassword() {
+    // Whitespace check — a password containing spaces is rejected
+    // before we even count characters.
+    if (/\s/.test(forgotNewPw)) {
+      setForgotError('Password must not contain spaces.');
+      return;
+    }
+    if (forgotNewPw.length < 8 || forgotNewPw.length > 64) {
+      setForgotError('Password must be 8–64 characters.');
+      return;
+    }
+    if (!/[A-Za-z]/.test(forgotNewPw)) {
+      setForgotError('Password must contain a letter.');
+      return;
+    }
+    if (!/[0-9]/.test(forgotNewPw)) {
+      setForgotError('Password must contain a number.');
+      return;
+    }
+    if (forgotNewPw !== forgotConfirmPw) {
+      setForgotError('Passwords do not match.');
+      return;
+    }
+    setForgotError(null);
+    setForgotLoading(true);
+    try {
+      await resetPasswordWithOtp(forgotSession, forgotNewPw);
+      setForgotStage('done');
+    } catch (err) {
+      setForgotError(err?.response?.data?.message || 'Could not reset the password. Please start again.');
+      setForgotStage('email');
+    } finally {
+      setForgotLoading(false);
+    }
+  }
+
+  // ── End forgot password handlers ─────────────────────────────
+
   const sanitizePw = (value) => value.replace(/\s/g, "");
 
   const inputStyle = (name) => ({
@@ -75,6 +314,13 @@ export default function Login() {
     color: "#e2e8f0", outline: "none",
     boxShadow: focusField === name ? `0 0 0 4px ${accent}14` : "none",
     transition: "all 0.3s", boxSizing: "border-box",
+  });
+
+  const modalInputStyle = (name) => ({
+    width: "100%", padding: "16px 18px", borderRadius: "13px", fontSize: "15px",
+    background: "#080810",
+    border: `1.5px solid ${focusField === name ? accent + "80" : "#1c1c2e"}`,
+    color: "#e2e8f0", outline: "none", boxSizing: "border-box",
   });
 
   async function handleSubmit(e) {
@@ -134,6 +380,9 @@ export default function Login() {
         setLoading(false);
         return;
       }
+
+      // Success — AuthContext's onAuthStateChanged fires and the
+      // redirect useEffect above sends the user to their dashboard.
     } catch (err) {
       console.error('[Login] sign-in failed:', err);
       setDetectedRole(null);
@@ -142,7 +391,7 @@ export default function Login() {
       } else if (err.code === 'auth/too-many-requests') {
         setError('Too many failed attempts. Please try again later.');
       } else {
-        setError('Login failed. Please try again.');
+        setError(err?.response?.data?.message || 'Login failed. Please try again.');
       }
       setLoading(false);
     }
@@ -175,11 +424,7 @@ export default function Login() {
       {/* LEFT PANEL */}
       <div className="login-left-panel" style={{ width: "46%", flexShrink: 0, display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "56px 64px", position: "relative", zIndex: 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-          <img
-            src="/logo.png"
-            alt="SentinelPH"
-            style={{ width: "56px", height: "56px", objectFit: "contain", flexShrink: 0 }}
-          />
+          <img src="/logo.png" alt="SentinelPH" style={{ width: "56px", height: "56px", objectFit: "contain", flexShrink: 0 }} />
           <div>
             <div style={{ fontWeight: 800, color: "#fff", fontSize: "20px", letterSpacing: "-0.01em" }}>SentinelPH</div>
             <div style={{ fontSize: "11px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.1em", marginTop: "2px" }}>WEB CONTROL CENTER</div>
@@ -233,11 +478,7 @@ export default function Login() {
 
             <div style={{ position: "relative", zIndex: 1 }}>
               <div style={{ display: "flex", justifyContent: "center", marginBottom: "20px" }}>
-                <img
-                  src="/logo.png"
-                  alt="SentinelPH"
-                  style={{ width: "72px", height: "72px", objectFit: "contain" }}
-                />
+                <img src="/logo.png" alt="SentinelPH" style={{ width: "72px", height: "72px", objectFit: "contain" }} />
               </div>
 
               <div style={{ marginBottom: "30px", textAlign: "center" }}>
@@ -246,16 +487,7 @@ export default function Login() {
               </div>
 
               {error && (
-                <div style={{
-                  padding: "14px 18px",
-                  borderRadius: "12px",
-                  background: "#ef444420",
-                  border: "1px solid #ef444430",
-                  color: "#ef4444",
-                  fontSize: "14px",
-                  lineHeight: 1.6,
-                  marginBottom: "20px"
-                }}>
+                <div style={{ padding: "14px 18px", borderRadius: "12px", background: "#ef444420", border: "1px solid #ef444430", color: "#ef4444", fontSize: "14px", lineHeight: 1.6, marginBottom: "20px" }}>
                   {error}
                 </div>
               )}
@@ -310,11 +542,8 @@ export default function Login() {
                   <button
                     type="button"
                     onClick={() => {
+                      resetForgotState();
                       setShowForgotPw(true);
-                      setForgotEmail("");
-                      setForgotError(null);
-                      setForgotSuccess(false);
-                      setForgotLoading(false);
                     }}
                     style={{ fontSize: "13px", fontWeight: 600, color: accent, background: "none", border: "none", cursor: "pointer", transition: "color 0.6s ease" }}
                   >
@@ -352,7 +581,7 @@ export default function Login() {
         </div>
       </div>
 
-      {/* FORGOT PASSWORD MODAL */}
+      {/* FORGOT PASSWORD MODAL — OTP-based, 4 stages */}
       {showForgotPw && (
         <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}>
           <div style={{ width: "100%", maxWidth: "460px", margin: "0 16px", borderRadius: "20px", padding: "36px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a", boxShadow: "0 40px 80px rgba(0,0,0,0.5)" }}>
@@ -369,47 +598,57 @@ export default function Login() {
               </svg>
             </button>
 
-            <div style={{ marginBottom: "24px" }}>
-              <div style={{ fontSize: "22px", fontWeight: 800, color: "#fff", marginBottom: "6px" }}>
-                Reset Password
+            {forgotStage !== 'done' && (
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "20px", paddingRight: "30px" }}>
+                {['email', 'otp', 'password'].map((s, i) => {
+                  const order = ['email', 'otp', 'password'];
+                  const currentIdx = order.indexOf(forgotStage);
+                  const isDone = i < currentIdx;
+                  const isActive = i === currentIdx;
+                  return (
+                    <div key={s} style={{ display: "flex", alignItems: "center", gap: "6px", flex: i < 2 ? 1 : 0 }}>
+                      <span style={{
+                        width: "20px", height: "20px", borderRadius: "50%",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        fontSize: "10px", fontWeight: 700,
+                        background: isDone ? "#22c55e20" : isActive ? accent + "20" : "#080810",
+                        border: `1px solid ${isDone ? "#22c55e" : isActive ? accent : "#1a1a2a"}`,
+                        color: isDone ? "#22c55e" : isActive ? accent : "#4b5563",
+                        fontFamily: "'JetBrains Mono',monospace",
+                      }}>
+                        {isDone ? '✓' : i + 1}
+                      </span>
+                      {i < 2 && (
+                        <div style={{ flex: 1, height: "1px", background: isDone ? "#22c55e" : "#1a1a2a" }} />
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-              <div style={{ fontSize: "14px", color: "#4b5563", lineHeight: 1.6 }}>
-                {forgotSuccess
-                  ? `If an account exists for ${forgotEmail}, we've sent a reset link.`
-                  : "Enter your registered email. We'll send you a secure link."}
-              </div>
-            </div>
+            )}
 
-            {forgotSuccess ? (
-              <div style={{ padding: "18px", borderRadius: "14px", background: "#0a1a12", border: "1px solid #22c55e40", color: "#22c55e", textAlign: "center" }}>
-                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: "10px" }}>
-                  <path d="M20 6L9 17l-5-5" />
-                </svg>
-                <div style={{ fontSize: "15px", fontWeight: 600, marginBottom: "4px" }}>Check your inbox</div>
-                <div style={{ fontSize: "13px", opacity: 0.85, lineHeight: 1.5 }}>
-                  The link expires in 15 minutes.
-                </div>
-              </div>
-            ) : (
+            {forgotStage === 'email' && (
               <>
+                <div style={{ marginBottom: "24px" }}>
+                  <div style={{ fontSize: "22px", fontWeight: 800, color: "#fff", marginBottom: "6px" }}>Reset Password</div>
+                  <div style={{ fontSize: "14px", color: "#4b5563", lineHeight: 1.6 }}>
+                    Enter your registered email. We'll send a 6-digit verification code.
+                  </div>
+                </div>
+
                 <div style={{ marginBottom: "20px" }}>
                   <div style={{ fontSize: "12px", fontWeight: 600, color: "#6b7280", marginBottom: "9px", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>EMAIL ADDRESS</div>
                   <input
                     type="email"
                     value={forgotEmail}
                     onChange={(e) => setForgotEmail(e.target.value)}
-                    placeholder="you@sentinelph.gov.ph"
+                    placeholder="you@example.com"
                     autoFocus
                     disabled={forgotLoading}
-                    style={{
-                      width: "100%", padding: "16px 18px", borderRadius: "13px", fontSize: "15px",
-                      background: "#080810",
-                      border: `1.5px solid ${focusField === "forgot-email" ? accent + "80" : "#1c1c2e"}`,
-                      color: "#e2e8f0", outline: "none", boxSizing: "border-box",
-                      opacity: forgotLoading ? 0.6 : 1,
-                    }}
+                    style={{ ...modalInputStyle("forgot-email"), opacity: forgotLoading ? 0.6 : 1 }}
                     onFocus={() => setFocusField("forgot-email")}
                     onBlur={() => setFocusField(null)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleForgotSendOtp(); }}
                   />
                 </div>
 
@@ -422,22 +661,7 @@ export default function Login() {
                 <button
                   type="button"
                   disabled={forgotLoading}
-                  onClick={async () => {
-                    if (!forgotEmail.trim() || !forgotEmail.includes("@")) {
-                      setForgotError("Please enter a valid email address.");
-                      return;
-                    }
-                    setForgotError(null);
-                    setForgotLoading(true);
-                    try {
-                      await requestPasswordReset(forgotEmail.trim().toLowerCase());
-                      setForgotSuccess(true);
-                    } catch (err) {
-                      setForgotSuccess(true);
-                    } finally {
-                      setForgotLoading(false);
-                    }
-                  }}
+                  onClick={handleForgotSendOtp}
                   style={{
                     width: "100%", padding: "16px", borderRadius: "13px", fontSize: "15px",
                     fontWeight: 700, border: "none",
@@ -447,60 +671,239 @@ export default function Login() {
                     display: "flex", alignItems: "center", justifyContent: "center", gap: "10px",
                   }}
                 >
-                  {forgotLoading && (
-                    <span style={{ width: "14px", height: "14px", borderRadius: "50%", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", animation: "spin 0.7s linear infinite", display: "inline-block" }} />
-                  )}
-                  {forgotLoading ? "Sending…" : "Send Reset Link"}
+                  {forgotLoading && <span style={{ width: "14px", height: "14px", borderRadius: "50%", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", animation: "spin 0.7s linear infinite", display: "inline-block" }} />}
+                  {forgotLoading ? "Sending…" : "Send Verification Code"}
                 </button>
               </>
+            )}
+
+            {forgotStage === 'otp' && (
+              <>
+                <div style={{ marginBottom: "24px" }}>
+                  <div style={{ fontSize: "22px", fontWeight: 800, color: "#fff", marginBottom: "6px" }}>Enter Verification Code</div>
+                  <div style={{ fontSize: "14px", color: "#4b5563", lineHeight: 1.6 }}>
+                    We sent a 6-digit code to <strong style={{ color: "#94a3b8" }}>{forgotEmail}</strong>. It expires in 5 minutes.
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: "20px" }}>
+                  <div style={{ fontSize: "12px", fontWeight: 600, color: "#6b7280", marginBottom: "9px", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>VERIFICATION CODE</div>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                    value={forgotOtp}
+                    onChange={(e) => setForgotOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="000000"
+                    autoFocus
+                    disabled={forgotLoading}
+                    style={{
+                      ...modalInputStyle("forgot-otp"),
+                      fontSize: "24px",
+                      fontWeight: 700,
+                      fontFamily: "'JetBrains Mono',monospace",
+                      letterSpacing: "0.4em",
+                      textAlign: "center",
+                      color: accent,
+                    }}
+                    onFocus={() => setFocusField("forgot-otp")}
+                    onBlur={() => setFocusField(null)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleForgotVerifyOtp(); }}
+                  />
+                </div>
+
+                {forgotError && (
+                  <div style={{ marginBottom: "16px", padding: "12px 14px", borderRadius: "10px", fontSize: "13px", background: "#ef444420", border: "1px solid #ef444430", color: "#ef4444" }}>
+                    {forgotError}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  disabled={forgotLoading || forgotOtp.length !== 6}
+                  onClick={handleForgotVerifyOtp}
+                  style={{
+                    width: "100%", padding: "16px", borderRadius: "13px", fontSize: "15px",
+                    fontWeight: 700, border: "none",
+                    background: forgotLoading || forgotOtp.length !== 6 ? "#2a2a3a" : accent,
+                    color: "#fff",
+                    cursor: forgotLoading || forgotOtp.length !== 6 ? "not-allowed" : "pointer",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: "10px",
+                  }}
+                >
+                  {forgotLoading && <span style={{ width: "14px", height: "14px", borderRadius: "50%", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", animation: "spin 0.7s linear infinite", display: "inline-block" }} />}
+                  {forgotLoading ? "Verifying…" : "Verify Code"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleForgotResendOtp}
+                  disabled={forgotCooldown > 0 || forgotResending}
+                  style={{
+                    width: "100%", padding: "12px", borderRadius: "11px", fontSize: "13px", fontWeight: 600,
+                    background: "transparent", border: "1px solid #1c1c2e",
+                    color: forgotCooldown > 0 ? "#4b5563" : "#94a3b8",
+                    cursor: forgotCooldown > 0 || forgotResending ? "not-allowed" : "pointer",
+                    marginTop: "12px",
+                  }}
+                >
+                  {forgotResending ? "Sending…" : forgotCooldown > 0 ? `Resend code in ${forgotCooldown}s` : "Resend code"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { setForgotStage('email'); setForgotError(null); setForgotOtp(''); }}
+                  style={{ width: "100%", padding: "10px", borderRadius: "11px", fontSize: "13px", background: "transparent", border: "none", color: "#6b7280", cursor: "pointer", marginTop: "4px" }}
+                >
+                  Use a different email
+                </button>
+              </>
+            )}
+
+            {forgotStage === 'password' && (
+              <>
+                <div style={{ marginBottom: "24px" }}>
+                  <div style={{ fontSize: "22px", fontWeight: 800, color: "#fff", marginBottom: "6px" }}>Set New Password</div>
+                  <div style={{ fontSize: "14px", color: "#4b5563", lineHeight: 1.6 }}>
+                    Choose a strong password. 8–64 characters, at least one letter and one number.
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: "14px" }}>
+                  <div style={{ fontSize: "12px", fontWeight: 600, color: "#6b7280", marginBottom: "9px", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>NEW PASSWORD</div>
+                  <div style={{ position: "relative" }}>
+                    <input
+                      type={forgotShowPw ? "text" : "password"}
+                      value={forgotNewPw}
+                      onChange={(e) => setForgotNewPw(e.target.value.replace(/\s/g, '').slice(0, 64))}
+                      placeholder="At least 8 characters"
+                      autoFocus
+                      disabled={forgotLoading}
+                      style={{ ...modalInputStyle("forgot-new"), paddingRight: "56px" }}
+                      onFocus={() => setFocusField("forgot-new")}
+                      onBlur={() => setFocusField(null)}
+                    />
+                    <button type="button" onClick={() => setForgotShowPw(!forgotShowPw)}
+                      style={{ position: "absolute", right: "16px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z" stroke="#6b7280" strokeWidth="1.2" />
+                        <circle cx="8" cy="8" r="2" stroke="#6b7280" strokeWidth="1.2" />
+                        {forgotShowPw && <line x1="2" y1="14" x2="14" y2="2" stroke="#6b7280" strokeWidth="1.2" strokeLinecap="round" />}
+                      </svg>
+                    </button>
+                  </div>
+                  <PasswordStrengthMeter value={forgotNewPw} />
+                </div>
+
+                <div style={{ marginBottom: "20px" }}>
+                  <div style={{ fontSize: "12px", fontWeight: 600, color: "#6b7280", marginBottom: "9px", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.06em" }}>CONFIRM PASSWORD</div>
+                  <input
+                    type={forgotShowPw ? "text" : "password"}
+                    value={forgotConfirmPw}
+                    onChange={(e) => setForgotConfirmPw(e.target.value.replace(/\s/g, '').slice(0, 64))}
+                    placeholder="Re-enter password"
+                    disabled={forgotLoading}
+                    style={{
+                      ...modalInputStyle("forgot-confirm"),
+                      border: `1.5px solid ${
+                        forgotConfirmPw.length > 0 && forgotNewPw !== forgotConfirmPw
+                          ? "#ef444480"
+                          : focusField === "forgot-confirm"
+                          ? accent + "80"
+                          : "#1c1c2e"
+                      }`,
+                    }}
+                    onFocus={() => setFocusField("forgot-confirm")}
+                    onBlur={() => setFocusField(null)}
+                  />
+                  {forgotConfirmPw.length > 0 && forgotNewPw !== forgotConfirmPw && (
+                    <div style={{ fontSize: "11px", color: "#ef4444", marginTop: "6px", fontFamily: "'JetBrains Mono',monospace" }}>
+                      Passwords do not match
+                    </div>
+                  )}
+                </div>
+
+                {forgotError && (
+                  <div style={{ marginBottom: "16px", padding: "12px 14px", borderRadius: "10px", fontSize: "13px", background: "#ef444420", border: "1px solid #ef444430", color: "#ef4444" }}>
+                    {forgotError}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  disabled={forgotLoading}
+                  onClick={handleForgotResetPassword}
+                  style={{
+                    width: "100%", padding: "16px", borderRadius: "13px", fontSize: "15px",
+                    fontWeight: 700, border: "none",
+                    background: forgotLoading ? "#2a2a3a" : accent,
+                    color: "#fff",
+                    cursor: forgotLoading ? "not-allowed" : "pointer",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: "10px",
+                  }}
+                >
+                  {forgotLoading && <span style={{ width: "14px", height: "14px", borderRadius: "50%", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", animation: "spin 0.7s linear infinite", display: "inline-block" }} />}
+                  {forgotLoading ? "Updating…" : "Update Password"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowForgotPw(false)}
+                  style={{ width: "100%", padding: "10px", borderRadius: "11px", fontSize: "13px", background: "transparent", border: "none", color: "#6b7280", cursor: "pointer", marginTop: "8px" }}
+                >
+                  Cancel
+                </button>
+              </>
+            )}
+
+            {forgotStage === 'done' && (
+              <div style={{ padding: "20px 4px", textAlign: "center" }}>
+                <div style={{ width: "56px", height: "56px", margin: "0 auto 16px", borderRadius: "50%", background: "#22c55e15", border: "1px solid #22c55e40", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M20 6L9 17l-5-5" />
+                  </svg>
+                </div>
+                <div style={{ fontSize: "18px", fontWeight: 700, color: "#fff", marginBottom: "6px" }}>Password updated</div>
+                <div style={{ fontSize: "13px", color: "#94a3b8", lineHeight: 1.6, marginBottom: "20px" }}>
+                  You can now sign in with your new password.
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowForgotPw(false)}
+                  style={{
+                    width: "100%", padding: "14px", borderRadius: "12px", fontSize: "14px",
+                    fontWeight: 700, border: "none", background: accent, color: "#fff", cursor: "pointer",
+                  }}
+                >
+                  Done
+                </button>
+              </div>
             )}
           </div>
         </div>
       )}
 
-      {/* BLOCKED ACCOUNT MODAL — muted, professional */}
+      {/* BLOCKED ACCOUNT MODAL */}
       {blockedAccount && (() => {
         const isDisabled = blockedAccount.status === 'disabled';
         const toneColor = isDisabled ? '#ef4444' : '#f59e0b';
         const toneMutedBg = isDisabled ? '#1a0d0d' : '#1a1508';
-        const toneBorder = isDisabled ? '#ef444425' : '#f59e0b25';
         const toneBorderSoft = isDisabled ? '#ef444420' : '#f59e0b20';
 
         return (
           <div
-            style={{
-              position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
-              zIndex: 200, background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)",
-            }}
+            style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)" }}
             onClick={() => setBlockedAccount(null)}
           >
             <div
-              style={{
-                width: "100%", maxWidth: "440px", margin: "0 16px", borderRadius: "18px",
-                padding: "32px", position: "relative", background: "#0e0e18",
-                border: "1px solid #1a1a2a", boxShadow: "0 40px 80px rgba(0,0,0,0.5)",
-              }}
+              style={{ width: "100%", maxWidth: "440px", margin: "0 16px", borderRadius: "18px", padding: "32px", position: "relative", background: "#0e0e18", border: "1px solid #1a1a2a", boxShadow: "0 40px 80px rgba(0,0,0,0.5)" }}
               onClick={(e) => e.stopPropagation()}
             >
-              {/* Small top accent line */}
-              <div
-                style={{
-                  position: "absolute", top: 0, left: 0, right: 0, height: "1px",
-                  borderRadius: "18px 18px 0 0",
-                  background: `linear-gradient(90deg,transparent,${toneColor}60,transparent)`,
-                }}
-              />
+              <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "18px 18px 0 0", background: `linear-gradient(90deg,transparent,${toneColor}60,transparent)` }} />
 
-              {/* Small muted icon */}
               <div style={{ display: "flex", justifyContent: "center", marginBottom: "18px" }}>
-                <div
-                  style={{
-                    width: "52px", height: "52px", borderRadius: "50%",
-                    background: toneMutedBg,
-                    border: `1px solid ${toneBorderSoft}`,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                  }}
-                >
+                <div style={{ width: "52px", height: "52px", borderRadius: "50%", background: toneMutedBg, border: `1px solid ${toneBorderSoft}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
                   {isDisabled ? (
                     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={toneColor} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                       <circle cx="12" cy="12" r="10" />
@@ -515,12 +918,10 @@ export default function Login() {
                 </div>
               </div>
 
-              {/* Header + body */}
               <div style={{ textAlign: "center", marginBottom: "22px" }}>
                 <div style={{ fontSize: "17px", fontWeight: 700, color: "#fff", marginBottom: "8px", letterSpacing: "-0.01em" }}>
                   {isDisabled ? 'Account Disabled' : 'Account Suspended'}
                 </div>
-
                 {isDisabled ? (
                   <div style={{ fontSize: "13px", color: "#9ca3af", lineHeight: 1.6 }}>
                     {blockedAccount.message || 'Your account has been disabled. Contact your NBI supervisor.'}
@@ -529,45 +930,28 @@ export default function Login() {
                   <div style={{ fontSize: "13px", color: "#9ca3af", lineHeight: 1.6 }}>
                     Your account is temporarily suspended
                     {blockedAccount.until
-                      ? <> until <strong style={{ color: "#d1d5db", fontWeight: 600 }}>{new Date(blockedAccount.until).toLocaleString('en-PH', {
-                          month: 'short', day: 'numeric', year: 'numeric',
-                          hour: '2-digit', minute: '2-digit',
-                        })}</strong>.</>
+                      ? <> until <strong style={{ color: "#d1d5db", fontWeight: 600 }}>{new Date(blockedAccount.until).toLocaleString('en-PH', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</strong>.</>
                       : '.'}
                   </div>
                 )}
               </div>
 
-              {/* Reason panel — muted */}
               {blockedAccount.reason && (
                 <div style={{ padding: "14px 16px", borderRadius: "10px", marginBottom: "14px", background: "#080810", border: "1px solid #1a1a2a" }}>
-                  <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.08em", color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", marginBottom: "6px" }}>
-                    REASON FROM ADMINISTRATOR
-                  </div>
-                  <div style={{ fontSize: "13px", color: "#d1d5db", lineHeight: 1.6 }}>
-                    "{blockedAccount.reason}"
-                  </div>
+                  <div style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.08em", color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", marginBottom: "6px" }}>REASON FROM ADMINISTRATOR</div>
+                  <div style={{ fontSize: "13px", color: "#d1d5db", lineHeight: 1.6 }}>"{blockedAccount.reason}"</div>
                 </div>
               )}
 
-              {/* Help note — muted */}
               <div style={{ padding: "12px 14px", borderRadius: "10px", background: "#080810", border: "1px solid #13131e", marginBottom: "20px" }}>
                 <div style={{ fontSize: "12px", color: "#6b7280", lineHeight: 1.6 }}>
                   Contact your <strong style={{ color: "#9ca3af", fontWeight: 600 }}>NBI supervisor</strong> if you believe this is an error.
                 </div>
               </div>
 
-              {/* Neutral close button — no bright color */}
               <button
                 onClick={() => setBlockedAccount(null)}
-                style={{
-                  width: "100%", padding: "13px", borderRadius: "11px",
-                  fontSize: "14px", fontWeight: 600, border: "1px solid #1a1a2a",
-                  background: "#111120",
-                  color: "#e2e8f0",
-                  cursor: "pointer",
-                  transition: "background 0.2s",
-                }}
+                style={{ width: "100%", padding: "13px", borderRadius: "11px", fontSize: "14px", fontWeight: 600, border: "1px solid #1a1a2a", background: "#111120", color: "#e2e8f0", cursor: "pointer", transition: "background 0.2s" }}
                 onMouseEnter={(e) => e.currentTarget.style.background = "#181828"}
                 onMouseLeave={(e) => e.currentTarget.style.background = "#111120"}
               >

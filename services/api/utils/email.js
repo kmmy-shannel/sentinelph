@@ -74,7 +74,7 @@ function buildActivationEmailHtml({ fullName, agency, activationLink }) {
                     Hello <strong style="color:#f9fafb;">${escapeHtml(fullName)}</strong>,
                   </p>
                   <p style="font-size:14px; line-height:1.6; color:#cbd5e1; margin:0 0 16px;">
-                    An  account has been provisioned for you under
+                    An account has been provisioned for you under
                     <strong style="color:#f9fafb;">${escapeHtml(agency)}</strong> on the
                     Sentinel platform. To activate your account and set your password,
                     use the secure link below.
@@ -268,11 +268,6 @@ function buildOtpEmailHtml({ fullName, otp, expiresInMinutes }) {
   `;
 }
 
-/**
- * NEW — HTML template for the password-change verification code.
- * Mirrors the style of the reset OTP email but uses green (#22c55e)
- * and a "SENTINELPH SECURITY" header to distinguish it from a reset.
- */
 function buildPasswordChangeOtpEmailHtml({ fullName, otp, expiresInMinutes = 5 }) {
   const otpDigits = String(otp)
     .split('')
@@ -352,7 +347,7 @@ function buildPasswordChangeOtpEmailHtml({ fullName, otp, expiresInMinutes = 5 }
 async function sendActivationEmail(toEmail, fullName, agency, activationLink) {
   return sendViaAppsScript({
     to: toEmail,
-    subject: 'Sentinel — Activate Your  Account',
+    subject: 'Sentinel — Activate Your Account',
     html: buildActivationEmailHtml({ fullName, agency, activationLink }),
   });
 }
@@ -365,7 +360,7 @@ async function sendPasswordResetEmail(toEmail, fullName, resetLink, expiresInMin
   });
 }
 
-async function sendPasswordResetOtpEmail(toEmail, fullName, otp, expiresInMinutes = 10) {
+async function sendPasswordResetOtpEmail(toEmail, fullName, otp, expiresInMinutes = 5) {
   return sendViaAppsScript({
     to: toEmail,
     subject: 'SentinelPH — Your Password Reset Code',
@@ -373,10 +368,6 @@ async function sendPasswordResetOtpEmail(toEmail, fullName, otp, expiresInMinute
   });
 }
 
-/**
- * NEW — Sends the password-change verification code.
- * Same Apps Script pipeline as the other senders.
- */
 async function sendPasswordChangeOtp({ to, code, fullName = 'Officer' }) {
   if (!to || !code) {
     throw new Error('sendPasswordChangeOtp: missing to or code');
