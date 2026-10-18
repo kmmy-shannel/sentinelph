@@ -4,7 +4,7 @@ import { useLocation } from 'react-router-dom';
 
 function HamburgerIcon() {
   return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <line x1="3" y1="6" x2="21" y2="6" />
       <line x1="3" y1="12" x2="21" y2="12" />
       <line x1="3" y1="18" x2="21" y2="18" />
@@ -13,7 +13,6 @@ function HamburgerIcon() {
 }
 
 function formatPHTime(date) {
-  // en-PH locale with Asia/Manila timezone (PST, UTC+8)
   const datePart = date.toLocaleDateString('en-PH', {
     timeZone: 'Asia/Manila',
     month: 'long',
@@ -37,33 +36,28 @@ export default function Topbar({ onMenuClick }) {
   const [now, setNow] = useState(new Date());
 
   useEffect(() => {
-    // Tick every second so the clock stays in sync.
     const id = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(id);
   }, []);
 
   const getTitle = () => {
     const path = location.pathname;
-
-    
     if (path === "/officer/queue") return "Review Queue";
     if (path === "/officer/registry") return "Blacklist Registry";
     if (path === "/officer/notifications") return "Notifications";
     if (path === "/officer/account") return "Account";
-
     if (path === "/admin/dashboard") return "Agency Admin Dashboard";
     if (path === "/admin/officers") return "Officers";
     if (path === "/admin/model") return "AI Model Insights";
     if (path === "/admin/reports") return "Analytics & Reports";
     if (path === "/admin/account") return "Account";
-
     if (path === "/superadmin/dashboard") return "Platform Dashboard";
     if (path === "/superadmin/users-rbac") return "Users & RBAC";
     if (path === "/superadmin/chain-integrity") return "Chain Integrity";
     if (path === "/superadmin/audit-logs") return "Audit Logs";
     if (path === "/superadmin/system-health") return "System Health";
     if (path === "/superadmin/account") return "Account";
-
+    if (path === "/officer/dashboard") return "Officer Dashboard";
     return "Dashboard";
   };
 
@@ -74,14 +68,14 @@ export default function Topbar({ onMenuClick }) {
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        padding: "12px 24px",
+        padding: "20px 32px",
         borderBottom: "1px solid #13131e",
         flexShrink: 0,
         background: "#09090f",
-        gap: "12px",
+        gap: "14px",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: "12px", minWidth: 0, flex: 1 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "16px", minWidth: 0, flex: 1 }}>
         <button
           className="topbar-menu-btn"
           onClick={onMenuClick}
@@ -96,7 +90,7 @@ export default function Topbar({ onMenuClick }) {
             style={{
               fontWeight: 700,
               color: "#fff",
-              fontSize: "14px",
+              fontSize: "20px",
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
@@ -107,8 +101,8 @@ export default function Topbar({ onMenuClick }) {
           <div
             className="topbar-subtitle"
             style={{
-              fontSize: "12px",
-              marginTop: "2px",
+              fontSize: "14px",
+              marginTop: "4px",
               color: "#4b5563",
               overflow: "hidden",
               textOverflow: "ellipsis",
@@ -121,12 +115,12 @@ export default function Topbar({ onMenuClick }) {
         </div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
-        <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#22c55e", display: "inline-block" }} />
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 }}>
+        <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#22c55e", display: "inline-block" }} />
         <span
           className="topbar-live-label"
           style={{
-            fontSize: "11px",
+            fontSize: "13px",
             color: "#4b5563",
             fontFamily: "'JetBrains Mono',monospace",
           }}
@@ -137,38 +131,19 @@ export default function Topbar({ onMenuClick }) {
 
       <style>{`
         .topbar-menu-btn { display: none; }
-
         @media (max-width: 1024px) {
           .topbar-menu-btn {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            width: 36px;
-            height: 36px;
-            border-radius: 10px;
-            background: rgba(148,163,184,0.06);
-            border: 1px solid rgba(148,163,184,0.1);
-            color: #94a3b8;
-            cursor: pointer;
-            flex-shrink: 0;
-            padding: 0;
+            display: flex; align-items: center; justify-content: center;
+            width: 42px; height: 42px; border-radius: 10px;
+            background: rgba(148,163,184,0.06); border: 1px solid rgba(148,163,184,0.1);
+            color: #94a3b8; cursor: pointer; flex-shrink: 0; padding: 0;
           }
-          .topbar-menu-btn:hover {
-            background: rgba(148,163,184,0.12);
-            color: #e2e8f0;
-          }
+          .topbar-menu-btn:hover { background: rgba(148,163,184,0.12); color: #e2e8f0; }
         }
-
         @media (max-width: 640px) {
-          .topbar {
-            padding: 10px 14px !important;
-          }
-          .topbar-subtitle {
-            display: none;
-          }
-          .topbar-live-label {
-            display: none;
-          }
+          .topbar { padding: 16px 20px !important; }
+          .topbar-subtitle { display: none; }
+          .topbar-live-label { display: none; }
         }
       `}</style>
     </div>

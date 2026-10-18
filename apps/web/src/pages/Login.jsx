@@ -34,8 +34,7 @@ export default function Login({ onReady }) {
   const accent = detectedRole ? (ROLE_COLOR[detectedRole] || DEFAULT_ACCENT) : DEFAULT_ACCENT;
 
   const [blockedAccount, setBlockedAccount] = useState(null);
-
-  const [stats, setStats] = useState({ reportsFiled: 0, casesClosed: 0, uptime: 99.97, version: "2.4.1" });
+  const [stats, setStats] = useState(null);
 
   const [showForgotPw, setShowForgotPw] = useState(false);
   const [forgotEmail, setForgotEmail] = useState("");
@@ -65,7 +64,9 @@ export default function Login({ onReady }) {
         .then((res) => {
           if (!cancelled && res.data?.data) setStats(res.data.data);
         })
-        .catch(() => {})
+        .catch(() => {
+          if (!cancelled && !stats) setStats({ reportsFiled: 0, casesClosed: 0, uptime: 99.97, version: "2.4.1" });
+        })
         .finally(() => {
           if (!cancelled) onReady?.();
         });
@@ -73,6 +74,7 @@ export default function Login({ onReady }) {
     load();
     const id = setInterval(load, 30000);
     return () => { cancelled = true; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onReady]);
 
   useEffect(() => {
@@ -189,16 +191,31 @@ export default function Login({ onReady }) {
       }} />
 
       {/* LEFT PANEL */}
-      <div className="login-left-panel" style={{ width: "46%", flexShrink: 0, display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "56px 64px", position: "relative", zIndex: 1 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+      <div 
+        className="login-left-panel" 
+        style={{ 
+          width: "46%", 
+          flexShrink: 0, 
+          display: "flex", 
+          flexDirection: "column", 
+          justifyContent: "center", // 👈 CHANGED FROM SPACE-BETWEEN TO CENTER
+          padding: "56px 64px", 
+          position: "relative", 
+          zIndex: 1,
+          gap: "48px" // 👈 ADDED GAP FOR SPACING
+        }}
+      >
+        
+        {/* LOGO & TEXT BLOCK */}
+        <div style={{ display: "flex", alignItems: "center", gap: "20px" }}>
           <img
             src="/logo.png"
             alt="SentinelPH"
-            style={{ width: "56px", height: "56px", objectFit: "contain", flexShrink: 0 }}
+            style={{ width: "80px", height: "80px", objectFit: "contain", flexShrink: 0, filter: "drop-shadow(0 0 20px rgba(59,130,246,0.3))" }}
           />
           <div>
-            <div style={{ fontWeight: 800, color: "#fff", fontSize: "20px", letterSpacing: "-0.01em" }}>SentinelPH</div>
-            <div style={{ fontSize: "11px", color: "#4b5563", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.1em", marginTop: "2px" }}>WEB CONTROL CENTER</div>
+            <div style={{ fontWeight: 800, color: "#fff", fontSize: "32px", letterSpacing: "-0.02em", lineHeight: 1 }}>SentinelPH</div>
+            <div style={{ fontSize: "13px", color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.15em", marginTop: "6px" }}>WEB CONTROL CENTER</div>
           </div>
         </div>
 
@@ -217,12 +234,18 @@ export default function Login({ onReady }) {
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "16px", padding: "26px", borderRadius: "16px", background: "#0d0d18", border: "1px solid #13131e" }}>
             {[
-              { v: (stats.reportsFiled ?? 0).toLocaleString(), l: "Reports Filed" },
-              { v: (stats.casesClosed ?? 0).toLocaleString(), l: "Cases Closed" },
-              { v: `${(stats.uptime ?? 99.97).toFixed(2)}%`, l: "Uptime" },
+              { v: stats ? (stats.reportsFiled ?? 0).toLocaleString() : null, l: "Reports Filed" },
+              { v: stats ? (stats.casesClosed ?? 0).toLocaleString() : null, l: "Cases Closed" },
+              { v: stats ? `${(stats.uptime ?? 99.97).toFixed(2)}%` : null, l: "Uptime" },
             ].map((s) => (
               <div key={s.l} style={{ textAlign: "center" }}>
-                <div style={{ fontWeight: 800, color: "#fff", fontSize: "24px", fontFamily: "'JetBrains Mono',monospace" }}>{s.v}</div>
+                <div style={{ fontWeight: 800, color: "#fff", fontSize: "24px", fontFamily: "'JetBrains Mono',monospace", height: "28px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {s.v === null ? (
+                    <span style={{ width: "16px", height: "16px", borderRadius: "50%", border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", animation: "spin 0.7s linear infinite", display: "inline-block" }} />
+                  ) : (
+                    s.v
+                  )}
+                </div>
                 <div style={{ fontSize: "13px", marginTop: "5px", color: "#374151" }}>{s.l}</div>
               </div>
             ))}
@@ -232,7 +255,7 @@ export default function Login({ onReady }) {
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: "9px", marginBottom: "10px" }}>
             <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: "#22c55e", display: "inline-block" }} />
-            <span style={{ fontSize: "12px", color: "#374151", fontFamily: "'JetBrains Mono',monospace" }}>System Operational · v{stats.version}</span>
+            <span style={{ fontSize: "12px", color: "#374151", fontFamily: "'JetBrains Mono',monospace" }}>System Operational · v{stats?.version ?? "2.4.1"}</span>
           </div>
           <p style={{ fontSize: "12px", color: "#1f2937", lineHeight: 1.6 }}>
             Unauthorized access is a criminal offense under RA 10175<br />
@@ -474,7 +497,7 @@ export default function Login({ onReady }) {
         </div>
       )}
 
-      {/* INACTIVITY NOTICE MODAL — Sentinel blue, must click "Got it" to dismiss */}
+      {/* INACTIVITY NOTICE MODAL */}
       {showInactivityNotice && (
         <div
           style={{
