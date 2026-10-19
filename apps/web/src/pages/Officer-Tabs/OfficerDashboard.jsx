@@ -1,43 +1,8 @@
 // apps/web/src/pages/Officer-Tabs/OfficerDashboard.jsx
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { AreaChart, Area, XAxis, YAxis, ResponsiveContainer, BarChart, Bar, Cell } from "recharts";
+import { AreaChart, Area, XAxis, YAxis, ResponsiveContainer, BarChart, Bar, Cell, Tooltip as RechartsTooltip } from "recharts";
 import apiClient from "../../lib/api";
 
-/**
- * Expected shape from GET /api/v1/officer/dashboard:
- *
- *   data: {
- *     kpis: {
- *       pendingVote:        number,  // reports this officer hasn't voted on yet
- *       splitDecisions:     number,  // 1 approve + 1 reject, 3rd vote needed
- *       resolvedThisWeek:   number,  // decisions finalized in last 7 days
- *     },
- *     trend:  [ { day: "Mon", v: number }, ... ],
- *     heatmap:[ { region: "Region I", v: number }, ... ],
- *     consensusItems: [
- *       {
- *         id: string,
- *         number: string,
- *         type: string,
- *         approvals: number,
- *         rejections: number,
- *         votes: number,
- *         since: string,
- *       }, ...
- *     ],
- *     consensusBreakdown: {           // OPTIONAL — UI derives if absent
- *       awaitingFirst:      number,
- *       awaitingSecond:     number,
- *       awaitingTiebreaker: number,
- *       totalOpen:          number,
- *     },
- *     decisions: [
- *       { id, number, type, decision: "Approved" | "Rejected", ts: string }, ...
- *     ],
- *   }
- */
-
-// ─── Design tokens ───────────────────────────────────────────────────
 const SURFACE       = "#0e0e18";
 const SURFACE_MUTED = "#0a0a12";
 const BORDER        = "#1a1a2a";
@@ -59,7 +24,6 @@ const card = {
   padding: "20px",
 };
 
-// Table header/cell styles, unified to two font sizes.
 const thS = {
   textAlign: "left",
   paddingBottom: "10px",
@@ -77,25 +41,57 @@ const tdS = {
   verticalAlign: "middle",
 };
 
-// ─── Small helpers ───────────────────────────────────────────────────
-function formatVoteTally(approvals = 0, rejections = 0) {
-  const parts = [];
-  if (approvals)  parts.push(`${approvals} approve`);
-  if (rejections) parts.push(`${rejections} reject`);
-  return parts.length ? parts.join(" · ") : "—";
+const TIER_STYLES = {
+  malicious:   { dot: '#f43f5e', text: '#fb7185', bg: 'rgba(244,63,94,0.06)',   border: 'rgba(244,63,94,0.25)',   label: 'Malicious' },
+  grey_area:   { dot: '#eab308', text: '#facc15', bg: 'rgba(234,179,8,0.06)',   border: 'rgba(234,179,8,0.25)',   label: 'Grey Area' },
+  legitimate:  { dot: '#10b981', text: '#34d399', bg: 'rgba(16,185,129,0.06)',  border: 'rgba(16,185,129,0.25)',  label: 'Legitimate' },
+  uncertain:   { dot: '#94a3b8', text: '#94a3b8', bg: 'rgba(148,163,184,0.06)', border: 'rgba(148,163,184,0.20)', label: 'Uncertain' },
+  unavailable: { dot: '#64748b', text: '#64748b', bg: 'rgba(100,116,139,0.06)', border: 'rgba(100,116,139,0.20)', label: 'Unavailable' },
+};
+
+function TierBadge({ tier }) {
+  const style = TIER_STYLES[tier] || TIER_STYLES.unavailable;
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "5px",
+        padding: "3px 9px",
+        borderRadius: "6px",
+        fontSize: "10px",
+        fontWeight: 700,
+        fontFamily: MONO,
+        textTransform: "uppercase",
+        letterSpacing: "0.04em",
+        color: style.text,
+        background: style.bg,
+        border: `1px solid ${style.border}`,
+      }}
+    >
+      <span style={{ width: "5px", height: "5px", borderRadius: "50%", background: style.dot, display: "inline-block" }} />
+      {style.label}
+    </span>
+  );
 }
 
 function deriveBreakdown(items = []) {
   let awaitingFirst = 0;
   let awaitingSecond = 0;
   let awaitingTiebreaker = 0;
+  
   for (const it of items) {
-    const v = Number(it.votes) || 0;
     const a = Number(it.approvals) || 0;
     const r = Number(it.rejections) || 0;
-    if (v === 0) awaitingFirst += 1;
-    else if (v === 1) awaitingSecond += 1;
-    else if (v === 2 && a === 1 && r === 1) awaitingTiebreaker += 1;
+    const total = a + r;
+
+    if (total === 0) {
+      awaitingFirst += 1;
+    } else if (total === 1) {
+      awaitingSecond += 1;
+    } else if (total === 2 && a === 1 && r === 1) {
+      awaitingTiebreaker += 1;
+    }
   }
   return {
     awaitingFirst,
@@ -105,7 +101,6 @@ function deriveBreakdown(items = []) {
   };
 }
 
-// Small chip used for the two-chip vote tally in the consensus table.
 function VoteChip({ kind, count }) {
   const isApproval = kind === "approve";
   const color = isApproval ? GREEN : RED;
@@ -135,7 +130,6 @@ function VoteChip({ kind, count }) {
   );
 }
 
-// Small pill used in the consensus card subtitle.
 function StatPill({ label, value, color }) {
   return (
     <span
@@ -206,8 +200,7 @@ export default function OfficerDashboard() {
   const consensus = (data?.consensusItems ?? []).filter(i => !resolvedIds.includes(i.id));
   const decisions = data?.decisions ?? [];
 
-  const breakdown  = data?.consensusBreakdown ?? deriveBreakdown(consensus);
-  const heatmapMax = heatmap.reduce((m, row) => Math.max(m, Number(row.v) || 0), 0) || 1;
+  const breakdown  = deriveBreakdown(consensus);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
@@ -218,56 +211,21 @@ export default function OfficerDashboard() {
         </div>
       )}
 
-      {/* ─── KPI row ────────────────────────────────────────────────── */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "16px" }}>
         {[
           { l: "PENDING YOUR VOTE",   v: kpis.pendingVote,        sub: "Tap to review",     accent: RED   },
-          { l: "SPLIT DECISIONS",     v: kpis.splitDecisions,     sub: "3rd vote needed",   accent: AMBER },
+          { l: "SPLIT DECISIONS",     v: kpis.consensusNeeded,    sub: "3rd vote needed",   accent: AMBER },
           { l: "RESOLVED THIS WEEK",  v: kpis.resolvedThisWeek,   sub: "Last 7 days",       accent: GREEN },
         ].map(s => (
           <div key={s.l} style={card}>
-            <div
-              style={{
-                fontSize: "10px",
-                marginBottom: "10px",
-                color: TEXT_FAINT,
-                fontFamily: MONO,
-                letterSpacing: "0.08em",
-              }}
-            >
+            <div style={{ fontSize: "10px", marginBottom: "10px", color: TEXT_FAINT, fontFamily: MONO, letterSpacing: "0.08em" }}>
               {s.l}
             </div>
-            <div
-              style={{
-                fontSize: "34px",
-                fontWeight: 800,
-                color: TEXT_PRIMARY,
-                marginBottom: "6px",
-                fontFamily: MONO,
-                lineHeight: 1,
-              }}
-            >
+            <div style={{ fontSize: "34px", fontWeight: 800, color: TEXT_PRIMARY, marginBottom: "6px", fontFamily: MONO, lineHeight: 1 }}>
               {loading ? "—" : s.v}
             </div>
-            <div
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "6px",
-                fontSize: "11px",
-                color: s.accent,
-                fontWeight: 500,
-              }}
-            >
-              <span
-                style={{
-                  width: "6px",
-                  height: "6px",
-                  borderRadius: "50%",
-                  background: s.accent,
-                  display: "inline-block",
-                }}
-              />
+            <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "11px", color: s.accent, fontWeight: 500 }}>
+              <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: s.accent, display: "inline-block" }} />
               {s.sub}
             </div>
           </div>
@@ -281,18 +239,13 @@ export default function OfficerDashboard() {
         </div>
       )}
 
-      {/* ─── Charts row ─────────────────────────────────────────────── */}
       <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: "16px" }}>
         <div style={{ ...card, animation: "cardFade 0.25s ease-out" }}>
           <div style={{ fontSize: "13px", fontWeight: 600, color: TEXT_PRIMARY, marginBottom: "4px" }}>7-Day Report Trend</div>
           <div style={{ fontSize: "11px", color: TEXT_FAINT, marginBottom: "16px" }}>Daily incoming reports, your jurisdiction</div>
           <div style={{ pointerEvents: "none" }}>
             <ResponsiveContainer width="100%" height={180}>
-              <AreaChart
-                key={`trend-${dataVersion}`}
-                data={trend}
-                margin={{ top: 4, right: 4, left: -20, bottom: 0 }}
-              >
+              <AreaChart key={`trend-${dataVersion}`} data={trend} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
                 <defs>
                   <linearGradient id="blueGrad" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor={BLUE} stopOpacity={0.35} />
@@ -301,26 +254,15 @@ export default function OfficerDashboard() {
                 </defs>
                 <XAxis dataKey="day" tick={{ fill: TEXT_FAINT, fontSize: 10 }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fill: TEXT_FAINT, fontSize: 10 }} axisLine={false} tickLine={false} />
-                <Area
-                  type="monotone"
-                  dataKey="v"
-                  stroke={BLUE}
-                  strokeWidth={2}
-                  fill="url(#blueGrad)"
-                  isAnimationActive={true}
-                  animationBegin={0}
-                  animationDuration={900}
-                  animationEasing="ease-out"
-                  activeDot={false}
-                />
+                <Area type="monotone" dataKey="v" stroke={BLUE} strokeWidth={2} fill="url(#blueGrad)" isAnimationActive={true} animationBegin={0} animationDuration={900} animationEasing="ease-out" activeDot={false} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
         </div>
 
         <div style={{ ...card, animation: "cardFade 0.25s ease-out" }}>
-          <div style={{ fontSize: "13px", fontWeight: 600, color: TEXT_PRIMARY, marginBottom: "4px" }}>Regional Heatmap</div>
-          <div style={{ fontSize: "11px", color: TEXT_FAINT, marginBottom: "16px" }}>Cumulative reports by jurisdiction</div>
+          <div style={{ fontSize: "13px", fontWeight: 600, color: TEXT_PRIMARY, marginBottom: "4px" }}>Regional Risk Heatmap</div>
+          <div style={{ fontSize: "11px", color: TEXT_FAINT, marginBottom: "16px" }}>Report volume and AI risk distribution by jurisdiction</div>
           <div style={{ pointerEvents: "none" }}>
             <ResponsiveContainer width="100%" height={180}>
               <BarChart
@@ -331,35 +273,46 @@ export default function OfficerDashboard() {
               >
                 <XAxis type="number" tick={{ fill: TEXT_FAINT, fontSize: 10 }} axisLine={false} tickLine={false} />
                 <YAxis dataKey="region" type="category" tick={{ fill: TEXT_MUTED, fontSize: 10 }} axisLine={false} tickLine={false} width={100} />
-                <Bar
-                  dataKey="v"
-                  radius={[0, 4, 4, 0]}
-                  isAnimationActive={true}
-                  animationBegin={0}
-                  animationDuration={800}
-                  animationEasing="ease-out"
-                >
-                  {heatmap.map((row, i) => {
-                    const v = Number(row.v) || 0;
-                    const opacity = 0.35 + 0.6 * (v / heatmapMax);
+                
+                <RechartsTooltip
+                  cursor={{ fill: "rgba(255,255,255,0.05)" }}
+                  content={({ active, payload }) => {
+                    if (!active || !payload?.length) return null;
+                    const d = payload[0].payload;
                     return (
-                      <Cell
-                        key={i}
-                        fill={`rgba(59,130,246,${Math.min(0.95, opacity)})`}
-                      />
+                      <div style={{ background: SURFACE, border: `1px solid ${BORDER}`, borderRadius: "8px", padding: "10px", fontSize: "11px", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
+                        <div style={{ fontWeight: 600, color: TEXT_PRIMARY, marginBottom: "6px" }}>{d.region}</div>
+                        <div style={{ color: TIER_STYLES.malicious.text }}>Malicious: {d.malicious}</div>
+                        <div style={{ color: TIER_STYLES.grey_area.text }}>Grey Area: {d.grey_area}</div>
+                        <div style={{ color: TIER_STYLES.legitimate.text }}>Legitimate: {d.legitimate}</div>
+                        {d.uncertain > 0 && <div style={{ color: TIER_STYLES.uncertain.text }}>Uncertain: {d.uncertain}</div>}
+                      </div>
                     );
-                  })}
-                </Bar>
+                  }}
+                />
+
+                <Bar dataKey="malicious" stackId="a" fill={TIER_STYLES.malicious.dot} radius={[0, 0, 0, 0]} isAnimationActive={true} animationDuration={800} />
+                <Bar dataKey="grey_area" stackId="a" fill={TIER_STYLES.grey_area.dot} radius={[0, 0, 0, 0]} isAnimationActive={true} animationDuration={800} />
+                <Bar dataKey="legitimate" stackId="a" fill={TIER_STYLES.legitimate.dot} radius={[0, 0, 0, 0]} isAnimationActive={true} animationDuration={800} />
+                <Bar dataKey="uncertain" stackId="a" fill={TIER_STYLES.uncertain.dot} radius={[0, 4, 4, 0]} isAnimationActive={true} animationDuration={800} />
               </BarChart>
             </ResponsiveContainer>
+          </div>
+          <div style={{ display: "flex", gap: "12px", justifyContent: "center", marginTop: "12px" }}>
+            <span style={{ fontSize: "10px", color: TEXT_MUTED, display: "flex", alignItems: "center", gap: "4px" }}>
+              <span style={{ width: "8px", height: "8px", borderRadius: "2px", background: TIER_STYLES.malicious.dot }} /> Malicious
+            </span>
+            <span style={{ fontSize: "10px", color: TEXT_MUTED, display: "flex", alignItems: "center", gap: "4px" }}>
+              <span style={{ width: "8px", height: "8px", borderRadius: "2px", background: TIER_STYLES.grey_area.dot }} /> Grey Area
+            </span>
+            <span style={{ fontSize: "10px", color: TEXT_MUTED, display: "flex", alignItems: "center", gap: "4px" }}>
+              <span style={{ width: "8px", height: "8px", borderRadius: "2px", background: TIER_STYLES.legitimate.dot }} /> Legitimate
+            </span>
           </div>
         </div>
       </div>
 
-      {/* ─── Tables row ─────────────────────────────────────────────── */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
-
-        {/* Open cases card */}
         <div style={card}>
           <div style={{ fontSize: "13px", fontWeight: 600, color: TEXT_PRIMARY, marginBottom: "4px" }}>
             Open Cases
@@ -368,7 +321,6 @@ export default function OfficerDashboard() {
             Reports still collecting votes
           </div>
 
-          {/* Pill row — replaces the old wall-of-text subtitle */}
           {!loading && (
             <div style={{ marginBottom: "14px" }}>
               <StatPill label="awaiting 1st"  value={breakdown.awaitingFirst}      color={TEXT_MUTED} />
@@ -393,25 +345,15 @@ export default function OfficerDashboard() {
                 const r = Number(row.rejections) || 0;
                 return (
                   <tr key={row.id}>
-                    <td style={{ ...tdS, color: BLUE, fontFamily: MONO }}>
-                      {row.id.slice(0, 12)}
-                    </td>
-                    <td style={{ ...tdS, color: TEXT_PRIMARY, fontFamily: MONO }}>
-                      {row.number}
-                    </td>
-                    <td style={{ ...tdS, color: TEXT_MUTED }}>
-                      {row.type}
-                    </td>
+                    <td style={{ ...tdS, color: BLUE, fontFamily: MONO }}>{row.id.slice(0, 12)}</td>
+                    <td style={{ ...tdS, color: TEXT_PRIMARY, fontFamily: MONO }}>{row.number}</td>
+                    <td style={tdS}><TierBadge tier={row.type} /></td>
                     <td style={tdS}>
                       {a > 0 && <VoteChip kind="approve" count={a} />}
                       {r > 0 && <VoteChip kind="reject"  count={r} />}
-                      {a === 0 && r === 0 && (
-                        <span style={{ color: TEXT_FAINT, fontSize: "11px" }}>—</span>
-                      )}
+                      {a === 0 && r === 0 && <span style={{ color: TEXT_FAINT, fontSize: "11px" }}>—</span>}
                     </td>
-                    <td style={{ ...tdS, color: TEXT_FAINT, fontSize: "11px" }}>
-                      {row.since}
-                    </td>
+                    <td style={{ ...tdS, color: TEXT_FAINT, fontSize: "11px" }}>{row.since}</td>
                   </tr>
                 );
               })}
@@ -419,7 +361,6 @@ export default function OfficerDashboard() {
           </table>
         </div>
 
-        {/* Recent decisions card */}
         <div style={card}>
           <div style={{ fontSize: "13px", fontWeight: 600, color: TEXT_PRIMARY, marginBottom: "4px" }}>
             Recent Decisions
@@ -445,15 +386,9 @@ export default function OfficerDashboard() {
                 const bd    = isApproved ? "rgba(34,197,94,0.35)" : "rgba(239,68,68,0.35)";
                 return (
                   <tr key={row.id}>
-                    <td style={{ ...tdS, color: BLUE, fontFamily: MONO }}>
-                      {row.id.slice(0, 12)}
-                    </td>
-                    <td style={{ ...tdS, color: TEXT_PRIMARY, fontFamily: MONO }}>
-                      {row.number}
-                    </td>
-                    <td style={{ ...tdS, color: TEXT_MUTED }}>
-                      {row.type}
-                    </td>
+                    <td style={{ ...tdS, color: BLUE, fontFamily: MONO }}>{row.id.slice(0, 12)}</td>
+                    <td style={{ ...tdS, color: TEXT_PRIMARY, fontFamily: MONO }}>{row.number}</td>
+                    <td style={tdS}><TierBadge tier={row.type} /></td>
                     <td style={tdS}>
                       <span
                         style={{
@@ -476,9 +411,7 @@ export default function OfficerDashboard() {
                         {row.decision}
                       </span>
                     </td>
-                    <td style={{ ...tdS, color: TEXT_FAINT, fontFamily: MONO, fontSize: "11px" }}>
-                      {row.ts}
-                    </td>
+                    <td style={{ ...tdS, color: TEXT_FAINT, fontFamily: MONO, fontSize: "11px" }}>{row.ts}</td>
                   </tr>
                 );
               })}

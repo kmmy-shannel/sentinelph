@@ -610,15 +610,9 @@ export default function HomeScreen() {
       >
         <OfflineSyncIndicator />
 
-        <QuickReportCard
-          onQuickReport={() => navigation.navigate('ReportWizard')}
-          onCameraShortcut={() =>
-            navigation.navigate('ReportWizard', {
-              openStep: 2,
-              focus: 'camera',
-            })
-          }
-        />
+       <QuickReportCard
+  onQuickReport={() => navigation.navigate('ReportWizard')}
+/>
 
         <View>
           <SectionHeader

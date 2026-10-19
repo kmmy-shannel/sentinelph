@@ -1,13 +1,4 @@
 // apps/mobile/lib/subtypeGuidance.js
-//
-// Maps the AI's Level 2 subtype to user-facing guidance. Icons are
-// rendered separately by <SubtypeIcon subtype={...} /> using inline
-// SVG, so this file only carries the text fields:
-//   { title, body, actions[] }
-//
-// `actions` is a list of one-line "what to do" strings shown as bullets.
-// Empty actions array = nothing extra to tell the user.
-
 export const SUBTYPE_GUIDANCE = {
   // ─── LEGITIMATE tier ──────────────────────────────────────────────
   personal_conversational: {
@@ -84,7 +75,6 @@ export const SUBTYPE_GUIDANCE = {
   },
 };
 
-// Friendly fallback when `subtype` is null or missing.
 const DEFAULT_GUIDANCE = {
   title: "Use Caution",
   body: "We couldn't determine the specific type of this message. Treat it with caution.",

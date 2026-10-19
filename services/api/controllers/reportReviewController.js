@@ -1,10 +1,4 @@
 // services/api/controllers/reportReviewController.js
-//
-// Officer-facing review workflow for citizen reports:
-//   GET   /api/v1/reports            -> listReports    (paginated, region-scoped)
-//   GET   /api/v1/reports/:id        -> getReportById  (full detail incl. screenshot)
-//   POST  /api/v1/reports/:id/vote   -> voteOnReport   (CANONICAL 3-officer vote)
-//   PATCH /api/v1/reports/:id/vote   -> changeVoteOnReport (edit an existing vote)
 'use strict';
 
 const mongoose = require('mongoose');
@@ -21,10 +15,6 @@ const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 const BUCKETS = ['pending', 'resolved', 'all'];
 
-// The list never carries the base64 screenshot (it can be megabytes per
-// row) nor the pseudonymous citizen identifier. Reporter identity is
-// included by default; citizenHash is excluded here so no officer
-// response ever leaks the pseudonymous identifier.
 const LIST_SELECT = '-evidenceImage -citizenHash';
 const DETAIL_SELECT = '-citizenHash';
 
@@ -53,11 +43,7 @@ function buildScopeFilter(req) {
       throw new ApiError(403, MISSING_JURISDICTION_MESSAGE, 'MISSING_JURISDICTION');
     }
     if (req.query.region && String(req.query.region) !== user.jurisdiction) {
-      throw new ApiError(
-        403,
-        'Officers may only query reports within their assigned jurisdiction.',
-        'JURISDICTION_MISMATCH'
-      );
+      throw new ApiError(403, 'Officers may only query reports within their assigned jurisdiction.', 'JURISDICTION_MISMATCH');
     }
     return {
       $or: [
@@ -69,9 +55,7 @@ function buildScopeFilter(req) {
     };
   }
 
-  if (req.query.region) {
-    return { 'location.region': String(req.query.region) };
-  }
+  if (req.query.region) return { 'location.region': String(req.query.region) };
   return {};
 }
 
@@ -84,11 +68,9 @@ async function attachReport(req, res, next) {
     if (!scope) {
       throw new ApiError(404, `No report found with reportId "${req.params.id}".`, 'NOT_FOUND');
     }
-
     if (req.user && req.user.role === 'officer' && !req.user.jurisdiction) {
       throw new ApiError(403, MISSING_JURISDICTION_MESSAGE, 'MISSING_JURISDICTION');
     }
-
     req.reportScope = scope;
     return next();
   } catch (err) {
@@ -99,7 +81,6 @@ async function attachReport(req, res, next) {
 function getReportJurisdiction(req) {
   const scope = req.reportScope;
   if (!scope) return null;
-
   const region = (scope.location && scope.location.region) || scope.jurisdiction || null;
   if (!region || UNSCOPED_REGIONS.includes(region)) return null;
   return region;
@@ -145,22 +126,40 @@ async function listReports(req, res, next) {
       success: true,
       data: rows,
       reports: rows,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages,
-        hasMore: page < totalPages,
-      },
-      counts: {
-        pending: pendingCount,
-        resolved: resolvedCount,
-        all: allCount,
-      },
+      pagination: { page, limit, total, totalPages, hasMore: page < totalPages },
+      counts: { pending: pendingCount, resolved: resolvedCount, all: allCount },
     });
   } catch (err) {
     return next(err);
   }
+}
+
+// ─── Build the finalClassification block for the frontend ────────────
+function buildFinalClassification(report) {
+  const ai = report.aiFlag || {};
+  const isResolved = ['blacklisted', 'approved', 'rejected'].includes(report.status);
+
+  return isResolved
+    ? {
+        source: 'officer_consensus',
+        tier: report.officerTierAggregated || null,
+        subtype: report.officerSubtypeAggregated || null,
+        tierAgreement: report.officerTierAgreement ?? 0,
+        subtypeAgreement: report.officerSubtypeAgreement ?? 0,
+        finalizedAt: report.officerSubtypeFinalizedAt || report.resolvedAt || null,
+        aiTierAtSubmission: ai.label || null,
+        aiSubtypeAtSubmission: ai.subtype || null,
+      }
+    : {
+        source: 'ai',
+        tier: ai.label || null,
+        subtype: ai.subtype || null,
+        tierAgreement: 0,
+        subtypeAgreement: 0,
+        finalizedAt: null,
+        aiTierAtSubmission: ai.label || null,
+        aiSubtypeAtSubmission: ai.subtype || null,
+      };
 }
 
 async function getReportById(req, res, next) {
@@ -169,10 +168,33 @@ async function getReportById(req, res, next) {
       ? { reportId: req.reportScope.reportId }
       : buildIdQuery(req.params.id);
 
-    const report = await Report.findOne(query).select(DETAIL_SELECT).lean();
+    let report = await Report.findOne(query).select(DETAIL_SELECT).lean();
     if (!report) {
       throw new ApiError(404, `No report found with reportId "${req.params.id}".`, 'NOT_FOUND');
     }
+
+    // ─── LAZY REPAIR: fix broken finalized reports on read ───────────
+    // If a resolved report is missing the aggregated classification
+    // (which happens for any report finalized before the write fix was
+    // deployed), recompute and persist it now, then re-fetch.
+    const isResolved = ['blacklisted', 'approved', 'rejected'].includes(report.status);
+    const needsRepair =
+      isResolved &&
+      (!report.officerTierAggregated || !report.officerSubtypeAggregated);
+
+    if (needsRepair) {
+      try {
+        console.log('[getReportById] repairing', report.reportId);
+        const repaired = await Report.ensureFinalized(report.reportId);
+        if (repaired) report = repaired;
+      } catch (repairErr) {
+        console.error('[getReportById] repair failed:', repairErr.message);
+        // Non-fatal — return the report anyway, just without the fix
+      }
+    }
+
+    // ─── Provide an explicit finalClassification block ───────────────
+    report.finalClassification = buildFinalClassification(report);
 
     return res.status(200).json({ success: true, data: report });
   } catch (err) {
@@ -187,7 +209,10 @@ async function voteOnReport(req, res, next) {
       throw new ApiError(401, 'Authentication is required to vote.', 'UNAUTHORIZED');
     }
 
-    const { decision, comment } = req.body || {};
+    const {
+      decision, comment, subtypeAction, correctedSubtype, correctedTier,
+      isHighValue, aiSubtypeAtVote, aiTierAtVote, aiSubtypeModelVersionAtVote,
+    } = req.body || {};
 
     if (!['approve', 'reject'].includes(decision)) {
       throw new ApiError(400, "decision must be 'approve' or 'reject'.", 'VALIDATION_ERROR');
@@ -205,6 +230,13 @@ async function voteOnReport(req, res, next) {
         role: req.user.role || 'officer',
         decision,
         comment: comment.trim(),
+        subtypeAction: subtypeAction || null,
+        correctedSubtype: correctedSubtype || null,
+        correctedTier: correctedTier || null,
+        isHighValue: Boolean(isHighValue),
+        aiSubtypeAtVote: aiSubtypeAtVote || null,
+        aiTierAtVote: aiTierAtVote || null,
+        aiSubtypeModelVersionAtVote: aiSubtypeModelVersionAtVote || null,
       });
     } catch (voteErr) {
       if (voteErr && voteErr.statusCode) {
@@ -243,6 +275,9 @@ async function voteOnReport(req, res, next) {
         metadata: {
           reportId: updated.reportId,
           decision,
+          subtypeAction: subtypeAction || null,
+          correctedTier: correctedTier || null,
+          correctedSubtype: correctedSubtype || null,
           approvals,
           rejections,
           resultingStatus: updated.status,
@@ -251,10 +286,7 @@ async function voteOnReport(req, res, next) {
         },
       });
     } catch (auditErr) {
-      console.error(
-        `[reportReviewController] audit write failed for vote on ${updated.reportId}:`,
-        auditErr && auditErr.message
-      );
+      console.error(`[reportReviewController] audit write failed for vote on ${updated.reportId}:`, auditErr && auditErr.message);
     }
 
     const payload = {
@@ -265,6 +297,7 @@ async function voteOnReport(req, res, next) {
         rejections,
         required: consensus.required ?? Report.CONSENSUS_REQUIRED,
       },
+      finalClassification: buildFinalClassification(updated),
       votesCount: Array.isArray(updated.votes) ? updated.votes.length : 0,
       blacklisted: updated.status === 'blacklisted',
       blacklistSynced,
@@ -275,16 +308,19 @@ async function voteOnReport(req, res, next) {
             approvingOfficers: blacklistEntry.approvingOfficers,
             hash: blacklistEntry.hash,
             reportCount: blacklistEntry.reportCount,
+            aiLabel: blacklistEntry.aiLabel,
+            aiSubtype: blacklistEntry.aiSubtype,
+            officerFinalTier: blacklistEntry.officerFinalTier,
+            officerFinalSubtype: blacklistEntry.officerFinalSubtype,
           }
         : null,
     };
 
     return res.status(200).json({
       success: true,
-      message:
-        payload.blacklisted
-          ? 'Vote recorded. Two-officer consensus reached — the number was added to the blacklist.'
-          : 'Vote recorded.',
+      message: payload.blacklisted
+        ? 'Vote recorded. Two-officer consensus reached — the number was added to the blacklist.'
+        : 'Vote recorded.',
       ...payload,
       data: payload,
     });
@@ -300,7 +336,10 @@ async function changeVoteOnReport(req, res, next) {
       throw new ApiError(401, 'Authentication is required to edit a vote.', 'UNAUTHORIZED');
     }
 
-    const { decision, comment } = req.body || {};
+    const {
+      decision, comment, subtypeAction, correctedSubtype, correctedTier,
+      isHighValue, aiSubtypeAtVote, aiTierAtVote, aiSubtypeModelVersionAtVote,
+    } = req.body || {};
 
     if (!['approve', 'reject'].includes(decision)) {
       throw new ApiError(400, "decision must be 'approve' or 'reject'.", 'VALIDATION_ERROR');
@@ -317,6 +356,13 @@ async function changeVoteOnReport(req, res, next) {
         userId,
         decision,
         comment: comment.trim(),
+        subtypeAction: subtypeAction || null,
+        correctedSubtype: correctedSubtype || null,
+        correctedTier: correctedTier || null,
+        isHighValue: Boolean(isHighValue),
+        aiSubtypeAtVote: aiSubtypeAtVote || null,
+        aiTierAtVote: aiTierAtVote || null,
+        aiSubtypeModelVersionAtVote: aiSubtypeModelVersionAtVote || null,
       });
     } catch (editErr) {
       if (editErr && editErr.statusCode) {
@@ -347,6 +393,9 @@ async function changeVoteOnReport(req, res, next) {
           next: {
             decision,
             comment: comment.trim(),
+            subtypeAction: subtypeAction || null,
+            correctedTier: correctedTier || null,
+            correctedSubtype: correctedSubtype || null,
             editedAt: new Date(),
           },
           approvals,
@@ -355,10 +404,7 @@ async function changeVoteOnReport(req, res, next) {
         },
       });
     } catch (auditErr) {
-      console.error(
-        `[reportReviewController] audit write failed for vote edit on ${updated.reportId}:`,
-        auditErr && auditErr.message
-      );
+      console.error(`[reportReviewController] audit write failed for vote edit on ${updated.reportId}:`, auditErr && auditErr.message);
     }
 
     const payload = {
@@ -369,6 +415,7 @@ async function changeVoteOnReport(req, res, next) {
         rejections,
         required: consensus.required ?? Report.CONSENSUS_REQUIRED,
       },
+      finalClassification: buildFinalClassification(updated),
       votesCount: Array.isArray(updated.votes) ? updated.votes.length : 0,
       previous,
     };

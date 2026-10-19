@@ -133,26 +133,7 @@ function getPasswordStrength(password) {
   return { score: 4, label: 'VERY STRONG', color: T.strong };
 }
 
-  if (core.length >= 8) score += 1;
-  if (core.length >= 12) score += 1;
-
-  const hasLetter = /[A-Za-z]/.test(core);
-  const hasDigit = /[0-9]/.test(core);
-  const hasSymbol = /[^A-Za-z0-9]/.test(core);
-
-  if (hasLetter && hasDigit) score += 1;
-  if (hasLetter && hasSymbol) score += 1;
-  if (hasDigit && hasSymbol) score += 1;
-
-  if (!(hasLetter && hasDigit)) {
-    score = Math.min(score, 1);
-  }
-
-  if (score <= 1) return { score: 1, label: 'WEAK', color: T.weak };
-  if (score <= 2) return { score: 2, label: 'MEDIUM', color: T.medium };
-  if (score <= 3) return { score: 3, label: 'STRONG', color: T.strong };
-  return { score: 4, label: 'VERY STRONG', color: T.strong };
-}
+  
 // ---------------------------------------------------------------------------
 // UI Atoms
 // ---------------------------------------------------------------------------

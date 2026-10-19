@@ -73,13 +73,13 @@ function buildSevenDayTrend(rows = []) {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
-    }).format(d); // "2026-10-17"
+    }).format(d);
 
     const label = new Intl.DateTimeFormat('en-PH', {
       timeZone: 'Asia/Manila',
       month: 'short',
       day: 'numeric',
-    }).format(d); // "Oct 17"
+    }).format(d);
 
     out.push({ day: label, sms: map.get(key) ?? 0, calls: 0 });
   }
@@ -87,9 +87,6 @@ function buildSevenDayTrend(rows = []) {
 }
 
 // ─── Regional heatmap helper ────────────────────────────────────────
-// Always show these 4 regions, in this exact order, even if they have
-// zero reports. Any region NOT in the forced list is dropped from the
-// chart — we only want these 4 visible for now.
 const FORCED_REGIONS = ['NCR', 'CAR', 'Region I', 'Region II'];
 
 function buildHeatmap(rows = []) {
@@ -98,15 +95,11 @@ function buildHeatmap(rows = []) {
     if (r?._id) map.set(r._id, Number(r.reports) || 0);
   }
 
-  // Build in forced order. Region with data → its real count.
-  // Region with no data → 0.
   const out = FORCED_REGIONS.map((region) => ({
     region,
     reports: map.get(region) ?? 0,
   }));
 
-  // Sort so the highest-report region shows first (Region I floats to
-  // the top since it has data; the empty ones follow in forced order).
   return out.sort((a, b) => b.reports - a.reports);
 }
 
@@ -130,13 +123,24 @@ router.use(async (req, res, next) => {
   }
 });
 
+// ─── FIX (Bug 2): scope now mirrors officer queue semantics ─────────
+// If admin jurisdiction is a specific region, match reports in that
+// region PLUS unclassified / PH / null-region reports (a report filed
+// without GPS still belongs to the national pool the admin watches).
+// If admin jurisdiction is National / Regional, no filter at all.
+const UNSCOPED_REGIONS = ['UNCLASSIFIED', 'PH'];
+
 function reportScope(profile, requestedRegion) {
   const scope = requestedRegion || profile.jurisdiction;
   if (!scope || scope === 'National / Regional') return {};
+
   return {
     $or: [
       { 'location.region': scope },
       { jurisdiction: scope },
+      { 'location.region': { $in: UNSCOPED_REGIONS } },
+      { 'location.region': null },
+      { 'location.region': { $exists: false } },
     ],
   };
 }
@@ -159,11 +163,58 @@ function auditAdminAction(req, action, metadata) {
   }).catch((err) => console.error(`[admin] audit failed for ${action}:`, err.message));
 }
 
+// ─── FIX (Bug 3): accept every value the schema actually stores ─────
+// The AiFlagSchema enum allows: legitimate, grey_area, malicious,
+// likely_scam, uncertain, likely_legitimate, unavailable.
+// The subtype enum allows the 11 subtype strings + UNLABELED + null.
+// The officerSubtypeAggregated field stores a subtype OR a tier label
+// (finalizeAggregatedClassification falls back to 'legitimate' when
+// every vote is a reject). We classify all of these into one of:
+//   'scam' | 'legitimate' | 'grey_area' | 'unknown'
+// 'unknown' is reserved for genuinely unrecognized strings (old data).
 function normalizeAiLabel(label) {
   const value = String(label || '').trim().toLowerCase();
-  if (['likely_scam', 'malicious', 'otp phishing', 'bank impersonation', 'parcel/delivery', 'investment scam', "gov't impersonation", 'phishing_link', 'fake_prize_lottery', 'wrong_number_baiting', 'urgent_fine_toll', 'impersonation_family'].includes(value)) return 'scam';
-  if (['likely_legitimate', 'legitimate', 'personal_conversational', 'two_factor_auth', 'appointment_reminder', 'delivery_tracking', 'bank_activity_alert'].includes(value)) return 'legitimate';
+  if (!value) return 'unknown';
+
+  const scamLabels = new Set([
+    // AiFlag.label tier values that mean "scam"
+    'malicious', 'likely_scam', 'scam',
+    // AiFlag.subtype values that mean "scam"
+    'phishing_link', 'fake_prize_lottery', 'wrong_number_baiting',
+    'urgent_fine_toll', 'impersonation_family', 'brand_marketing',
+    // Legacy raw labels
+    'otp phishing', 'bank impersonation', 'parcel/delivery',
+    'investment scam', "gov't impersonation",
+  ]);
+
+  const legitLabels = new Set([
+    // AiFlag.label tier values that mean "legitimate"
+    'legitimate', 'likely_legitimate',
+    // AiFlag.subtype values that mean "legitimate"
+    'personal_conversational', 'two_factor_auth', 'appointment_reminder',
+    'delivery_tracking', 'bank_activity_alert',
+  ]);
+
+  const greyLabels = new Set(['grey_area', 'uncertain']);
+
+  if (scamLabels.has(value)) return 'scam';
+  if (legitLabels.has(value)) return 'legitimate';
+  if (greyLabels.has(value)) return 'grey_area';
   return 'unknown';
+}
+
+// ─── FIX (Bug 3b): fall back to riskLevel for the predicted side ────
+// Reports written before the subtype model was active often have
+// aiFlag.label === 'unavailable' but aiFlag.riskLevel === 'HIGH'.
+// Rather than dropping them, treat HIGH → scam and LOW → legitimate.
+function predictedFromReport(report) {
+  const ai = report.aiFlag || {};
+  const label = ai.subtype || ai.label || null;
+  if (label && label !== 'unavailable') return label;
+  if (ai.riskLevel === 'HIGH') return 'malicious';
+  if (ai.riskLevel === 'LOW') return 'legitimate';
+  if (ai.riskLevel === 'MEDIUM') return 'grey_area';
+  return 'unavailable';
 }
 
 function buildReviewSignals(adminReviews, officerVerdictReports) {
@@ -183,12 +234,11 @@ function buildReviewSignals(adminReviews, officerVerdictReports) {
 
   for (const r of officerVerdictReports || []) {
     if (!r.reportId || seen.has(r.reportId)) continue;
-    const predicted = r.aiFlag?.subtype || r.aiFlag?.label || 'unavailable';
-    const actual = r.officerSubtypeAggregated || 'unavailable';
+    seen.add(r.reportId);
     signals.push({
       reportId: r.reportId,
-      predicted,
-      actual,
+      predicted: predictedFromReport(r),
+      actual: r.officerSubtypeAggregated || r.officerTierAggregated || 'unavailable',
       reviewedAt: r.officerSubtypeFinalizedAt || r.resolvedAt || r.createdAt,
     });
   }
@@ -505,24 +555,39 @@ router.patch('/officers/:id', async (req, res) => {
   }
 });
 
+// ─── FIX (Bug 1): shared relaxed filter for AI presence ─────────────
+// A report counts as "AI-analyzed" if ANY of:
+//   - aiFlag.available === true
+//   - aiFlag.subtype is a non-null subtype
+//   - aiFlag.label is a real label (not 'unavailable')
+//   - aiFlag.riskLevel is a real level (HIGH / MEDIUM / LOW, not UNKNOWN)
+// This mirrors the fix already applied to /dashboard and makes historical
+// rows visible.
+const AI_PRESENT_FILTER = {
+  $or: [
+    { 'aiFlag.available': true },
+    { 'aiFlag.subtype': { $ne: null } },
+    {
+      'aiFlag.label': {
+        $in: ['legitimate', 'grey_area', 'malicious', 'likely_scam', 'uncertain', 'likely_legitimate'],
+      },
+    },
+    { 'aiFlag.riskLevel': { $in: ['HIGH', 'MEDIUM', 'LOW'] } },
+  ],
+};
+
+function scopedAiMatch(scope) {
+  return Object.keys(scope).length
+    ? { $and: [scope, AI_PRESENT_FILTER] }
+    : AI_PRESENT_FILTER;
+}
+
 router.get('/dashboard', async (req, res) => {
   try {
     const scope = reportScope(req.adminProfile);
     const since7d = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000);
     const reportMatch = Object.keys(scope).length ? { $and: [scope, { createdAt: { $gte: since7d } }] } : { createdAt: { $gte: since7d } };
-
-    const aiCandidateMatch = Object.keys(scope).length
-      ? {
-          $and: [
-            scope,
-            { 'aiFlag.available': true },
-            { 'aiFlag.label': { $in: ['legitimate', 'grey_area', 'malicious', 'uncertain'] } },
-          ],
-        }
-      : {
-          'aiFlag.available': true,
-          'aiFlag.label': { $in: ['legitimate', 'grey_area', 'malicious', 'uncertain'] },
-        };
+    const aiCandidateMatch = scopedAiMatch(scope);
 
     const [totalReports, openReports, blacklisted, officers, trendRows, regions, categories, flagged, aiReviews] = await Promise.all([
       Report.countDocuments(scope),
@@ -562,7 +627,7 @@ router.get('/dashboard', async (req, res) => {
         ? { $and: [scope, { officerSubtypeAggregated: { $ne: null } }] }
         : { officerSubtypeAggregated: { $ne: null } }
     )
-      .select('reportId aiFlag officerSubtypeAggregated officerSubtypeFinalizedAt resolvedAt createdAt')
+      .select('reportId aiFlag officerSubtypeAggregated officerTierAggregated officerSubtypeFinalizedAt resolvedAt createdAt')
       .lean();
 
     const signals = buildReviewSignals(aiReviews, officerVerdicts);
@@ -620,33 +685,95 @@ router.get('/dashboard', async (req, res) => {
   }
 });
 
+async function backfillFinalizedAggregates(scope) {
+  const finalizedStatuses = ['blacklisted', 'approved', 'rejected'];
+  const baseFilter = {
+    status: { $in: finalizedStatuses },
+    // A missing tier marks an incomplete aggregate. A null subtype with a
+    // present tier is valid for all-rejected reports and must not be rewritten.
+    officerTierAggregated: null,
+  };
+  const query = Object.keys(scope).length
+    ? { $and: [scope, baseFilter] }
+    : baseFilter;
+
+  const reports = await Report.find(query)
+    .select('_id reportId votes officerSubtypeFinalizedAt')
+    .sort({ createdAt: 1 })
+    .limit(200)
+    .lean();
+
+  let repaired = 0;
+  for (const report of reports) {
+    try {
+      const votes = Array.isArray(report.votes) ? report.votes : [];
+      const result = Report.computeAggregatedClassification(votes);
+      const decisiveVotes = Report.DECISIVE_VOTES || 2;
+      const isAllRejected = votes.length >= decisiveVotes &&
+        votes.every((vote) => vote.decision === 'reject');
+      const finalTier = isAllRejected ? 'legitimate' : result.tier;
+
+      // Use the raw collection, as the normal vote finalizer does. This
+      // intentionally bypasses Mongoose's append-only update middleware.
+      const writeResult = await Report.collection.updateOne(
+        {
+          _id: report._id,
+          status: { $in: finalizedStatuses },
+          officerTierAggregated: null,
+        },
+        {
+          $set: {
+            officerSubtypeAggregated: result.subtype,
+            officerSubtypeAgreement: result.subtypeAgreement,
+            officerTierAggregated: finalTier,
+            officerTierAgreement: result.tierAgreement,
+            officerSubtypeFinalizedAt: report.officerSubtypeFinalizedAt || new Date(),
+          },
+        }
+      );
+
+      if (writeResult.matchedCount > 0) repaired += 1;
+    } catch (err) {
+      console.warn(`[admin.ai-insights] aggregate backfill failed for ${report.reportId}:`, err.message);
+    }
+  }
+
+  return { repaired, scanned: reports.length };
+}
+
+// ─── FIX (Bugs 1 + 2 + 3 + 4): rewritten /ai-insights ──────────────
 router.get('/ai-insights', async (req, res) => {
   try {
     const scope = reportScope(req.adminProfile);
-    const scopedMatch = Object.keys(scope).length
-      ? { $and: [scope, { 'aiFlag.available': true }] }
-      : { 'aiFlag.available': true };
+    const aggregationBackfill = await backfillFinalizedAggregates(scope);
+    const scopedMatch = scopedAiMatch(scope);
     const since30d = new Date(Date.now() - 29 * 24 * 60 * 60 * 1000);
     const trendMatch = Object.keys(scope).length
-      ? { $and: [scope, { createdAt: { $gte: since30d } }, { 'aiFlag.available': true }] }
-      : { createdAt: { $gte: since30d }, 'aiFlag.available': true };
+      ? { $and: [scope, { createdAt: { $gte: since30d } }, AI_PRESENT_FILTER] }
+      : { createdAt: { $gte: since30d }, ...AI_PRESENT_FILTER };
 
     const [analyzed, candidates, adminReviews, officerVerdicts, trendRows] = await Promise.all([
       Report.countDocuments(scopedMatch),
       Report.find(scopedMatch)
         .sort({ createdAt: -1 })
         .limit(100)
-        .select('reportId reportedNumber aiFlag location jurisdiction createdAt status officerSubtypeAggregated officerSubtypeAgreement officerSubtypeFinalizedAt resolvedAt')
+        .select('reportId reportedNumber aiFlag location jurisdiction createdAt status officerSubtypeAggregated officerTierAggregated officerSubtypeAgreement officerTierAgreement officerSubtypeFinalizedAt resolvedAt')
         .lean(),
       AdminAiReview.find({ agency: req.adminProfile.agency })
         .select('reportId originalLabel selectedLabel reviewedAt')
         .lean(),
       Report.find(
         Object.keys(scope).length
-          ? { $and: [scope, { officerSubtypeAggregated: { $ne: null } }] }
-          : { officerSubtypeAggregated: { $ne: null } }
+          ? { $and: [scope, { $or: [
+              { officerSubtypeAggregated: { $ne: null } },
+              { officerTierAggregated: { $ne: null } },
+            ] }] }
+          : { $or: [
+              { officerSubtypeAggregated: { $ne: null } },
+              { officerTierAggregated: { $ne: null } },
+            ] }
       )
-        .select('reportId aiFlag officerSubtypeAggregated officerSubtypeFinalizedAt resolvedAt createdAt')
+        .select('reportId aiFlag officerSubtypeAggregated officerTierAggregated officerSubtypeFinalizedAt resolvedAt createdAt')
         .lean(),
       Report.aggregate([
         { $match: trendMatch },
@@ -669,7 +796,9 @@ router.get('/ai-insights', async (req, res) => {
     for (const r of officerVerdicts) {
       officerVerdictByReport.set(r.reportId, {
         verdict: r.officerSubtypeAggregated,
+        tier: r.officerTierAggregated,
         agreement: r.officerSubtypeAgreement || 0,
+        tierAgreement: r.officerTierAgreement || 0,
         finalizedAt: r.officerSubtypeFinalizedAt || r.resolvedAt || null,
       });
     }
@@ -683,6 +812,13 @@ router.get('/ai-insights', async (req, res) => {
       let agreementStatus = 'pending';
       if (officer?.verdict) {
         agreementStatus = officer.verdict === aiSubtype ? 'confirmed' : 'corrected';
+      } else if (officer?.tier) {
+        const officerTier = normalizeAiLabel(officer.tier);
+        const aiTier = normalizeAiLabel(report.aiFlag?.label);
+        const aiSubtypeTier = normalizeAiLabel(aiSubtype);
+        agreementStatus = [aiTier, aiSubtypeTier].some(
+          (label) => label !== 'unknown' && label === officerTier
+        ) ? 'confirmed' : 'corrected';
       } else if (adminReview) {
         agreementStatus = 'admin-reviewed';
       }
@@ -697,8 +833,12 @@ router.get('/ai-insights', async (req, res) => {
         aiConfidence: report.aiFlag?.confidenceScore ?? report.aiFlag?.probabilityScore ?? null,
         riskLevel: report.aiFlag?.riskLevel || 'UNKNOWN',
         status: report.status,
-        officerVerdict: officer?.verdict || null,
-        officerAgreement: officer?.agreement || 0,
+        officerVerdict: officer?.verdict || (officer?.tier
+          ? `${officer.tier.charAt(0).toUpperCase()}${officer.tier.slice(1)}`
+          : null),
+        officerTier: officer?.tier || null,
+        officerAgreement: officer?.verdict ? (officer.agreement || 0) : (officer?.tierAgreement || 0),
+        officerTierAgreement: officer?.tierAgreement || 0,
         officerFinalizedAt: officer?.finalizedAt || null,
         adminReview: adminReview
           ? { selectedLabel: adminReview.selectedLabel, reviewedAt: adminReview.reviewedAt }
@@ -709,6 +849,11 @@ router.get('/ai-insights', async (req, res) => {
 
     const pendingReview = items.filter((i) => i.agreementStatus === 'pending').length;
     const reviewed = items.filter((i) => i.agreementStatus !== 'pending').length;
+    // ─── FIX (Bug 4): split the "reviewed" count so the label is honest.
+    const officerReviewed = items.filter(
+      (i) => i.agreementStatus === 'confirmed' || i.agreementStatus === 'corrected'
+    ).length;
+    const adminReviewed = items.filter((i) => i.agreementStatus === 'admin-reviewed').length;
 
     return res.json({
       success: true,
@@ -716,6 +861,9 @@ router.get('/ai-insights', async (req, res) => {
         analyzed,
         pendingReview,
         reviewed,
+        officerReviewed,
+        adminReviewed,
+        aggregationBackfill,
         modelMetrics,
         metricTrend,
         items,

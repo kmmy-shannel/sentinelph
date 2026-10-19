@@ -1,7 +1,6 @@
 // apps/mobile/components/QuickReportCard.js
 //
-// Pinned home widget: "Report in Under 1 Minute" CTA with quick shortcuts
-// into the camera-first entry point of the report wizard.
+// Pinned home widget: "Report in Under 1 Minute" CTA.
 //
 // UI: colors come from useTheme() so the card flips between dark and
 // light with the rest of the app. No behavior change.
@@ -41,31 +40,10 @@ function ReportIcon({ size = 16, color = '#ffffff' }) {
   );
 }
 
-function CameraIcon({ size = 16, color = '#94a3b8' }) {
-  return (
-    <Svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-      <Path
-        d="M2 5h12a1 1 0 011 1v7a1 1 0 01-1 1H2a1 1 0 01-1-1V6a1 1 0 011-1z"
-        stroke={color}
-        strokeWidth={1.3}
-        strokeLinejoin="round"
-      />
-      <Circle cx={8} cy={9.5} r={2.25} stroke={color} strokeWidth={1.3} />
-      <Path
-        d="M6 5l0.8-1.5h2.4L10 5"
-        stroke={color}
-        strokeWidth={1.3}
-        strokeLinejoin="round"
-      />
-    </Svg>
-  );
-}
-
 /**
- * @param {() => void} onQuickReport     - navigate to ReportScreen step 1
- * @param {() => void} onCameraShortcut  - navigate to ReportScreen with camera pre-opened
+ * @param {() => void} onQuickReport - navigate to ReportScreen step 1
  */
-export default function QuickReportCard({ onQuickReport, onCameraShortcut }) {
+export default function QuickReportCard({ onQuickReport }) {
   const { theme } = useTheme();
 
   return (
@@ -162,23 +140,6 @@ export default function QuickReportCard({ onQuickReport, onCameraShortcut }) {
           >
             Quick Report
           </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={onCameraShortcut}
-          activeOpacity={0.85}
-          style={{
-            width: 48,
-            minHeight: 44,
-            borderRadius: 12,
-            alignItems: 'center',
-            justifyContent: 'center',
-            backgroundColor: theme.surfaceAlt,
-            borderWidth: 1,
-            borderColor: theme.border,
-          }}
-        >
-          <CameraIcon size={16} color={theme.textDim} />
         </TouchableOpacity>
       </View>
     </View>

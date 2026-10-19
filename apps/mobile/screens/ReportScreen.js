@@ -111,15 +111,6 @@ function CloseIcon({ color = '#94a3b8' }) {
   );
 }
 
-function ShieldIcon({ size = 14, color = '#818cf8' }) {
-  return (
-    <Svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-      <Path d="M8 1.5L2.5 4v4c0 3.1 2.25 5.45 5.5 6 3.25-.55 5.5-2.9 5.5-6V4L8 1.5z" stroke={color} strokeWidth={1.3} strokeLinejoin="round" />
-      <Path d="M5.5 8l1.75 1.75L10.5 6" stroke={color} strokeWidth={1.3} strokeLinecap="round" strokeLinejoin="round" />
-    </Svg>
-  );
-}
-
 function ImageIcon({ size = 20, color = '#818cf8' }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 20 20" fill="none">
@@ -130,38 +121,10 @@ function ImageIcon({ size = 20, color = '#818cf8' }) {
   );
 }
 
-function PaperclipIcon({ size = 16, color = '#94a3b8' }) {
-  return (
-    <Svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-      <Path
-        d="M10.5 4.5l-5 5a2.5 2.5 0 003.54 3.54l5-5a4 4 0 10-5.66-5.66l-5 5"
-        stroke={color}
-        strokeWidth={1.3}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </Svg>
-  );
-}
-
 function CheckIcon({ size = 12, color = '#10b981' }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 12 12" fill="none">
       <Path d="M2 6l3 3 5-6" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
-    </Svg>
-  );
-}
-
-function ChevronIcon({ size = 14, color = '#64748b', up = false }) {
-  return (
-    <Svg width={size} height={size} viewBox="0 0 14 14" fill="none">
-      <Path
-        d={up ? 'M3 9l4-4 4 4' : 'M3 5l4 4 4-4'}
-        stroke={color}
-        strokeWidth={1.5}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
     </Svg>
   );
 }
@@ -487,9 +450,6 @@ export default function ReportScreen() {
   const [ocrText, setOcrText] = useState('');
   const ocrEditedByUserRef = useRef(false);
 
-  const [files, setFiles] = useState([]);
-  const [evidenceOpen, setEvidenceOpen] = useState(false);
-
   const [location, setLocation] = useState(null);
   const [nullifier, setNullifier] = useState(null);
   const [zkpHash, setZkpHash] = useState(null);
@@ -669,34 +629,6 @@ export default function ReportScreen() {
     setAnalyzeError(null);
   };
 
-  const pickExtraFiles = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission needed', 'Photo library access is required to attach evidence.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images', 'videos'],
-      allowsMultipleSelection: true,
-      quality: 0.7,
-    });
-    if (!result.canceled) {
-      const picked = result.assets.map((a) => ({
-        uri: a.uri,
-        name: a.fileName || a.uri.split('/').pop() || 'evidence',
-        type: a.mimeType || 'application/octet-stream',
-      }));
-      setFiles((prev) => [...prev, ...picked]);
-    }
-  };
-
-  const removeFile = (index) => setFiles((prev) => prev.filter((_, i) => i !== index));
-
-  const toggleEvidence = () => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setEvidenceOpen((v) => !v);
-  };
-
   const goToStep2 = async () => {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -756,10 +688,8 @@ export default function ReportScreen() {
       }
     }
 
-    const evidenceUris = [
-      ...(screenshot ? [screenshot.uri] : []),
-      ...files.map((f) => f.uri),
-    ];
+    // Extra evidence removed — only the screenshot (if any) is sent.
+    const evidenceUris = screenshot ? [screenshot.uri] : [];
 
     const storedRegion = await getStoredRegion();
     const resolvedRegion =
@@ -1616,154 +1546,7 @@ export default function ReportScreen() {
               )}
             </View>
 
-            {/* Extra evidence */}
-            <TouchableOpacity
-              onPress={toggleEvidence}
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                paddingHorizontal: S.lg,
-                paddingVertical: 14,
-                borderRadius: 16,
-                backgroundColor: theme.surface,
-                borderWidth: 1,
-                borderColor: theme.border,
-              }}
-            >
-              <View
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: S.sm,
-                  flexShrink: 1,
-                }}
-              >
-                <PaperclipIcon color={theme.textDim} />
-                <Text
-                  style={{ color: theme.textDim, fontSize: 12, fontWeight: '600' }}
-                  numberOfLines={1}
-                >
-                  Add extra evidence
-                </Text>
-                <Text
-                  style={{ color: theme.textFaint, fontSize: 10, fontWeight: '500' }}
-                  numberOfLines={1}
-                >
-                  (optional)
-                </Text>
-                {files.length > 0 && (
-                  <View
-                    style={{
-                      paddingHorizontal: 8,
-                      paddingVertical: 2,
-                      borderRadius: 6,
-                      backgroundColor: 'rgba(16,185,129,0.15)',
-                    }}
-                  >
-                    <Text style={{ color: theme.emerald, fontSize: 9, fontWeight: '700' }}>
-                      {files.length} ATTACHED
-                    </Text>
-                  </View>
-                )}
-              </View>
-              <ChevronIcon up={evidenceOpen} color={theme.textMuted} />
-            </TouchableOpacity>
-
-            {evidenceOpen && (
-              <View style={{ gap: S.sm }}>
-                <TouchableOpacity
-                  onPress={pickExtraFiles}
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: S.sm,
-                    paddingVertical: 14,
-                    paddingHorizontal: S.lg,
-                    borderRadius: 16,
-                    borderWidth: 1.5,
-                    borderStyle: 'dashed',
-                    borderColor: theme.primaryTintBorder,
-                    backgroundColor: theme.surfaceMuted,
-                  }}
-                >
-                  <PaperclipIcon color={theme.primarySoft} />
-                  <Text
-                    style={{ color: theme.primarySoft, fontSize: 12, fontWeight: '700' }}
-                    numberOfLines={1}
-                  >
-                    Attach additional files
-                  </Text>
-                </TouchableOpacity>
-
-                {files.length > 0 && (
-                  <View style={{ gap: 6 }}>
-                    {files.map((file, i) => (
-                      <View
-                        key={i}
-                        style={{
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: S.md,
-                          paddingHorizontal: S.lg,
-                          paddingVertical: S.sm,
-                          borderRadius: 12,
-                          backgroundColor: 'rgba(16,185,129,0.04)',
-                          borderWidth: 1,
-                          borderColor: 'rgba(16,185,129,0.12)',
-                        }}
-                      >
-                        <CheckIcon size={12} color={theme.emerald} />
-                        <Text
-                          style={{
-                            color: theme.text,
-                            fontSize: 11,
-                            flex: 1,
-                            fontWeight: '500',
-                          }}
-                          numberOfLines={1}
-                        >
-                          {file.name}
-                        </Text>
-                        <TouchableOpacity
-                          onPress={() => removeFile(i)}
-                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                        >
-                          <Text style={{ color: theme.textMuted, fontSize: 14 }}>✕</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ))}
-                  </View>
-                )}
-
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'flex-start',
-                    gap: S.sm,
-                    paddingHorizontal: S.lg,
-                    paddingVertical: S.md,
-                    borderRadius: 16,
-                    backgroundColor: theme.surfaceMuted,
-                    borderWidth: 1,
-                    borderColor: theme.borderSoft,
-                  }}
-                >
-                  <ShieldIcon size={12} color={theme.textFaint} />
-                  <Text
-                    style={{
-                      color: theme.textFaint,
-                      fontSize: 10,
-                      flex: 1,
-                      lineHeight: 15,
-                    }}
-                  >
-                    Evidence is hashed client-side. Raw files never leave your device unencrypted.
-                  </Text>
-                </View>
-              </View>
-            )}
+            {/* "Add extra evidence" section removed */}
           </>
         )}
 
@@ -1825,10 +1608,7 @@ export default function ReportScreen() {
                   },
                   {
                     label: 'Evidence',
-                    value:
-                      files.length + (screenshot ? 1 : 0) > 0
-                        ? `${files.length + (screenshot ? 1 : 0)} file(s) attached`
-                        : 'No evidence',
+                    value: screenshot ? '1 file(s) attached' : 'No evidence',
                   },
                   {
                     label: 'Location',
@@ -1987,4 +1767,4 @@ export default function ReportScreen() {
       </View>
     </SafeAreaView>
   );
-}
+}   

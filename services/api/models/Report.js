@@ -7,8 +7,11 @@ const { Schema } = mongoose;
 
 const OPEN_STATUSES = ['pending', 'under_review', 'one_approval', 'two_approvals'];
 const RESOLVED_STATUSES = ['blacklisted', 'approved', 'rejected'];
-const CONSENSUS_REQUIRED = 3;   // panel size (max officers who may vote)
-const DECISIVE_VOTES = 2;       // quorum: 2-of-3 finalizes immediately
+const CONSENSUS_REQUIRED = 3;
+const DECISIVE_VOTES = 2;
+
+const VALID_TIERS = ['malicious', 'grey_area', 'legitimate'];
+const VALID_SUBTYPE_ACTIONS = ['confirmed', 'corrected', 'unsure', null];
 
 function httpError(statusCode, code, message) {
   const err = new Error(message);
@@ -25,23 +28,46 @@ function unwrapFindOneAndUpdate(result) {
   return isEnvelope ? result.value || null : result;
 }
 
-// Compute the 2-of-3 aggregated subtype verdict from a list of votes.
-function computeAggregatedSubtype(votes) {
-  const tally = {};
+function computeAggregatedClassification(votes) {
+  const subtypeTally = {};
+  const tierTally = {};
+
   for (const v of votes || []) {
-    if (v.subtypeAction === 'unsure' || !v.subtypeAction) continue;
-    const label = v.subtypeAction === 'corrected'
-      ? v.correctedSubtype
-      : v.aiSubtypeAtVote;
-    if (!label) continue;
-    tally[label] = (tally[label] || 0) + 1;
+    if (v.subtypeAction === 'unsure') continue;
+
+    let subtype = null;
+    let tier = null;
+
+    if (v.subtypeAction === 'corrected') {
+      subtype = v.correctedSubtype || null;
+      tier = v.correctedTier || null;
+    } else if (v.subtypeAction === 'confirmed') {
+      subtype = v.aiSubtypeAtVote || null;
+      tier = v.aiTierAtVote || null;
+    } else if (v.decision === 'approve') {
+      subtype = v.aiSubtypeAtVote || null;
+      tier = v.aiTierAtVote || null;
+    }
+
+    if (subtype) subtypeTally[subtype] = (subtypeTally[subtype] || 0) + 1;
+    if (tier) tierTally[tier] = (tierTally[tier] || 0) + 1;
   }
-  const sorted = Object.entries(tally).sort((a, b) => b[1] - a[1]);
-  if (sorted.length === 0) return { label: null, agreement: 0 };
-  const [winner, count] = sorted[0];
+
+  const pickWinner = (tally) => {
+    const sorted = Object.entries(tally).sort((a, b) => b[1] - a[1]);
+    if (sorted.length === 0) return { label: null, agreement: 0 };
+    const [winner, count] = sorted[0];
+    return { label: winner, agreement: count };
+  };
+
+  const subtypeResult = pickWinner(subtypeTally);
+  const tierResult = pickWinner(tierTally);
+
   return {
-    label: count >= 2 ? winner : null,
-    agreement: count,
+    subtype: subtypeResult.label,
+    subtypeAgreement: subtypeResult.agreement,
+    tier: tierResult.label,
+    tierAgreement: tierResult.agreement,
   };
 }
 
@@ -51,11 +77,7 @@ const AiFlagSchema = new Schema(
     probabilityScore: { type: Number, min: 0, max: 1, default: null },
     label: {
       type: String,
-      enum: [
-        'legitimate', 'grey_area', 'malicious',
-        'likely_scam', 'uncertain', 'likely_legitimate',
-        'unavailable',
-      ],
+      enum: ['legitimate', 'grey_area', 'malicious', 'likely_scam', 'uncertain', 'likely_legitimate', 'unavailable'],
       default: 'unavailable',
     },
     subtype: {
@@ -65,6 +87,7 @@ const AiFlagSchema = new Schema(
         'delivery_tracking', 'bank_activity_alert',
         'brand_marketing',
         'phishing_link', 'fake_prize_lottery',
+        'wrong_number_baiting', 'urgent_fine_toll', 'impersonation_family',
         'UNLABELED',
         null,
       ],
@@ -74,21 +97,9 @@ const AiFlagSchema = new Schema(
     subtypeModelVersion: { type: String, default: null },
     isScam: { type: Boolean, default: null },
     confidenceScore: { type: Number, min: 0, max: 1, default: null },
-    riskLevel: {
-      type: String,
-      enum: ['HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'],
-      default: 'UNKNOWN',
-    },
+    riskLevel: { type: String, enum: ['HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'], default: 'UNKNOWN' },
     explanationReasons: {
-      type: [
-        new Schema(
-          {
-            category: { type: String, default: '' },
-            description: { type: String, default: '' },
-          },
-          { _id: false }
-        ),
-      ],
+      type: [new Schema({ category: { type: String, default: '' }, description: { type: String, default: '' } }, { _id: false })],
       default: [],
     },
     ocrUsed: { type: Boolean, default: false },
@@ -101,7 +112,18 @@ const AiFlagSchema = new Schema(
   },
   { _id: false }
 );
-
+AiFlagSchema.pre('validate', function autoMarkAvailable(next) {
+  const hasRealSignal =
+    this.subtype != null ||
+    (this.label && this.label !== 'unavailable') ||
+    (this.riskLevel && this.riskLevel !== 'UNKNOWN') ||
+    this.confidenceScore != null ||
+    this.subtypeConfidence != null;
+  if (hasRealSignal) {
+    this.available = true;
+  }
+  return next();
+});
 const LocationSchema = new Schema(
   {
     address: { type: String, trim: true, maxlength: 300, default: null },
@@ -122,240 +144,80 @@ const VoteSchema = new Schema(
     comment: { type: String, trim: true, maxlength: 2000, default: '' },
     votedAt: { type: Date, default: Date.now },
     editedAt: { type: Date, default: null },
-    // ─── SUBTYPE VERIFICATION (continuous-learning signal) ─────────
-    subtypeAction: {
-      type: String,
-      enum: ['confirmed', 'corrected', 'unsure', null],
-      default: null,
-    },
+    subtypeAction: { type: String, enum: ['confirmed', 'corrected', 'unsure', null], default: null },
     correctedSubtype: { type: String, default: null },
+    correctedTier: { type: String, enum: [...VALID_TIERS, null], default: null },
     isHighValue: { type: Boolean, default: false },
     aiSubtypeAtVote: { type: String, default: null },
+    aiTierAtVote: { type: String, enum: ['malicious', 'grey_area', 'legitimate', 'unavailable', null], default: null },
     aiSubtypeModelVersionAtVote: { type: String, default: null },
-    // ──────────────────────────────────────────────────────────────
   },
   { _id: false }
 );
 
 const ConsensusSchema = new Schema(
-  {
-    approvals: { type: Number, default: 0 },
-    rejections: { type: Number, default: 0 },
-    required: { type: Number, default: DECISIVE_VOTES },
-  },
+  { approvals: { type: Number, default: 0 }, rejections: { type: Number, default: 0 }, required: { type: Number, default: DECISIVE_VOTES } },
   { _id: false }
 );
 
 const ReportSchema = new Schema(
   {
-    reportId: {
-      type: String,
-      required: true,
-      unique: true,
-      default: () => uuidv4(),
-      immutable: true,
-    },
-    textData: {
-      type: String,
-      required: false,
-      trim: true,
-      maxlength: 2000,
-      default: null,
-      immutable: true,
-    },
-    reportedNumber: {
-      type: String,
-      required: [true, 'reportedNumber (the scam number/sender being reported) is required.'],
-      trim: true,
-      maxlength: 40,
-      immutable: true,
-    },
-
-    // ─── TARGET KIND (number vs brand impersonation) ───────────────
-    // 'number'  — the reported sender IS the scam target (a phone
-    //             number, short code, or alphanumeric SMS header like
-    //             'GCashAlert').
-    // 'brand'   — the SMS body impersonates a known brand; the sender
-    //             is a human name or unrelated number that is not
-    //             itself the target. brandName records which brand is
-    //             being impersonated (e.g. 'GCash', 'Maya', 'BDO').
-    targetKind: {
-      type: String,
-      enum: ['number', 'brand'],
-      default: 'number',
-      index: true,
-      immutable: true,
-    },
-    brandName: {
-      type: String,
-      trim: true,
-      maxlength: 80,
-      default: null,
-      index: true,
-      immutable: true,
-    },
-    // ────────────────────────────────────────────────────────────────
-
-    location: {
-      type: LocationSchema,
-      default: () => ({}),
-      immutable: true,
-    },
-    nullifier: {
-      type: String,
-      required: [true, 'nullifier is required (ZKP one-time-reporter proof).'],
-      unique: true,
-      trim: true,
-      immutable: true,
-    },
-    aiFlag: {
-      type: AiFlagSchema,
-      default: () => ({}),
-      immutable: true,
-    },
-    sequence: {
-      type: Number,
-      required: true,
-      unique: true,
-      immutable: true,
-    },
-    previousHash: {
-      type: String,
-      required: true,
-      immutable: true,
-    },
-    hash: {
-      type: String,
-      unique: true,
-      immutable: true,
-    },
-
+    reportId: { type: String, required: true, unique: true, default: () => uuidv4(), immutable: true },
+    textData: { type: String, required: false, trim: true, maxlength: 2000, default: null, immutable: true },
+    reportedNumber: { type: String, required: true, trim: true, maxlength: 40, immutable: true },
+    targetKind: { type: String, enum: ['number', 'brand'], default: 'number', index: true, immutable: true },
+    brandName: { type: String, trim: true, maxlength: 80, default: null, index: true, immutable: true },
+    location: { type: LocationSchema, default: () => ({}), immutable: true },
+    nullifier: { type: String, required: true, unique: true, trim: true, immutable: true },
+    aiFlag: { type: AiFlagSchema, default: () => ({}), immutable: true },
+    sequence: { type: Number, required: true, unique: true, immutable: true },
+    previousHash: { type: String, required: true, immutable: true },
+    hash: { type: String, unique: true, immutable: true },
     sender: { type: String, trim: true, maxlength: 40, default: null },
     scammerNumber: { type: String, trim: true, maxlength: 40, default: null },
     evidenceText: { type: String, trim: true, maxlength: 2000, default: null },
     content: { type: String, trim: true, maxlength: 2000, default: null },
-
     scamType: { type: String, trim: true, maxlength: 60, default: 'UNKNOWN' },
     category: { type: String, trim: true, maxlength: 60, default: 'UNKNOWN' },
     channel: { type: String, trim: true, maxlength: 20, default: 'SMS' },
     jurisdiction: { type: String, trim: true, maxlength: 60, default: 'PH' },
-
     evidenceFiles: { type: [String], default: [] },
-
     evidenceImage: { type: String, default: null },
     hasEvidenceImage: { type: Boolean, default: false },
-
     nullifierHash: { type: String, trim: true, default: null },
     zkpHash: { type: String, trim: true, default: null },
     aiScore: { type: Number, min: 0, max: 1, default: null },
-
-    citizenHash: {
-      type: String,
-      trim: true,
-      index: true,
-      immutable: true,
-      select: false,
-      default: null,
-    },
-
-    // ─── REPORTER IDENTITY ────────────────────────────────────────
-    reporterName: {
-      type: String,
-      trim: true,
-      maxlength: 120,
-      default: null,
-    },
-    reporterEmail: {
-      type: String,
-      trim: true,
-      lowercase: true,
-      maxlength: 254,
-      default: null,
-    },
-    reporterShared: {
-      type: Boolean,
-      default: false,
-    },
-
-    // ─── OFFICER REVIEW FIELDS ────────────────────────────────────
-    officerAction: {
-      type: String,
-      enum: ['confirmed', 'corrected', 'unsure', 'spam', null],
-      default: null,
-    },
-    officerSubtype: {
-      type: String,
-      default: null,
-    },
-    officerLabel: {
-      type: String,
-      enum: ['legitimate', 'grey_area', 'malicious', null],
-      default: null,
-    },
-    officerId: {
-      type: String,
-      default: null,
-      index: true,
-    },
-    officerVerifiedAt: {
-      type: Date,
-      default: null,
-    },
-    isHighValue: {
-      type: Boolean,
-      default: false,
-    },
-
-    // ─── AGGREGATED SUBTYPE VERDICT (computed at finalization) ─────
-    officerSubtypeAggregated: {
-      type: String,
-      default: null,
-    },
-    officerSubtypeAgreement: {
-      type: Number,
-      default: 0,
-    },
-    officerSubtypeFinalizedAt: {
-      type: Date,
-      default: null,
-    },
-    // ──────────────────────────────────────────────────────────────
-
-    // ---- Workflow state ----
+    citizenHash: { type: String, trim: true, index: true, immutable: true, select: false, default: null },
+    reporterName: { type: String, trim: true, maxlength: 120, default: null },
+    reporterEmail: { type: String, trim: true, lowercase: true, maxlength: 254, default: null },
+    reporterShared: { type: Boolean, default: false },
+    officerAction: { type: String, enum: ['confirmed', 'corrected', 'unsure', 'spam', null], default: null },
+    officerSubtype: { type: String, default: null },
+    officerLabel: { type: String, enum: ['legitimate', 'grey_area', 'malicious', null], default: null },
+    officerId: { type: String, default: null, index: true },
+    officerVerifiedAt: { type: Date, default: null },
+    isHighValue: { type: Boolean, default: false },
+    officerSubtypeAggregated: { type: String, default: null },
+    officerSubtypeAgreement: { type: Number, default: 0 },
+    officerTierAggregated: { type: String, enum: [...VALID_TIERS, null], default: null },
+    officerTierAgreement: { type: Number, default: 0 },
+    officerSubtypeFinalizedAt: { type: Date, default: null },
     status: {
       type: String,
-      enum: [
-        'pending',
-        'under_review',
-        'one_approval',
-        'two_approvals',
-        'blacklisted',
-        'approved',
-        'rejected',
-      ],
+      enum: ['pending', 'under_review', 'one_approval', 'two_approvals', 'blacklisted', 'approved', 'rejected'],
       default: 'pending',
     },
-
     resolvedAt: { type: Date, default: null },
-
     votes: { type: [VoteSchema], default: [] },
     consensusState: { type: ConsensusSchema, default: () => ({}) },
   },
-  {
-    timestamps: { createdAt: true, updatedAt: false },
-  }
+  { timestamps: { createdAt: true, updatedAt: false } }
 );
 
 ReportSchema.path('createdAt', { immutable: true });
-
 ReportSchema.index({ reportedNumber: 1, status: 1 });
 ReportSchema.index({ status: 1, sequence: -1 });
 ReportSchema.index({ status: 1, resolvedAt: -1 });
-
-// Target-kind indexes. Support the two-section registry split on the
-// mobile Home screen: one list of confirmed scam numbers, one list of
-// impersonated brands. Also used by the /public registry route when
-// ?kind=number or ?kind=brand is supplied.
 ReportSchema.index({ targetKind: 1, status: 1 });
 ReportSchema.index({ targetKind: 1, brandName: 1 });
 
@@ -373,40 +235,19 @@ ReportSchema.methods.getCanonicalPayload = function getCanonicalPayload() {
 };
 
 ReportSchema.pre('save', function preSaveHashChain(next) {
-  if (!this.isNew) {
-    return next(
-      new Error(
-        'Report documents are immutable and cannot be modified after creation. ' +
-          'Use Report.castVote() or Report.collection.updateOne() for ' +
-          'sanctioned workflow-field changes.'
-      )
-    );
-  }
-
-  if (!this.previousHash) {
-    return next(new Error('previousHash must be set (from the chain tail) before saving a Report.'));
-  }
-
-  if (typeof this.sequence !== 'number') {
-    return next(new Error('sequence must be set before saving a Report.'));
-  }
-
-  if (!this.createdAt) {
-    this.createdAt = new Date();
-  }
-
+  if (!this.isNew) return next(new Error('Report documents are immutable.'));
+  if (!this.previousHash) return next(new Error('previousHash must be set.'));
+  if (typeof this.sequence !== 'number') return next(new Error('sequence must be set.'));
+  if (!this.createdAt) this.createdAt = new Date();
   try {
     this.hash = computeHash(this.getCanonicalPayload(), this.previousHash);
     return next();
-  } catch (err) {
-    return next(err);
-  }
+  } catch (err) { return next(err); }
 });
 
 function blockDirectMutation(next) {
   next(new Error('Report documents are append-only. Direct update/delete operations are not permitted.'));
 }
-
 ReportSchema.pre('findOneAndUpdate', blockDirectMutation);
 ReportSchema.pre('updateMany', blockDirectMutation);
 ReportSchema.pre('updateOne', blockDirectMutation);
@@ -415,60 +256,98 @@ ReportSchema.pre('deleteMany', blockDirectMutation);
 ReportSchema.pre('findOneAndDelete', blockDirectMutation);
 ReportSchema.pre('findOneAndRemove', blockDirectMutation);
 
-/**
- * CANONICAL VOTE ENTRY POINT — 2-of-3 Quorum
- */
+function validateCorrectionPayload({ subtypeAction, correctedSubtype, correctedTier }) {
+  if (!VALID_SUBTYPE_ACTIONS.includes(subtypeAction)) {
+    throw httpError(400, 'VALIDATION_ERROR', `subtypeAction must be one of: confirmed, corrected, unsure, null.`);
+  }
+  if (subtypeAction === 'corrected') {
+    if (!correctedSubtype) throw httpError(400, 'VALIDATION_ERROR', 'correctedSubtype is required.');
+    if (!correctedTier) throw httpError(400, 'VALIDATION_ERROR', 'correctedTier is required.');
+    if (!VALID_TIERS.includes(correctedTier)) throw httpError(400, 'VALIDATION_ERROR', `correctedTier must be malicious, grey_area, or legitimate.`);
+  } else {
+    if (correctedSubtype) throw httpError(400, 'VALIDATION_ERROR', 'correctedSubtype may only be set when subtypeAction is corrected.');
+    if (correctedTier) throw httpError(400, 'VALIDATION_ERROR', 'correctedTier may only be set when subtypeAction is corrected.');
+  }
+}
+
+async function finalizeAggregatedClassification(reportId, votes) {
+  const result = computeAggregatedClassification(votes);
+  const now = new Date();
+  const isAllRejected =
+    Array.isArray(votes) && votes.length >= DECISIVE_VOTES && votes.every((v) => v.decision === 'reject');
+
+  const finalTier = isAllRejected ? 'legitimate' : result.tier;
+  const updateDoc = {
+    $set: {
+      officerSubtypeAggregated: result.subtype,
+      officerSubtypeAgreement: result.subtypeAgreement,
+      officerTierAggregated: finalTier,
+      officerTierAgreement: result.tierAgreement,
+      officerSubtypeFinalizedAt: now,
+    },
+  };
+
+  const ReportModel = mongoose.models.Report || mongoose.model('Report');
+  const collection = ReportModel.collection;
+
+  console.log('[finalize] ============================================');
+  console.log('[finalize] CALLED for reportId:', reportId);
+  console.log('[finalize] collection name:', collection.collectionName);
+  console.log('[finalize] db name:', mongoose.connection.db?.databaseName);
+  console.log('[finalize] votes count:', (votes || []).length);
+  console.log('[finalize] computed result:', JSON.stringify(result));
+  console.log('[finalize] writing updateDoc:', JSON.stringify(updateDoc, null, 2));
+
+  let writeResult;
+  try {
+    writeResult = await collection.updateOne({ reportId }, updateDoc);
+  } catch (writeErr) {
+    console.error('[finalize] WRITE THREW:', writeErr.message);
+    console.error('[finalize] stack:', writeErr.stack);
+    throw writeErr;
+  }
+
+  console.log('[finalize] write result:', JSON.stringify({
+    acknowledged: writeResult.acknowledged,
+    matchedCount: writeResult.matchedCount,
+    modifiedCount: writeResult.modifiedCount,
+    upsertedId: writeResult.upsertedId,
+  }));
+  console.log('[finalize] ============================================');
+
+  if (!writeResult.acknowledged || writeResult.matchedCount === 0) {
+    throw httpError(500, 'FINALIZE_FAILED',
+      `Could not finalize ${reportId} — write did not match any document in "${collection.collectionName}".`);
+  }
+
+  return { ...result, tier: finalTier, finalizedAt: now };
+}
+
 ReportSchema.statics.castVote = async function castVote(
   reportId,
   {
-    userId,
-    role = 'officer',
-    decision,
-    comment = '',
-    subtypeAction = null,
-    correctedSubtype = null,
-    isHighValue = false,
-    aiSubtypeAtVote = null,
-    aiSubtypeModelVersionAtVote = null,
+    userId, role = 'officer', decision, comment = '',
+    subtypeAction = null, correctedSubtype = null, correctedTier = null,
+    isHighValue = false, aiSubtypeAtVote = null, aiTierAtVote = null, aiSubtypeModelVersionAtVote = null,
   } = {}
 ) {
-  if (!reportId || typeof reportId !== 'string') {
-    throw httpError(400, 'VALIDATION_ERROR', 'A valid reportId is required to vote.');
-  }
-  if (!userId || typeof userId !== 'string') {
-    throw httpError(400, 'VALIDATION_ERROR', 'A voter identity is required to register a vote.');
-  }
-  if (!['approve', 'reject'].includes(decision)) {
-    throw httpError(400, 'VALIDATION_ERROR', "decision must be either 'approve' or 'reject'.");
-  }
+  if (!reportId || typeof reportId !== 'string') throw httpError(400, 'VALIDATION_ERROR', 'A valid reportId is required.');
+  if (!userId || typeof userId !== 'string') throw httpError(400, 'VALIDATION_ERROR', 'A voter identity is required.');
+  if (!['approve', 'reject'].includes(decision)) throw httpError(400, 'VALIDATION_ERROR', "decision must be either 'approve' or 'reject'.");
 
-  const VALID_SUBTYPE_ACTIONS = ['confirmed', 'corrected', 'unsure', null];
-  if (!VALID_SUBTYPE_ACTIONS.includes(subtypeAction)) {
-    throw httpError(400, 'VALIDATION_ERROR',
-      `subtypeAction must be one of: confirmed, corrected, unsure, null (got "${subtypeAction}").`);
-  }
-  if (subtypeAction === 'corrected' && !correctedSubtype) {
-    throw httpError(400, 'VALIDATION_ERROR',
-      'correctedSubtype is required when subtypeAction is "corrected".');
-  }
-  if (subtypeAction !== 'corrected' && correctedSubtype) {
-    throw httpError(400, 'VALIDATION_ERROR',
-      'correctedSubtype may only be set when subtypeAction is "corrected".');
-  }
+  validateCorrectionPayload({ subtypeAction, correctedSubtype, correctedTier });
 
   const collection = mongoose.model('Report').collection;
 
   const vote = {
-    userId,
-    role,
-    decision,
-    comment: String(comment || '').trim().slice(0, 2000),
-    votedAt: new Date(),
-    editedAt: null,
+    userId, role, decision, comment: String(comment || '').trim().slice(0, 2000),
+    votedAt: new Date(), editedAt: null,
     subtypeAction: subtypeAction || null,
     correctedSubtype: subtypeAction === 'corrected' ? correctedSubtype : null,
+    correctedTier: subtypeAction === 'corrected' ? correctedTier : null,
     isHighValue: Boolean(isHighValue),
     aiSubtypeAtVote: aiSubtypeAtVote || null,
+    aiTierAtVote: aiTierAtVote || null,
     aiSubtypeModelVersionAtVote: aiSubtypeModelVersionAtVote || null,
   };
 
@@ -499,94 +378,76 @@ ReportSchema.statics.castVote = async function castVote(
       $set: {
         resolvedAt: {
           $cond: [
-            {
-              $and: [
-                {
-                  $or: [
-                    { $gte: ['$consensusState.approvals', DECISIVE_VOTES] },
-                    { $gte: ['$consensusState.rejections', DECISIVE_VOTES] },
-                  ],
-                },
-                { $eq: [{ $ifNull: ['$resolvedAt', null] }, null] },
-              ],
-            },
-            '$$NOW',
-            { $ifNull: ['$resolvedAt', null] },
+            { $and: [ { $or: [ { $gte: ['$consensusState.approvals', DECISIVE_VOTES] }, { $gte: ['$consensusState.rejections', DECISIVE_VOTES] } ] }, { $eq: [{ $ifNull: ['$resolvedAt', null] }, null] } ] },
+            '$$NOW', { $ifNull: ['$resolvedAt', null] }
           ],
         },
       },
     },
   ];
 
-  const result = await collection.findOneAndUpdate(
+const result = await collection.findOneAndUpdate(
     { reportId, status: { $in: OPEN_STATUSES }, 'votes.userId': { $ne: userId } },
-    pipeline,
-    { returnDocument: 'after' }
+    pipeline, { returnDocument: 'after' }
   );
 
   const updated = unwrapFindOneAndUpdate(result);
+
+  console.log('[castVote] ============================================');
+  console.log('[castVote] reportId:', reportId);
+  console.log('[castVote] updated is null?', updated === null);
   if (updated) {
-    if (['blacklisted', 'approved', 'rejected'].includes(updated.status)) {
-      const { label, agreement } = computeAggregatedSubtype(updated.votes);
-      await mongoose.model('Report').collection.updateOne(
-        { reportId },
-        { $set: { officerSubtypeAggregated: label, officerSubtypeAgreement: agreement, officerSubtypeFinalizedAt: new Date() } }
-      );
-      updated.officerSubtypeAggregated = label;
-      updated.officerSubtypeAgreement = agreement;
-      updated.officerSubtypeFinalizedAt = new Date();
+    console.log('[castVote] updated.status:', updated.status);
+    console.log('[castVote] updated.votes count:', (updated.votes || []).length);
+    console.log('[castVote] RESOLVED_STATUSES:', RESOLVED_STATUSES);
+    console.log('[castVote] should finalize?', RESOLVED_STATUSES.includes(updated.status));
+  }
+  console.log('[castVote] ============================================');
+
+  if (updated) {
+    if (RESOLVED_STATUSES.includes(updated.status)) {
+      const agg = await finalizeAggregatedClassification(updated.reportId, updated.votes);
+      updated.officerSubtypeAggregated = agg.subtype;
+      updated.officerSubtypeAgreement = agg.subtypeAgreement;
+      updated.officerTierAggregated = agg.tier;
+      updated.officerTierAgreement = agg.tierAgreement;
+      updated.officerSubtypeFinalizedAt = agg.finalizedAt;
     }
     return updated;
   }
 
   const existing = await collection.findOne({ reportId }, { projection: { status: 1, votes: 1 } });
-
   if (!existing) throw httpError(404, 'NOT_FOUND', 'Report not found.');
-  if (!OPEN_STATUSES.includes(existing.status)) {
-    throw httpError(409, 'REPORT_FINALIZED', `This report is already finalized as "${existing.status}" and no longer accepts votes.`);
-  }
-  if (Array.isArray(existing.votes) && existing.votes.some((v) => v.userId === userId)) {
-    throw httpError(409, 'DUPLICATE_VOTE', 'You have already voted on this report. A single officer cannot vote twice.');
-  }
+  if (!OPEN_STATUSES.includes(existing.status)) throw httpError(409, 'REPORT_FINALIZED', `Already finalized as "${existing.status}".`);
+  if (Array.isArray(existing.votes) && existing.votes.some((v) => v.userId === userId)) throw httpError(409, 'DUPLICATE_VOTE', 'You have already voted.');
 
-  throw httpError(409, 'VOTE_CONFLICT', 'The vote could not be recorded. Please refresh and try again.');
+  throw httpError(409, 'VOTE_CONFLICT', 'The vote could not be recorded.');
 };
 
-/**
- * CHANGE VOTE — Option A (replace-in-place)
- */
 ReportSchema.statics.changeVote = async function changeVote(
   reportId,
   {
-    userId,
-    decision,
-    comment = '',
-    subtypeAction = null,
-    correctedSubtype = null,
-    isHighValue = false,
-    aiSubtypeAtVote = null,
-    aiSubtypeModelVersionAtVote = null,
+    userId, decision, comment = '',
+    subtypeAction = null, correctedSubtype = null, correctedTier = null,
+    isHighValue = false, aiSubtypeAtVote = null, aiTierAtVote = null, aiSubtypeModelVersionAtVote = null,
   } = {}
 ) {
   if (!reportId || typeof reportId !== 'string') throw httpError(400, 'VALIDATION_ERROR', 'A valid reportId is required.');
   if (!userId || typeof userId !== 'string') throw httpError(400, 'VALIDATION_ERROR', 'A voter identity is required.');
   if (!['approve', 'reject'].includes(decision)) throw httpError(400, 'VALIDATION_ERROR', "decision must be either 'approve' or 'reject'.");
 
-  const VALID_SUBTYPE_ACTIONS = ['confirmed', 'corrected', 'unsure', null];
-  if (!VALID_SUBTYPE_ACTIONS.includes(subtypeAction)) throw httpError(400, 'VALIDATION_ERROR', `subtypeAction must be one of: confirmed, corrected, unsure, null.`);
-  if (subtypeAction === 'corrected' && !correctedSubtype) throw httpError(400, 'VALIDATION_ERROR', 'correctedSubtype is required when subtypeAction is "corrected".');
+  validateCorrectionPayload({ subtypeAction, correctedSubtype, correctedTier });
 
   const collection = mongoose.model('Report').collection;
-
   const now = new Date();
   const nextComment = String(comment || '').trim().slice(0, 2000);
 
   const before = await collection.findOne({ reportId }, { projection: { status: 1, votes: 1, consensusState: 1 } });
   if (!before) throw httpError(404, 'NOT_FOUND', 'Report not found.');
-  if (!OPEN_STATUSES.includes(before.status)) throw httpError(409, 'REPORT_FINALIZED', `This report is already finalized as "${before.status}" and its votes can no longer be edited.`);
+  if (!OPEN_STATUSES.includes(before.status)) throw httpError(409, 'REPORT_FINALIZED', `Already finalized as "${before.status}".`);
 
   const existingVote = (before.votes || []).find((v) => v.userId === userId);
-  if (!existingVote) throw httpError(409, 'NOT_VOTED_YET', 'You have not voted on this report yet, so there is nothing to edit.');
+  if (!existingVote) throw httpError(409, 'NOT_VOTED_YET', 'You have not voted yet.');
 
   const previous = {
     decision: existingVote.decision,
@@ -600,8 +461,7 @@ ReportSchema.statics.changeVote = async function changeVote(
       $set: {
         votes: {
           $map: {
-            input: '$votes',
-            as: 'v',
+            input: '$votes', as: 'v',
             in: {
               $cond: [
                 { $eq: ['$$v.userId', userId] },
@@ -609,13 +469,13 @@ ReportSchema.statics.changeVote = async function changeVote(
                   $mergeObjects: [
                     '$$v',
                     {
-                      decision,
-                      comment: nextComment,
-                      editedAt: now,
+                      decision, comment: nextComment, editedAt: now,
                       subtypeAction: subtypeAction || null,
                       correctedSubtype: subtypeAction === 'corrected' ? correctedSubtype : null,
+                      correctedTier: subtypeAction === 'corrected' ? correctedTier : null,
                       isHighValue: Boolean(isHighValue),
                       aiSubtypeAtVote: aiSubtypeAtVote || null,
+                      aiTierAtVote: aiTierAtVote || null,
                       aiSubtypeModelVersionAtVote: aiSubtypeModelVersionAtVote || null,
                     },
                   ],
@@ -652,52 +512,49 @@ ReportSchema.statics.changeVote = async function changeVote(
       $set: {
         resolvedAt: {
           $cond: [
-            {
-              $and: [
-                {
-                  $or: [
-                    { $gte: ['$consensusState.approvals', DECISIVE_VOTES] },
-                    { $gte: ['$consensusState.rejections', DECISIVE_VOTES] },
-                  ],
-                },
-                { $eq: [{ $ifNull: ['$resolvedAt', null] }, null] },
-              ],
-            },
-            '$$NOW',
-            { $ifNull: ['$resolvedAt', null] },
+            { $and: [ { $or: [ { $gte: ['$consensusState.approvals', DECISIVE_VOTES] }, { $gte: ['$consensusState.rejections', DECISIVE_VOTES] } ] }, { $eq: [{ $ifNull: ['$resolvedAt', null] }, null] } ] },
+            '$$NOW', { $ifNull: ['$resolvedAt', null] }
           ],
         },
       },
     },
   ];
 
-  const result = await collection.findOneAndUpdate(
+    const result = await collection.findOneAndUpdate(
     { reportId, status: { $in: OPEN_STATUSES }, 'votes.userId': userId },
-    pipeline,
-    { returnDocument: 'after' }
+    pipeline, { returnDocument: 'after' }
   );
 
   const updated = unwrapFindOneAndUpdate(result);
+
+  console.log('[changeVote] ============================================');
+  console.log('[changeVote] reportId:', reportId);
+  console.log('[changeVote] updated is null?', updated === null);
   if (updated) {
-    if (['blacklisted', 'approved', 'rejected'].includes(updated.status)) {
-      const { label, agreement } = computeAggregatedSubtype(updated.votes);
-      await mongoose.model('Report').collection.updateOne(
-        { reportId },
-        { $set: { officerSubtypeAggregated: label, officerSubtypeAgreement: agreement, officerSubtypeFinalizedAt: new Date() } }
-      );
-      updated.officerSubtypeAggregated = label;
-      updated.officerSubtypeAgreement = agreement;
+    console.log('[changeVote] updated.status:', updated.status);
+    console.log('[changeVote] updated.votes count:', (updated.votes || []).length);
+    console.log('[changeVote] should finalize?', RESOLVED_STATUSES.includes(updated.status));
+  }
+  console.log('[changeVote] ============================================');
+
+  if (updated) {
+    if (RESOLVED_STATUSES.includes(updated.status)) {
+      const agg = await finalizeAggregatedClassification(updated.reportId, updated.votes);
+      updated.officerSubtypeAggregated = agg.subtype;
+      updated.officerSubtypeAgreement = agg.subtypeAgreement;
+      updated.officerTierAggregated = agg.tier;
+      updated.officerTierAgreement = agg.tierAgreement;
+      updated.officerSubtypeFinalizedAt = agg.finalizedAt;
     }
     return { updated, previous };
   }
 
-  throw httpError(409, 'VOTE_CONFLICT', 'The report changed while your edit was being saved. Please refresh and try again.');
+  throw httpError(409, 'VOTE_CONFLICT', 'The report changed while your edit was being saved.');
 };
 
 ReportSchema.statics.applyWorkflowUpdate = async function applyWorkflowUpdate(reportId, { votes, consensusState, status }) {
   const allowedStatuses = ['pending', 'under_review', 'one_approval', 'two_approvals', 'blacklisted', 'approved', 'rejected'];
-  if (status && !allowedStatuses.includes(status)) throw new Error(`Invalid status "${status}". Allowed: ${allowedStatuses.join(', ')}`);
-
+  if (status && !allowedStatuses.includes(status)) throw new Error(`Invalid status "${status}".`);
   const update = {};
   if (votes !== undefined) update.votes = votes;
   if (consensusState !== undefined) update.consensusState = consensusState;
@@ -705,20 +562,29 @@ ReportSchema.statics.applyWorkflowUpdate = async function applyWorkflowUpdate(re
     update.status = status;
     if (RESOLVED_STATUSES.includes(status)) update.resolvedAt = new Date();
   }
-
-  if (Object.keys(update).length === 0) throw new Error('applyWorkflowUpdate requires at least one workflow field to change.');
-
+  if (Object.keys(update).length === 0) throw new Error('Requires at least one workflow field.');
   return mongoose.model('Report').collection.updateOne({ reportId }, { $set: update });
 };
 
 ReportSchema.statics.updateStatus = async function updateStatus(reportId, newStatus) {
   const allowed = ['pending', 'under_review', 'one_approval', 'two_approvals', 'blacklisted', 'approved', 'rejected'];
-  if (!allowed.includes(newStatus)) throw new Error(`Invalid status "${newStatus}". Allowed: ${allowed.join(', ')}`);
-
+  if (!allowed.includes(newStatus)) throw new Error(`Invalid status "${newStatus}".`);
   const update = { status: newStatus };
   if (RESOLVED_STATUSES.includes(newStatus)) update.resolvedAt = new Date();
-
   return mongoose.model('Report').collection.updateOne({ reportId }, { $set: update });
+};
+
+// ─── Lazy repair: recompute aggregation for any resolved report that
+//     is missing it (e.g. reports finalized before the write fix). ─
+ReportSchema.statics.ensureFinalized = async function ensureFinalized(reportId) {
+  const report = await this.findOne({ reportId }).lean();
+  if (!report) return null;
+  if (!RESOLVED_STATUSES.includes(report.status)) return report;
+  if (report.officerTierAggregated && report.officerSubtypeAggregated) return report;
+
+  console.log('[ensureFinalized] repairing', reportId, 'votes:', (report.votes || []).length);
+  await finalizeAggregatedClassification(reportId, report.votes || []);
+  return this.findOne({ reportId }).lean();
 };
 
 const ReportModel = mongoose.model('Report', ReportSchema);
@@ -727,5 +593,6 @@ ReportModel.OPEN_STATUSES = OPEN_STATUSES;
 ReportModel.RESOLVED_STATUSES = RESOLVED_STATUSES;
 ReportModel.CONSENSUS_REQUIRED = CONSENSUS_REQUIRED;
 ReportModel.DECISIVE_VOTES = DECISIVE_VOTES;
+ReportModel.computeAggregatedClassification = computeAggregatedClassification;
 
 module.exports = ReportModel;

@@ -31,21 +31,36 @@ function stripDataUriPrefix(value) {
   return value.replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '');
 }
 
+// FIX: Robust AI flag normalization. The AI service may return the label
+// under any of `label`, `tier`, or `level_1_label`; and the boolean
+// `is_scam` instead of a string label. Normalize all of those to the
+// schema's canonical enum so the DB stores `malicious` / `legitimate`
+// / `grey_area`, not the raw brand name that caused the mobile-vs-web
+// discrepancy.
 function normalizeAiFlag(aiFlag) {
   if (!aiFlag) return null;
+  const data = aiFlag.data || aiFlag.prediction || aiFlag;
+
+  let rawLabel = data.label ?? data.tier ?? data.level_1_label ?? null;
+  if (rawLabel === true) rawLabel = 'malicious';
+  if (rawLabel === false) rawLabel = 'legitimate';
+
+  const finalLabel = rawLabel ? String(rawLabel).toLowerCase() : 'unavailable';
+  const finalSubtype = data.subtype ?? data.level_2_label ?? null;
+
   return {
-    ...aiFlag,
-    available: aiFlag.available !== false,
-    isScam: aiFlag.isScam ?? aiFlag.is_scam ?? null,
-    confidenceScore: aiFlag.confidenceScore ?? aiFlag.confidence_score ?? null,
-    probabilityScore: aiFlag.probabilityScore ?? aiFlag.probability_score ?? null,
-    riskLevel: aiFlag.riskLevel ?? aiFlag.risk_level ?? 'UNKNOWN',
-    explanationReasons: aiFlag.explanationReasons ?? aiFlag.explanation_reasons ?? [],
-    label: aiFlag.label ?? null,
-    subtype: aiFlag.subtype ?? null,
-    subtypeConfidence: aiFlag.subtypeConfidence ?? null,
-    subtypeModelVersion: aiFlag.subtypeModelVersion ?? null,
-    ocrText: aiFlag.ocrText ?? aiFlag.ocr_text ?? null,
+    ...data,
+    available: data.available !== false,
+    isScam: data.isScam ?? data.is_scam ?? (finalLabel === 'malicious'),
+    confidenceScore: data.confidenceScore ?? data.confidence_score ?? null,
+    probabilityScore: data.probabilityScore ?? data.probability_score ?? null,
+    riskLevel: data.riskLevel ?? data.risk_level ?? 'UNKNOWN',
+    explanationReasons: data.explanationReasons ?? data.explanation_reasons ?? [],
+    label: finalLabel,
+    subtype: finalSubtype,
+    subtypeConfidence: data.subtypeConfidence ?? data.subtype_confidence ?? null,
+    subtypeModelVersion: data.subtypeModelVersion ?? data.subtype_model_version ?? null,
+    ocrText: data.ocrText ?? data.ocr_text ?? null,
   };
 }
 
@@ -76,25 +91,14 @@ async function createReport(req, res, next) {
     ).trim();
 
     if (!content && !uploadedFile && !rawEvidenceImage && !body.evidenceImageBase64) {
-      return res.status(400).json({
-        error: 'A report must include content and/or a screenshot.',
-      });
+      return res.status(400).json({ error: 'A report must include content and/or a screenshot.' });
     }
 
-    // ─── TARGET KIND CLASSIFICATION ────────────────────────────────
-    // 'number' for phone numbers and alphanumeric SMS headers,
-    // 'brand' when the message body impersonates a known PH brand.
     const { targetKind, brandName } = classifyTarget({
       sender,
       content:
-        body.content ||
-        body.reportText ||
-        body.textData ||
-        body.evidenceText ||
-        body.text ||
-        '',
+        body.content || body.reportText || body.textData || body.evidenceText || body.text || '',
     });
-    // ────────────────────────────────────────────────────────────────
 
     const citizenHash = computeCitizenHash(req);
 
@@ -109,8 +113,7 @@ async function createReport(req, res, next) {
         res.set('Retry-After', String(Math.ceil(CITIZEN_RATE_WINDOW_MS / 1000)));
         return res.status(429).json({
           error: 'REPORT_RATE_LIMITED',
-          message:
-            'You have reached the hourly report limit. Please try again later.',
+          message: 'You have reached the hourly report limit. Please try again later.',
         });
       }
     }
@@ -119,17 +122,14 @@ async function createReport(req, res, next) {
     let reporterName = null;
     let reporterEmail = null;
     if (reporterShared) {
-      reporterName =
-        (typeof body.reporterName === 'string' && body.reporterName.trim().length > 0
-          ? body.reporterName.trim().slice(0, 120)
-          : (req.user && req.user.name) || null);
-      reporterEmail =
-        (typeof body.reporterEmail === 'string' && body.reporterEmail.trim().length > 0
-          ? body.reporterEmail.trim().toLowerCase().slice(0, 254)
-          : (req.user && req.user.email) || null);
+      reporterName = (typeof body.reporterName === 'string' && body.reporterName.trim().length > 0
+        ? body.reporterName.trim().slice(0, 120)
+        : (req.user && req.user.name) || null);
+      reporterEmail = (typeof body.reporterEmail === 'string' && body.reporterEmail.trim().length > 0
+        ? body.reporterEmail.trim().toLowerCase().slice(0, 254)
+        : (req.user && req.user.email) || null);
     }
 
-    // ─── AI assessment ────────────────────────────────────────────
     let aiFlag = null;
     let aiOcrText = null;
 
@@ -140,16 +140,10 @@ async function createReport(req, res, next) {
         ? stripDataUriPrefix(body.evidenceImageBase64)
         : uploadedFile.buffer.toString('base64');
 
-      aiFlag = normalizeAiFlag(
-        await getAiScamAssessment({ text: content || undefined, imageBase64 })
-      );
+      aiFlag = normalizeAiFlag(await getAiScamAssessment({ text: content || undefined, imageBase64 }));
       aiOcrText = aiFlag?.ocrText || null;
 
-      if (
-        (!content || content === SCREENSHOT_PLACEHOLDER) &&
-        aiOcrText &&
-        aiOcrText.trim().length > 0
-      ) {
+      if ((!content || content === SCREENSHOT_PLACEHOLDER) && aiOcrText && aiOcrText.trim().length > 0) {
         content = aiOcrText;
       }
     } else if (content) {
@@ -157,57 +151,36 @@ async function createReport(req, res, next) {
     }
 
     const rawLocation = body.location && typeof body.location === 'object' ? body.location : {};
-    const rawLatitude =
-      rawLocation.latitude ?? rawLocation.lat ?? body.latitude ?? null;
-    const rawLongitude =
-      rawLocation.longitude ?? rawLocation.lng ?? body.longitude ?? null;
+    const rawLatitude = rawLocation.latitude ?? rawLocation.lat ?? body.latitude ?? null;
+    const rawLongitude = rawLocation.longitude ?? rawLocation.lng ?? body.longitude ?? null;
     const rawRegion =
       (typeof rawLocation.region === 'string' && rawLocation.region.trim()) ||
       (typeof body.region === 'string' && body.region.trim()) ||
       'UNCLASSIFIED';
 
-    const location =
-      rawLatitude != null || rawLongitude != null || rawRegion
-        ? {
-            latitude: rawLatitude,
-            longitude: rawLongitude,
-            region: rawRegion,
-          }
-        : undefined;
+    const location = rawLatitude != null || rawLongitude != null || rawRegion
+      ? { latitude: rawLatitude, longitude: rawLongitude, region: rawRegion }
+      : undefined;
 
     const evidenceFiles = Array.isArray(body.evidenceFiles)
       ? body.evidenceFiles
-      : body.evidenceFiles
-      ? [body.evidenceFiles]
-      : [];
+      : body.evidenceFiles ? [body.evidenceFiles] : [];
 
-    const tail = await Report.findOne()
-      .sort({ sequence: -1 })
-      .select('sequence hash')
-      .lean();
-
+    const tail = await Report.findOne().sort({ sequence: -1 }).select('sequence hash').lean();
     const previousHash = tail && tail.hash ? tail.hash : getGenesisHash();
     const nextSequence = tail && typeof tail.sequence === 'number' ? tail.sequence + 1 : 0;
 
     const report = new Report({
       reportId: body.reportId || `RPT-${crypto.randomBytes(4).toString('hex').toUpperCase()}`,
-
       previousHash,
       sequence: nextSequence,
-
       reportedNumber: sender || null,
-
-      // Target kind classification (number vs brand impersonation)
       targetKind,
       brandName,
-
-      // Hashed canonical fields
       textData: content || null,
-      nullifier: nullifier,
+      nullifier,
       location: location || {},
       aiFlag: aiFlag || undefined,
-
-      // Non-hashed display/workflow fields
       sender: sender || null,
       scammerNumber: sender || null,
       evidenceText: content || null,
@@ -215,30 +188,19 @@ async function createReport(req, res, next) {
       scamType,
       category: scamType,
       channel: body.channel || 'SMS',
-      evidenceImage:
-        rawEvidenceImage ||
-        (uploadedFile
-          ? `data:${uploadedFile.mimetype};base64,${uploadedFile.buffer.toString('base64')}`
-          : null),
+      evidenceImage: rawEvidenceImage || (uploadedFile
+        ? `data:${uploadedFile.mimetype};base64,${uploadedFile.buffer.toString('base64')}`
+        : null),
       hasEvidenceImage: Boolean(uploadedFile || rawEvidenceImage || body.evidenceImageBase64),
       evidenceFiles,
       nullifierHash: nullifier,
       zkpHash,
-      aiScore:
-        aiFlag && typeof aiFlag.probabilityScore === 'number'
-          ? aiFlag.probabilityScore
-          : null,
-
+      aiScore: aiFlag && typeof aiFlag.probabilityScore === 'number' ? aiFlag.probabilityScore : null,
       citizenHash,
-
       reporterName,
       reporterEmail,
       reporterShared: Boolean(reporterShared && (reporterName || reporterEmail)),
-
-      jurisdiction:
-        (location && location.region) ||
-        body.jurisdiction ||
-        'UNCLASSIFIED',
+      jurisdiction: (location && location.region) || body.jurisdiction || 'UNCLASSIFIED',
       status: PENDING_STATUS,
       consensusState: { approvals: 0, rejections: 0, required: 2 },
       createdAt: new Date(),
@@ -248,13 +210,10 @@ async function createReport(req, res, next) {
       await report.save();
     } catch (err) {
       if (err && err.code === 11000 && err.keyPattern?.nullifier) {
-        const existing = await Report.findOne({ nullifier: nullifier })
-          .select('reportId sequence hash status')
-          .lean();
+        const existing = await Report.findOne({ nullifier }).select('reportId sequence hash status').lean();
         return res.status(409).json({
           error: 'DUPLICATE_REPORT',
-          message:
-            'This exact report has already been submitted. If you meant to submit a different message, please edit the content and try again.',
+          message: 'This exact report has already been submitted. If you meant to submit a different message, please edit the content and try again.',
           existingReportId: existing?.reportId || null,
           existingStatus: existing?.status || null,
         });
@@ -307,7 +266,6 @@ async function analyzeReportImage(req, res, next) {
     }
 
     const scamType = normalizeScamType(req.body?.scamType ?? req.body?.category);
-
     const ocrResult = await forwardImageForOcr({
       buffer: file.buffer,
       originalname: file.originalname,
@@ -316,12 +274,7 @@ async function analyzeReportImage(req, res, next) {
     });
 
     if (!ocrResult.available) {
-      return res.status(200).json({
-        available: false,
-        text: '',
-        confidence: null,
-        error: ocrResult.error || 'OCR_UNAVAILABLE',
-      });
+      return res.status(200).json({ available: false, text: '', confidence: null, error: ocrResult.error || 'OCR_UNAVAILABLE' });
     }
 
     let aiFlag = null;

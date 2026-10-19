@@ -184,11 +184,19 @@ export default function AIModelInsights() {
 
       {/* Summary strip */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "16px" }}>
-        {[
-          { l: "AI-ANALYZED REPORTS", v: data?.analyzed ?? 0, c: A, sub: "In your agency" },
-          { l: "AWAITING OFFICER", v: pending, c: "#f59e0b", sub: "No verdict yet" },
-          { l: "OFFICER-VERIFIED", v: reviewed, c: "#22c55e", sub: "Verdict recorded" },
-        ].map((s) => (
+       {[
+  { l: "AI-ANALYZED REPORTS", v: data?.analyzed ?? 0, c: A, sub: "In your jurisdiction" },
+  { l: "AWAITING OFFICER", v: pending, c: "#f59e0b", sub: "No verdict yet" },
+  {
+    l: "OFFICER-VERIFIED",
+    v: data?.officerReviewed ?? 0,
+    c: "#22c55e",
+    sub:
+      (data?.adminReviewed ?? 0) > 0
+        ? `+ ${data.adminReviewed} legacy admin review${data.adminReviewed === 1 ? "" : "s"}`
+        : "Verdict recorded",
+  },
+].map((s) => (
           <div key={s.l} style={card}>
             <div style={{ fontSize: "10px", color: "#6b7280", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.07em", marginBottom: "6px" }}>{s.l}</div>
             <div style={{ fontSize: "22px", fontWeight: 800, color: s.c, fontFamily: "'JetBrains Mono',monospace" }}>{s.v.toLocaleString()}</div>

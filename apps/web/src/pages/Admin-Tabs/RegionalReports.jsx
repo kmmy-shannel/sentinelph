@@ -14,9 +14,22 @@ const REGION_OPTIONS = [
   "Region X", "Region XI", "Region XII", "Region XIII", "BARMM",
 ];
 
+// FIXED: Replaced hardcoded categories with the actual AI subtypes
+// mapped to human-readable labels for the dropdown.
 const SCAM_TYPE_OPTIONS = [
-  "all", "OTP Phishing", "Bank Impersonation", "Parcel/Delivery",
-  "Investment Scam", "Gov't Impersonation",
+  { value: "all", label: "All Subtypes" },
+  { value: "phishing_link", label: "Phishing Link (Smishing)" },
+  { value: "fake_prize_lottery", label: "Fake Prize / Lottery" },
+  { value: "wrong_number_baiting", label: "Wrong-Number Baiting" },
+  { value: "urgent_fine_toll", label: "Urgent Fine / Toll" },
+  { value: "impersonation_family", label: "Impersonation (Family)" },
+  { value: "brand_marketing", label: "Brand Marketing" },
+  { value: "personal_conversational", label: "Personal Conversation" },
+  { value: "two_factor_auth", label: "One-Time Password (OTP)" },
+  { value: "appointment_reminder", label: "Appointment Reminder" },
+  { value: "delivery_tracking", label: "Delivery Tracking" },
+  { value: "bank_activity_alert", label: "Bank Activity Alert" },
+  { value: "UNLABELED", label: "Unlabeled / Unknown" },
 ];
 
 const STATUS_OPTIONS = [
@@ -35,9 +48,12 @@ function reportFilename(ext) {
 }
 
 function filterSummary({ region, scamType, status, dateFrom, dateTo }) {
+  // Find the human-readable label for the scamType
+  const scamTypeLabel = SCAM_TYPE_OPTIONS.find(s => s.value === scamType)?.label || "All Types";
+  
   return {
     Region: region === "all" ? "All Regions" : region,
-    "Scam Type": scamType === "all" ? "All Types" : scamType,
+    "Scam Subtype": scamType === "all" ? "All Types" : scamTypeLabel,
     Status: status === "all" ? "All Statuses" : status,
     "Date From": dateFrom || "—",
     "Date To": dateTo || "—",
@@ -613,11 +629,11 @@ export default function RegionalReports() {
             </select>
           </div>
           <div>
-            <div style={{ fontSize: "9px", marginBottom: "6px", color: "#64748b", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.08em", fontWeight: 600 }}>SCAM TYPE</div>
+            <div style={{ fontSize: "9px", marginBottom: "6px", color: "#64748b", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.08em", fontWeight: 600 }}>SCAM SUBTYPE</div>
             <select value={scamType} onChange={(e) => setScamType(e.target.value)} style={inputS}
               onFocus={(e) => e.currentTarget.style.borderColor = A}
               onBlur={(e) => e.currentTarget.style.borderColor = "#1a1a2a"}>
-              {SCAM_TYPE_OPTIONS.map((s) => <option key={s} value={s}>{s === "all" ? "All Types" : s}</option>)}
+              {SCAM_TYPE_OPTIONS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
             </select>
           </div>
           <div>
