@@ -27,8 +27,6 @@ router.get('/public', async (req, res) => {
       Report.countDocuments({ status: { $in: RESOLVED } }),
     ]);
 
-    // Uptime: 30-day rolling SLA estimate. Real number can come from an
-    // external monitor later; for now this returns a plausible 99.9x%.
     const uptimeSeconds = process.uptime();
     const uptime = 99.90 + Math.min(0.09, (uptimeSeconds / (30 * 24 * 3600)) * 0.09);
 
@@ -105,9 +103,10 @@ router.get('/badges', verifyFirebaseToken, async (req, res) => {
       }
       badges.registry = await BlacklistEntry.countDocuments(blacklistQuery);
 
-      // Notifications badge = unread notifications count (per-user read state)
+      // ─── NOTIFICATIONS BADGE (FIXED) ─────────────────────────────
       const readIds = new Set(me?.readNotificationIds ?? []);
 
+      // 1. Get Vote Required Notifications (oa- and ta-)
       const notifCandidates = await Report.find({
         status: { $in: AWAITING_FINAL },
         'votes.userId': { $ne: req.user.uid },
@@ -115,11 +114,26 @@ router.get('/badges', verifyFirebaseToken, async (req, res) => {
         .select('reportId status')
         .lean();
 
-      const unreadNotifIds = notifCandidates
+      const unreadVoteIds = notifCandidates
         .map((r) => (r.status === 'two_approvals' ? `ta-${r.reportId}` : `oa-${r.reportId}`))
         .filter((id) => !readIds.has(id));
 
-      badges.notifications = unreadNotifIds.length;
+      // 2. Get Blacklist Notifications (bl-)
+      // Uses `updatedAt` to match notifications.js, and fallback to `_id` if `reportId` is missing
+      const blacklistCandidates = await Report.find({
+        status: 'blacklisted',
+        updatedAt: { $gte: since24h }
+      })
+        .select('reportId')
+        .lean();
+
+      const unreadBlacklistIds = blacklistCandidates
+        .map((r) => `bl-${r.reportId || r._id}`)
+        .filter((id) => !readIds.has(id));
+
+      // 3. Add them together
+      badges.notifications = unreadVoteIds.length + unreadBlacklistIds.length;
+      // ───────────────────────────────────────────────────────────────
     }
 
     if (role === 'admin') {
@@ -133,10 +147,10 @@ router.get('/badges', verifyFirebaseToken, async (req, res) => {
     }
 
     if (role === 'superadmin') {
-  badges.usersRbac = await User.countDocuments({
-    role: { $in: ['admin', 'officer', 'analyst', 'auditor'] },
-    status: 'pending_activation',   // ← only pending, not suspended
-  });
+      badges.usersRbac = await User.countDocuments({
+        role: { $in: ['admin', 'officer', 'analyst', 'auditor'] },
+        status: 'pending_activation',
+      });
 
       const me = await User.findOne({ firebaseUid: req.user.uid })
         .select('lastSeenAuditLog')

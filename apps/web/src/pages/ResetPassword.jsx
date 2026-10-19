@@ -2,28 +2,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import apiClient from '../lib/api';
 
 const ACCENT = '#6366f1';
 
-// ─── Password rules ──────────────────────────────────────────────────
-// Both helpers reject any whitespace. A string of spaces collapses to
-// an empty core and scores as WEAK, which matches the fact that the
-// backend (routes/account.js + routes/auth.js) also strips/rejects
-// whitespace before saving.
-
 function getPasswordStrength(password) {
   if (!password) return { score: 0, label: '', color: '#1c1c2e' };
-
-  // Strip whitespace before scoring — a string of spaces is not a password.
   const core = password.replace(/\s+/g, '');
-
-  if (core.length === 0) {
-    return { score: 1, label: 'WEAK', color: '#ef4444' };
-  }
+  if (core.length === 0) return { score: 1, label: 'WEAK', color: '#ef4444' };
 
   let score = 0;
-
-  // Length tiers — measured on the stripped string.
   if (core.length >= 8) score += 1;
   if (core.length >= 12) score += 1;
 
@@ -35,7 +23,6 @@ function getPasswordStrength(password) {
   if (hasLetter && hasSymbol) score += 1;
   if (hasDigit && hasSymbol) score += 1;
 
-  // A password missing letters or digits can't climb past WEAK.
   if (!(hasLetter && hasDigit)) {
     score = Math.min(score, 1);
   }
@@ -48,16 +35,11 @@ function getPasswordStrength(password) {
 
 function isPasswordValid(pw) {
   if (typeof pw !== 'string') return false;
-
-  // No whitespace anywhere. Spaces are hard to type reliably, easy to
-  // strip by accident, and never contribute meaningful entropy.
   if (/\s/.test(pw)) return false;
-
   if (pw.length < 8) return false;
   if (pw.length > 64) return false;
   if (!/[A-Za-z]/.test(pw)) return false;
   if (!/[0-9]/.test(pw)) return false;
-
   return true;
 }
 
@@ -67,7 +49,6 @@ export default function ResetPassword() {
   const { confirmPasswordReset } = useAuth();
 
   const token = searchParams.get('token') || '';
-
   const mode = searchParams.get('mode') || '';
   const isActivate = mode === 'activate';
 
@@ -128,6 +109,15 @@ export default function ResetPassword() {
     setLoading(true);
     try {
       await confirmPasswordReset(token, newPassword);
+      
+      // Call the backend to flip the status to active
+      try {
+        await apiClient.post('/api/v1/auth/activate-account');
+      } catch (apiErr) {
+        console.error("ACTIVATION API FAILED:", apiErr.response?.data || apiErr.message);
+        throw new Error(apiErr.response?.data?.message || "Database activation failed. Please contact support.");
+      }
+
       setSuccess(true);
       setTimeout(() => {
         navigate('/login?reset=success', { replace: true });

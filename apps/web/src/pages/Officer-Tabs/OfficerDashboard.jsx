@@ -101,35 +101,6 @@ function deriveBreakdown(items = []) {
   };
 }
 
-function VoteChip({ kind, count }) {
-  const isApproval = kind === "approve";
-  const color = isApproval ? GREEN : RED;
-  const bg    = isApproval ? "rgba(34,197,94,0.10)" : "rgba(239,68,68,0.10)";
-  const bd    = isApproval ? "rgba(34,197,94,0.35)" : "rgba(239,68,68,0.35)";
-  const glyph = isApproval ? "✓" : "✕";
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: "4px",
-        padding: "2px 7px",
-        borderRadius: "999px",
-        fontSize: "10px",
-        fontWeight: 700,
-        fontFamily: MONO,
-        color,
-        background: bg,
-        border: `1px solid ${bd}`,
-        marginRight: "6px",
-      }}
-    >
-      <span style={{ fontSize: "10px", lineHeight: 1 }}>{glyph}</span>
-      {count}
-    </span>
-  );
-}
-
 function StatPill({ label, value, color }) {
   return (
     <span
@@ -343,16 +314,18 @@ export default function OfficerDashboard() {
               {!loading && consensus.map(row => {
                 const a = Number(row.approvals) || 0;
                 const r = Number(row.rejections) || 0;
+                const totalVotes = a + r;
                 return (
                   <tr key={row.id}>
                     <td style={{ ...tdS, color: BLUE, fontFamily: MONO }}>{row.id.slice(0, 12)}</td>
                     <td style={{ ...tdS, color: TEXT_PRIMARY, fontFamily: MONO }}>{row.number}</td>
                     <td style={tdS}><TierBadge tier={row.type} /></td>
-                    <td style={tdS}>
-                      {a > 0 && <VoteChip kind="approve" count={a} />}
-                      {r > 0 && <VoteChip kind="reject"  count={r} />}
-                      {a === 0 && r === 0 && <span style={{ color: TEXT_FAINT, fontSize: "11px" }}>—</span>}
+                    
+                    {/* PLAIN NUMBER ONLY */}
+                    <td style={{ ...tdS, color: TEXT_PRIMARY, fontFamily: MONO, fontWeight: 600 }}>
+                      {totalVotes > 0 ? totalVotes : "—"}
                     </td>
+
                     <td style={{ ...tdS, color: TEXT_FAINT, fontSize: "11px" }}>{row.since}</td>
                   </tr>
                 );

@@ -1,6 +1,5 @@
 // services/api/routes/admin.js
 const express = require('express');
-const crypto = require('crypto');
 const { initFirebase } = require('../config/firebase');
 const { verifyFirebaseToken } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
@@ -8,14 +7,12 @@ const User = require('../models/User');
 const Report = require('../models/Report');
 const AuditLog = require('../models/AuditLog');
 const AdminAiReview = require('../models/AdminAiReview');
-const PasswordResetToken = require('../models/PasswordResetToken');
 const { sendActivationEmail } = require('../utils/email');
 const { PH_REGIONS, isValidRegion } = require('../../../shared/regions');
 
 const router = express.Router();
 
 const REQUIRED_FIELDS = ['email', 'fullName', 'badgeId', 'jurisdiction'];
-const ACTIVATION_TOKEN_TTL_MINUTES = 15;
 
 const AI_REVIEW_LABELS = [
   'OTP Phishing',
@@ -123,11 +120,6 @@ router.use(async (req, res, next) => {
   }
 });
 
-// ─── FIX (Bug 2): scope now mirrors officer queue semantics ─────────
-// If admin jurisdiction is a specific region, match reports in that
-// region PLUS unclassified / PH / null-region reports (a report filed
-// without GPS still belongs to the national pool the admin watches).
-// If admin jurisdiction is National / Regional, no filter at all.
 const UNSCOPED_REGIONS = ['UNCLASSIFIED', 'PH'];
 
 function reportScope(profile, requestedRegion) {
@@ -163,34 +155,20 @@ function auditAdminAction(req, action, metadata) {
   }).catch((err) => console.error(`[admin] audit failed for ${action}:`, err.message));
 }
 
-// ─── FIX (Bug 3): accept every value the schema actually stores ─────
-// The AiFlagSchema enum allows: legitimate, grey_area, malicious,
-// likely_scam, uncertain, likely_legitimate, unavailable.
-// The subtype enum allows the 11 subtype strings + UNLABELED + null.
-// The officerSubtypeAggregated field stores a subtype OR a tier label
-// (finalizeAggregatedClassification falls back to 'legitimate' when
-// every vote is a reject). We classify all of these into one of:
-//   'scam' | 'legitimate' | 'grey_area' | 'unknown'
-// 'unknown' is reserved for genuinely unrecognized strings (old data).
 function normalizeAiLabel(label) {
   const value = String(label || '').trim().toLowerCase();
   if (!value) return 'unknown';
 
   const scamLabels = new Set([
-    // AiFlag.label tier values that mean "scam"
     'malicious', 'likely_scam', 'scam',
-    // AiFlag.subtype values that mean "scam"
     'phishing_link', 'fake_prize_lottery', 'wrong_number_baiting',
     'urgent_fine_toll', 'impersonation_family', 'brand_marketing',
-    // Legacy raw labels
     'otp phishing', 'bank impersonation', 'parcel/delivery',
     'investment scam', "gov't impersonation",
   ]);
 
   const legitLabels = new Set([
-    // AiFlag.label tier values that mean "legitimate"
     'legitimate', 'likely_legitimate',
-    // AiFlag.subtype values that mean "legitimate"
     'personal_conversational', 'two_factor_auth', 'appointment_reminder',
     'delivery_tracking', 'bank_activity_alert',
   ]);
@@ -203,10 +181,6 @@ function normalizeAiLabel(label) {
   return 'unknown';
 }
 
-// ─── FIX (Bug 3b): fall back to riskLevel for the predicted side ────
-// Reports written before the subtype model was active often have
-// aiFlag.label === 'unavailable' but aiFlag.riskLevel === 'HIGH'.
-// Rather than dropping them, treat HIGH → scam and LOW → legitimate.
 function predictedFromReport(report) {
   const ai = report.aiFlag || {};
   const label = ai.subtype || ai.label || null;
@@ -377,26 +351,19 @@ router.post(
         jurisdiction: normalizedJurisdiction,
       });
 
-      const rawToken = crypto.randomBytes(32).toString('hex');
-      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
-      const expiresAt = new Date(Date.now() + ACTIVATION_TOKEN_TTL_MINUTES * 60 * 1000);
-
-      await PasswordResetToken.deleteMany({ firebaseUid: firebaseUser.uid });
-      await PasswordResetToken.create({
-        firebaseUid: firebaseUser.uid,
-        email: normalizedEmail,
-        tokenHash,
-        expiresAt,
-        requestedIp: req.ip || null,
-        userAgent: (req.headers['user-agent'] || '').slice(0, 200),
-      });
-
       const webOrigin =
         process.env.CLIENT_ORIGIN_WEB ||
         process.env.PASSWORD_RESET_WEB_ORIGIN ||
         'http://localhost:5173';
 
-      const activationLink = `${webOrigin.replace(/\/$/, '')}/reset-password?mode=activate&token=${rawToken}`;
+      // Generate a valid Firebase OOB Code link
+      const activationLink = await admin.auth().generatePasswordResetLink(
+        normalizedEmail,
+        {
+          url: `${webOrigin.replace(/\/$/, '')}/activate?mode=resetPassword`,
+          handleCodeInApp: true,
+        }
+      );
 
       const newUser = await User.create({
         firebaseUid: firebaseUser.uid,
@@ -555,14 +522,6 @@ router.patch('/officers/:id', async (req, res) => {
   }
 });
 
-// ─── FIX (Bug 1): shared relaxed filter for AI presence ─────────────
-// A report counts as "AI-analyzed" if ANY of:
-//   - aiFlag.available === true
-//   - aiFlag.subtype is a non-null subtype
-//   - aiFlag.label is a real label (not 'unavailable')
-//   - aiFlag.riskLevel is a real level (HIGH / MEDIUM / LOW, not UNKNOWN)
-// This mirrors the fix already applied to /dashboard and makes historical
-// rows visible.
 const AI_PRESENT_FILTER = {
   $or: [
     { 'aiFlag.available': true },
@@ -689,8 +648,6 @@ async function backfillFinalizedAggregates(scope) {
   const finalizedStatuses = ['blacklisted', 'approved', 'rejected'];
   const baseFilter = {
     status: { $in: finalizedStatuses },
-    // A missing tier marks an incomplete aggregate. A null subtype with a
-    // present tier is valid for all-rejected reports and must not be rewritten.
     officerTierAggregated: null,
   };
   const query = Object.keys(scope).length
@@ -713,8 +670,6 @@ async function backfillFinalizedAggregates(scope) {
         votes.every((vote) => vote.decision === 'reject');
       const finalTier = isAllRejected ? 'legitimate' : result.tier;
 
-      // Use the raw collection, as the normal vote finalizer does. This
-      // intentionally bypasses Mongoose's append-only update middleware.
       const writeResult = await Report.collection.updateOne(
         {
           _id: report._id,
@@ -741,7 +696,6 @@ async function backfillFinalizedAggregates(scope) {
   return { repaired, scanned: reports.length };
 }
 
-// ─── FIX (Bugs 1 + 2 + 3 + 4): rewritten /ai-insights ──────────────
 router.get('/ai-insights', async (req, res) => {
   try {
     const scope = reportScope(req.adminProfile);
@@ -849,7 +803,6 @@ router.get('/ai-insights', async (req, res) => {
 
     const pendingReview = items.filter((i) => i.agreementStatus === 'pending').length;
     const reviewed = items.filter((i) => i.agreementStatus !== 'pending').length;
-    // ─── FIX (Bug 4): split the "reviewed" count so the label is honest.
     const officerReviewed = items.filter(
       (i) => i.agreementStatus === 'confirmed' || i.agreementStatus === 'corrected'
     ).length;

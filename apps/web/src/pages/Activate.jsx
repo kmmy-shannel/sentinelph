@@ -36,23 +36,23 @@ export default function Activate() {
   const mode = searchParams.get("mode");
   const oobCode = searchParams.get("oobCode");
 
-  const [stage, setStage] = useState("checking"); // checking | invalid | ready | submitting | success | error
+  const [stage, setStage] = useState("checking"); 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
   const [showPass, setShowPass] = useState(false);
   const [error, setError] = useState(null);
 
- const rules = {
-  length: password.length >= 8 && password.length <= 64,
-  upper: /[A-Z]/.test(password),
-  lower: /[a-z]/.test(password),
-  number: /[0-9]/.test(password),
-  noSpaces: password.length > 0 && !/\s/.test(password),
-};
-const allRulesMet = Object.values(rules).every(Boolean);
-const passwordsMatch = password.length > 0 && password === confirmPw;
-const canSubmit = allRulesMet && passwordsMatch && stage === "ready";
+  const rules = {
+    length: password.length >= 8 && password.length <= 64,
+    upper: /[A-Z]/.test(password),
+    lower: /[a-z]/.test(password),
+    number: /[0-9]/.test(password),
+    noSpaces: password.length > 0 && !/\s/.test(password),
+  };
+  const allRulesMet = Object.values(rules).every(Boolean);
+  const passwordsMatch = password.length > 0 && password === confirmPw;
+  const canSubmit = allRulesMet && passwordsMatch && stage === "ready";
 
   useEffect(() => {
     async function checkCode() {
@@ -80,15 +80,14 @@ const canSubmit = allRulesMet && passwordsMatch && stage === "ready";
     setStage("submitting");
 
     try {
-      // 1. Actually set the new password on the Firebase account.
+      // 1. Set the new password in Firebase.
       await confirmPasswordReset(auth, oobCode, password);
 
-      // 2. confirmPasswordReset does NOT sign the user in — do that explicitly
-      //    so we hold a valid ID token to call our own backend next.
+      // 2. Sign in to get a valid ID token.
       await signInWithEmailAndPassword(auth, email, password);
 
-      // 3. Flip status: pending_activation -> active in Mongo.
-      await api.post("/auth/activate-account");
+      // 3. FIXED: Added /api/v1 prefix
+      await api.post("/api/v1/auth/activate-account");
 
       setStage("success");
       setTimeout(() => navigate("/login"), 2500);
@@ -100,7 +99,7 @@ const canSubmit = allRulesMet && passwordsMatch && stage === "ready";
         setError("Password is too weak. Please choose a stronger password.");
         setStage("ready");
       } else {
-        setError("Something went wrong while activating your account. Please try again.");
+        setError(err.response?.data?.message || "Something went wrong. Please try again.");
         setStage("ready");
       }
     }

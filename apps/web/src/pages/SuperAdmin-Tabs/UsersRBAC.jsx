@@ -17,74 +17,9 @@ const SUSPEND_DURATIONS = [
   { label: "Custom",  days: null },
 ];
 
-const JURISDICTIONS = [
-  "National / Regional", "NCR", "Region I", "Region II", "Region III",
-  "Region IV-A", "Region IV-B", "Region V", "Region VI", "Region VII",
-  "Region VIII", "Region IX", "Region X", "Region XI", "Region XII",
-  "Region XIII", "BARMM", "CAR",
-];
-
-// ─── Validation ──────────────────────────────────────────────────────
-const FULL_NAME_REGEX = /^[A-Za-zÀ-ÖØ-öø-ÿÑñ.'\- ]{2,80}$/;
-const GMAIL_REGEX = /^[A-Za-z0-9._%+-]+@gmail\.com$/i;
-
-function sanitizeFullName(raw) {
-  if (typeof raw !== "string") return "";
-  return raw
-    .replace(/[^A-Za-zÀ-ÖØ-öø-ÿÑñ.'\- ]/g, "")
-    .replace(/\s{2,}/g, " ")
-    .slice(0, 80);
-}
-
-function validateProvisionForm(form) {
-  const errors = {};
-
-  const name = String(form.fullName || "").trim();
-  if (!name) errors.fullName = "Full name is required.";
-  else if (name.length < 2) errors.fullName = "Full name must be at least 2 characters.";
-  else if (/\d/.test(name)) errors.fullName = "Full name must not contain numbers.";
-  else if (!FULL_NAME_REGEX.test(name))
-    errors.fullName = "Only letters, spaces, hyphens, apostrophes, and periods.";
-
-  const email = String(form.email || "").trim();
-  if (!email) errors.email = "Email is required.";
-  else if (!GMAIL_REGEX.test(email)) errors.email = "Email must be a valid @gmail.com address.";
-
-  const badge = String(form.badgeId || "").trim();
-  if (!badge) errors.badgeId = "Badge / ID is required.";
-  else if (badge.length < 3) errors.badgeId = "Badge / ID must be at least 3 characters.";
-
-  const agency = String(form.agency || "").trim();
-  if (!agency) errors.agency = "Agency is required.";
-  else if (agency.length < 2) errors.agency = "Agency must be at least 2 characters.";
-
-  if (!form.role) errors.role = "Role is required.";
-  if (!form.jurisdiction) errors.jurisdiction = "Jurisdiction is required.";
-
-  const pw = String(form.tempPassword || "");
-  if (!pw) errors.tempPassword = "Temporary password is required.";
-  else if (pw.length < 8) errors.tempPassword = "Password must be at least 8 characters.";
-  else if (pw.length > 64) errors.tempPassword = "Password must be 64 characters or fewer.";
-  else if (!/[A-Za-z]/.test(pw)) errors.tempPassword = "Password must contain at least one letter.";
-  else if (!/[0-9]/.test(pw)) errors.tempPassword = "Password must contain at least one number.";
-
-  return errors;
-}
-
 function fmtDate(d) {
   if (!d) return "—";
   return new Date(d).toLocaleString("en-PH", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-
-function generateTempPassword() {
-  const letters = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
-  const digits  = "23456789";
-  const special = "!@#$%^&*";
-  let pw = "";
-  for (let i = 0; i < 8; i++) pw += letters[Math.floor(Math.random() * letters.length)];
-  for (let i = 0; i < 3; i++) pw += digits[Math.floor(Math.random() * digits.length)];
-  pw += special[Math.floor(Math.random() * special.length)];
-  return pw.split("").sort(() => Math.random() - 0.5).join("");
 }
 
 export default function UsersRBAC() {
@@ -96,7 +31,6 @@ export default function UsersRBAC() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [search, setSearch]             = useState("");
   const [detailUser, setDetailUser]     = useState(null);
-  const [showProvision, setShowProvision] = useState(false);
   const [showInvite, setShowInvite]     = useState(false);
   const [showRoleModal, setShowRoleModal] = useState(null);
   const [showSuspendModal, setShowSuspendModal] = useState(null);
@@ -108,13 +42,6 @@ export default function UsersRBAC() {
   const [disableReason, setDisableReason] = useState("");
   const [busyId, setBusyId]             = useState(null);
   const [actionBusy, setActionBusy]     = useState(false);
-  const [provisionBusy, setProvisionBusy] = useState(false);
-  const [pErrors, setPErrors]           = useState({});
-
-  const [pForm, setPForm] = useState({
-    fullName: "", email: "", badgeId: "", agency: "",
-    role: "officer", jurisdiction: "National / Regional", tempPassword: "",
-  });
 
   function showToast(msg, kind = "success") {
     setToast({ msg, kind });
@@ -277,62 +204,6 @@ export default function UsersRBAC() {
     loadUsers();
   }, [loadUsers]);
 
-  // Provision
-  function openProvision() {
-    setPErrors({});
-    setPForm({
-      fullName: "", email: "", badgeId: "", agency: "",
-      role: "officer", jurisdiction: "National / Regional",
-      tempPassword: generateTempPassword(),
-    });
-    setShowProvision(true);
-  }
-
-  function copyTempPassword() {
-    navigator.clipboard.writeText(pForm.tempPassword).then(() => showToast("Password copied to clipboard."));
-  }
-
-  function handlePChange(field, value) {
-    const next = field === "fullName" ? sanitizeFullName(value) : value;
-    setPForm((prev) => ({ ...prev, [field]: next }));
-    if (pErrors[field]) {
-      setPErrors((prev) => {
-        const copy = { ...prev };
-        delete copy[field];
-        return copy;
-      });
-    }
-  }
-
-  async function confirmProvision() {
-    const errors = validateProvisionForm(pForm);
-    if (Object.keys(errors).length > 0) {
-      setPErrors(errors);
-      showToast("Please correct the highlighted fields.", "error");
-      return;
-    }
-
-    setProvisionBusy(true);
-    try {
-      await apiClient.post("/api/v1/superadmin/users/provision", {
-        fullName: pForm.fullName.trim(),
-        email: pForm.email.trim().toLowerCase(),
-        badgeId: pForm.badgeId.trim(),
-        agency: pForm.agency.trim(),
-        role: pForm.role,
-        jurisdiction: pForm.jurisdiction,
-        tempPassword: pForm.tempPassword,
-      });
-      await loadUsers();
-      setShowProvision(false);
-      showToast(`Account created for ${pForm.fullName}. Share the temp password securely.`);
-    } catch (err) {
-      showToast(err?.response?.data?.message || "Failed to provision account.", "error");
-    } finally {
-      setProvisionBusy(false);
-    }
-  }
-
   // Filter
   const filtered = users.filter((u) => {
     const mr = roleFilter === "all" || (u.role || "").toLowerCase() === roleFilter;
@@ -392,10 +263,6 @@ export default function UsersRBAC() {
           <button onClick={openInvite}
             style={{ padding: "8px 18px", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer", background: A, border: "none", color: "#08200f" }}>
             + Add User
-          </button>
-          <button onClick={openProvision}
-            style={{ padding: "8px 18px", borderRadius: "8px", fontSize: "12px", fontWeight: 600, cursor: "pointer", background: "transparent", border: "1px solid #1a1a2a", color: "#9ca3af" }}>
-            + Provision with Temp Password
           </button>
         </div>
       </div>
@@ -699,111 +566,6 @@ export default function UsersRBAC() {
               <button onClick={confirmRoleChange} disabled={actionBusy || selectedRole === showRoleModal.role}
                 style={{ flex: 1, padding: "12px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: actionBusy || selectedRole === showRoleModal.role ? "#2a2a3a" : A, border: "none", color: "#fff", cursor: actionBusy || selectedRole === showRoleModal.role ? "not-allowed" : "pointer" }}>
                 {actionBusy ? "Updating…" : "Confirm"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Provision modal */}
-      {showProvision && (
-        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}
-          onClick={() => !provisionBusy && setShowProvision(false)}>
-          <div style={{ width: "100%", maxWidth: "520px", maxHeight: "90vh", margin: "0 16px", borderRadius: "20px", padding: "28px", background: "#0e0e18", border: "1px solid #1a1a2a", position: "relative", overflowY: "auto" }}
-            onClick={e => e.stopPropagation()}>
-            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "1px", borderRadius: "20px 20px 0 0", background: `linear-gradient(90deg,transparent,${A},transparent)` }} />
-
-            <div style={{ fontSize: "18px", fontWeight: 700, color: "#fff", marginBottom: "6px" }}>
-              Provision New Account
-            </div>
-            <div style={{ fontSize: "12px", color: "#4b5563", marginBottom: "20px", lineHeight: 1.6 }}>
-              Create a new officer or admin account. They'll log in with the temporary password below and should change it afterward.
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "12px" }}>
-              <div style={{ gridColumn: "1 / -1" }}>
-                <div style={label}>FULL NAME</div>
-                <input value={pForm.fullName} onChange={e => handlePChange("fullName", e.target.value)} placeholder="e.g. Insp. Juan Reyes"
-                  style={{ width: "100%", padding: "10px 12px", borderRadius: "10px", fontSize: "13px", background: "#080810", border: `1px solid ${pErrors.fullName ? "rgba(239,68,68,0.45)" : "#1a1a2a"}`, color: "#e2e8f0", outline: "none", boxSizing: "border-box" }} />
-                {pErrors.fullName && (
-                  <div style={{ fontSize: "11px", color: "#f87171", marginTop: "4px" }}>{pErrors.fullName}</div>
-                )}
-              </div>
-              <div style={{ gridColumn: "1 / -1" }}>
-                <div style={label}>EMAIL ADDRESS</div>
-                <input type="email" value={pForm.email} onChange={e => handlePChange("email", e.target.value)} placeholder="e.g. j.reyes@gmail.com"
-                  style={{ width: "100%", padding: "10px 12px", borderRadius: "10px", fontSize: "13px", background: "#080810", border: `1px solid ${pErrors.email ? "rgba(239,68,68,0.45)" : "#1a1a2a"}`, color: "#e2e8f0", outline: "none", boxSizing: "border-box" }} />
-                {pErrors.email ? (
-                  <div style={{ fontSize: "11px", color: "#f87171", marginTop: "4px" }}>{pErrors.email}</div>
-                ) : (
-                  <div style={{ fontSize: "10px", color: "#4b5563", marginTop: "4px" }}>Must be a @gmail.com address.</div>
-                )}
-              </div>
-              <div>
-                <div style={label}>BADGE / EMP ID</div>
-                <input value={pForm.badgeId} onChange={e => handlePChange("badgeId", e.target.value)} placeholder="e.g. NBI-CCRU-0071"
-                  style={{ width: "100%", padding: "10px 12px", borderRadius: "10px", fontSize: "13px", background: "#080810", border: `1px solid ${pErrors.badgeId ? "rgba(239,68,68,0.45)" : "#1a1a2a"}`, color: "#e2e8f0", outline: "none", boxSizing: "border-box" }} />
-                {pErrors.badgeId && (
-                  <div style={{ fontSize: "11px", color: "#f87171", marginTop: "4px" }}>{pErrors.badgeId}</div>
-                )}
-              </div>
-              <div>
-                <div style={label}>ROLE</div>
-                <select value={pForm.role} onChange={e => handlePChange("role", e.target.value)}
-                  style={{ width: "100%", padding: "10px 12px", borderRadius: "10px", fontSize: "13px", background: "#080810", border: "1px solid #1a1a2a", color: "#e2e8f0", outline: "none", boxSizing: "border-box" }}>
-                  <option value="officer">Officer</option>
-                  <option value="admin">Admin</option>
-                </select>
-              </div>
-              <div style={{ gridColumn: "1 / -1" }}>
-                <div style={label}>AGENCY</div>
-                <input value={pForm.agency} onChange={e => handlePChange("agency", e.target.value)} placeholder="e.g. NBI Cybercrime Division"
-                  style={{ width: "100%", padding: "10px 12px", borderRadius: "10px", fontSize: "13px", background: "#080810", border: `1px solid ${pErrors.agency ? "rgba(239,68,68,0.45)" : "#1a1a2a"}`, color: "#e2e8f0", outline: "none", boxSizing: "border-box" }} />
-                {pErrors.agency && (
-                  <div style={{ fontSize: "11px", color: "#f87171", marginTop: "4px" }}>{pErrors.agency}</div>
-                )}
-              </div>
-              <div style={{ gridColumn: "1 / -1" }}>
-                <div style={label}>JURISDICTION / SCOPE</div>
-                <select value={pForm.jurisdiction} onChange={e => handlePChange("jurisdiction", e.target.value)}
-                  style={{ width: "100%", padding: "10px 12px", borderRadius: "10px", fontSize: "13px", background: "#080810", border: "1px solid #1a1a2a", color: "#e2e8f0", outline: "none", boxSizing: "border-box" }}>
-                  {JURISDICTIONS.map(j => <option key={j} value={j}>{j}</option>)}
-                </select>
-              </div>
-            </div>
-
-            <div style={{ marginTop: "12px", marginBottom: "20px" }}>
-              <div style={label}>TEMPORARY PASSWORD</div>
-              <div style={{ display: "flex", gap: "8px" }}>
-                <input value={pForm.tempPassword} onChange={e => handlePChange("tempPassword", e.target.value)}
-                  style={{ flex: 1, padding: "10px 12px", borderRadius: "10px", fontSize: "13px", background: "#080810", border: `1px solid ${pErrors.tempPassword ? "rgba(239,68,68,0.45)" : "#1a1a2a"}`, color: "#e2e8f0", outline: "none", fontFamily: "'JetBrains Mono',monospace", boxSizing: "border-box" }} />
-                <button onClick={copyTempPassword}
-                  style={{ padding: "10px 14px", borderRadius: "10px", fontSize: "12px", fontWeight: 600, background: "#111120", border: "1px solid #1a1a2a", color: "#9ca3af", cursor: "pointer", whiteSpace: "nowrap" }}>
-                  Copy
-                </button>
-                <button onClick={() => handlePChange("tempPassword", generateTempPassword())}
-                  style={{ padding: "10px 14px", borderRadius: "10px", fontSize: "12px", fontWeight: 600, background: "#111120", border: "1px solid #1a1a2a", color: "#9ca3af", cursor: "pointer", whiteSpace: "nowrap" }}>
-                  New
-                </button>
-              </div>
-              {pErrors.tempPassword ? (
-                <div style={{ fontSize: "11px", color: "#f87171", marginTop: "4px" }}>{pErrors.tempPassword}</div>
-              ) : (
-                <div style={{ fontSize: "10px", color: "#4b5563", marginTop: "6px", fontFamily: "'JetBrains Mono',monospace" }}>
-                  Share this securely. The user should change it after first login.
-                </div>
-              )}
-            </div>
-
-            <div style={{ display: "flex", gap: "10px" }}>
-              <button onClick={() => setShowProvision(false)} disabled={provisionBusy}
-                style={{ flex: 1, padding: "12px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: "#111120", border: "1px solid #1a1a2a", color: "#9ca3af", cursor: provisionBusy ? "not-allowed" : "pointer" }}>
-                Cancel
-              </button>
-              <button onClick={confirmProvision} disabled={provisionBusy}
-                style={{ flex: 1, padding: "12px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, background: provisionBusy ? "#2a2a3a" : A, border: "none", color: "#fff", cursor: provisionBusy ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}>
-                {provisionBusy && <span style={{ width: "12px", height: "12px", borderRadius: "50%", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", animation: "spin 0.7s linear infinite", display: "inline-block" }} />}
-                {provisionBusy ? "Creating…" : "Create Account"}
               </button>
             </div>
           </div>
