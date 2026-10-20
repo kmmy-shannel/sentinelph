@@ -565,7 +565,15 @@ export default function ReviewQueue() {
     setIsEditMode(false);
   }
 
-  const submitDisabled = !decision || !comment.trim() || submittingVote || savingEdit || (subtypeAction === 'corrected' && (!correctedSubtype || !correctedTier));
+    const submitDisabled = 
+    !decision || 
+    !comment.trim() || 
+    submittingVote || 
+    savingEdit || 
+    // If correcting, they MUST pick both a tier and subtype
+    (subtypeAction === 'corrected' && (!correctedSubtype || !correctedTier)) ||
+    // If approving, they MUST confirm, correct, or mark unsure. They cannot leave it blank.
+    (decision === 'approve' && !subtypeAction);
 
   return (
     <div>
@@ -1035,8 +1043,15 @@ export default function ReviewQueue() {
                       <CloseIcon color={decision === "reject" ? "#ef4444" : "#4b5563"} /> Reject
                     </button>
                   </div>
-
                   <textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Mandatory: add your reasoning comment…" rows={3} style={{ width: "100%", padding: "12px 16px", borderRadius: "12px", fontSize: "12px", outline: "none", resize: "none", marginBottom: "16px", background: "#080810", border: "1px solid #1a1a28", color: "#e2e8f0", boxSizing: "border-box" }} />
+
+                  {/* NEW: Warning message when Approve is selected but subtype is missing */}
+                  {decision === 'approve' && !subtypeAction && (
+                    <div style={{ marginBottom: "16px", padding: "10px 14px", borderRadius: "8px", background: "rgba(234,179,8,0.1)", border: "1px solid #eab30840", fontSize: "11px", color: "#facc15", display: "flex", alignItems: "center", gap: "6px" }}>
+                      <QuestionIcon color="#facc15" size={14} /> 
+                      You must confirm, correct, or mark the subtype as "Unsure" before approving.
+                    </div>
+                  )}
 
                   {modalMode === 'edit' ? (
                     <div style={{ display: "flex", gap: "10px" }}>
