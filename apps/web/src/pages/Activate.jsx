@@ -86,7 +86,7 @@ export default function Activate() {
       // 2. Sign in to get a valid ID token.
       await signInWithEmailAndPassword(auth, email, password);
 
-      // 3. FIXED: Added /api/v1 prefix
+      // 3. Tell the backend to flip the status to active.
       await api.post("/api/v1/auth/activate-account");
 
       setStage("success");

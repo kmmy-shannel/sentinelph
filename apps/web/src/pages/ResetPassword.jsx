@@ -2,7 +2,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import apiClient from '../lib/api';
 
 const ACCENT = '#6366f1';
 
@@ -108,16 +107,9 @@ export default function ResetPassword() {
     setError(null);
     setLoading(true);
     try {
+      // ONLY update Firebase. Do NOT call the database here.
       await confirmPasswordReset(token, newPassword);
       
-      // Call the backend to flip the status to active
-      try {
-        await apiClient.post('/api/v1/auth/activate-account');
-      } catch (apiErr) {
-        console.error("ACTIVATION API FAILED:", apiErr.response?.data || apiErr.message);
-        throw new Error(apiErr.response?.data?.message || "Database activation failed. Please contact support.");
-      }
-
       setSuccess(true);
       setTimeout(() => {
         navigate('/login?reset=success', { replace: true });

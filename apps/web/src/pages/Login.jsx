@@ -198,11 +198,11 @@ export default function Login({ onReady }) {
           flexShrink: 0, 
           display: "flex", 
           flexDirection: "column", 
-          justifyContent: "center", // 👈 CHANGED FROM SPACE-BETWEEN TO CENTER
+          justifyContent: "center",
           padding: "56px 64px", 
           position: "relative", 
           zIndex: 1,
-          gap: "48px" // 👈 ADDED GAP FOR SPACING
+          gap: "48px"
         }}
       >
         
@@ -420,13 +420,20 @@ export default function Login({ onReady }) {
             </div>
 
             {forgotSuccess ? (
-              <div style={{ padding: "18px", borderRadius: "14px", background: "#0a1a12", border: "1px solid #22c55e40", color: "#22c55e", textAlign: "center" }}>
-                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: "10px" }}>
+              <div style={{ 
+                padding: "28px 24px", // INCREASED PADDING
+                borderRadius: "16px", 
+                background: "#0a1a12", 
+                border: "1px solid #22c55e40", 
+                color: "#22c55e", 
+                textAlign: "center" 
+              }}>
+                <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: "16px" }}>
                   <path d="M20 6L9 17l-5-5" />
                 </svg>
-                <div style={{ fontSize: "15px", fontWeight: 600, marginBottom: "4px" }}>Check your inbox</div>
-                <div style={{ fontSize: "13px", opacity: 0.85, lineHeight: 1.5 }}>
-                  The link expires in 15 minutes.
+                <div style={{ fontSize: "17px", fontWeight: 700, marginBottom: "8px" }}>Check your inbox</div>
+                <div style={{ fontSize: "14px", opacity: 0.85, lineHeight: 1.6 }}>
+                  The reset link expires in 15 minutes.
                 </div>
               </div>
             ) : (
@@ -469,10 +476,20 @@ export default function Login({ onReady }) {
                     setForgotError(null);
                     setForgotLoading(true);
                     try {
+                      const check = await apiClient.post('/api/v1/auth/check-email', {
+                        email: forgotEmail.trim().toLowerCase(),
+                      });
+
+                      if (!check.data?.exists) {
+                        setForgotError("This email is not registered in SentinelPH.");
+                        setForgotLoading(false);
+                        return;
+                      }
+
                       await requestPasswordReset(forgotEmail.trim().toLowerCase());
                       setForgotSuccess(true);
                     } catch (err) {
-                      setForgotSuccess(true);
+                      setForgotError(err?.response?.data?.message || "Failed to send reset link. Please try again.");
                     } finally {
                       setForgotLoading(false);
                     }
