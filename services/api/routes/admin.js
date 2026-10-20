@@ -160,7 +160,7 @@ function normalizeAiLabel(label) {
   if (!value) return 'unknown';
 
   const scamLabels = new Set([
-    'malicious', 'likely_scam', 'scam',
+    'malicious', 'likely_scam', 'scam', 'blacklisted',
     'phishing_link', 'fake_prize_lottery', 'wrong_number_baiting',
     'urgent_fine_toll', 'impersonation_family', 'brand_marketing',
     'otp phishing', 'bank impersonation', 'parcel/delivery',
@@ -168,7 +168,7 @@ function normalizeAiLabel(label) {
   ]);
 
   const legitLabels = new Set([
-    'legitimate', 'likely_legitimate',
+    'legitimate', 'likely_legitimate', 'rejected',
     'personal_conversational', 'two_factor_auth', 'appointment_reminder',
     'delivery_tracking', 'bank_activity_alert',
   ]);
@@ -209,10 +209,15 @@ function buildReviewSignals(adminReviews, officerVerdictReports) {
   for (const r of officerVerdictReports || []) {
     if (!r.reportId || seen.has(r.reportId)) continue;
     seen.add(r.reportId);
+    
+    // FIX: Fallback to report status if officer didn't explicitly select a subtype
+    const actualVerdict = r.officerSubtypeAggregated || r.officerTierAggregated || 
+                          (r.status === 'blacklisted' ? 'malicious' : r.status === 'rejected' ? 'legitimate' : 'unavailable');
+
     signals.push({
       reportId: r.reportId,
       predicted: predictedFromReport(r),
-      actual: r.officerSubtypeAggregated || r.officerTierAggregated || 'unavailable',
+      actual: actualVerdict,
       reviewedAt: r.officerSubtypeFinalizedAt || r.resolvedAt || r.createdAt,
     });
   }
@@ -581,12 +586,13 @@ router.get('/dashboard', async (req, res) => {
       AdminAiReview.find({ agency: req.adminProfile.agency }).select('reportId originalLabel selectedLabel reviewedAt').lean(),
     ]);
 
+    // FIX: Query for finalized statuses, not just officerSubtypeAggregated
     const officerVerdicts = await Report.find(
       Object.keys(scope).length
-        ? { $and: [scope, { officerSubtypeAggregated: { $ne: null } }] }
-        : { officerSubtypeAggregated: { $ne: null } }
+        ? { $and: [scope, { status: { $in: ['blacklisted', 'rejected'] } }] }
+        : { status: { $in: ['blacklisted', 'rejected'] } }
     )
-      .select('reportId aiFlag officerSubtypeAggregated officerTierAggregated officerSubtypeFinalizedAt resolvedAt createdAt')
+      .select('reportId aiFlag status officerSubtypeAggregated officerTierAggregated officerSubtypeFinalizedAt resolvedAt createdAt')
       .lean();
 
     const signals = buildReviewSignals(aiReviews, officerVerdicts);
@@ -716,18 +722,13 @@ router.get('/ai-insights', async (req, res) => {
       AdminAiReview.find({ agency: req.adminProfile.agency })
         .select('reportId originalLabel selectedLabel reviewedAt')
         .lean(),
+      // FIX: Use the exact same query as the dashboard to include fallbacks
       Report.find(
         Object.keys(scope).length
-          ? { $and: [scope, { $or: [
-              { officerSubtypeAggregated: { $ne: null } },
-              { officerTierAggregated: { $ne: null } },
-            ] }] }
-          : { $or: [
-              { officerSubtypeAggregated: { $ne: null } },
-              { officerTierAggregated: { $ne: null } },
-            ] }
+          ? { $and: [scope, { status: { $in: ['blacklisted', 'rejected'] } }] }
+          : { status: { $in: ['blacklisted', 'rejected'] } }
       )
-        .select('reportId aiFlag officerSubtypeAggregated officerTierAggregated officerSubtypeFinalizedAt resolvedAt createdAt')
+        .select('reportId aiFlag status officerSubtypeAggregated officerTierAggregated officerSubtypeFinalizedAt resolvedAt createdAt')
         .lean(),
       Report.aggregate([
         { $match: trendMatch },

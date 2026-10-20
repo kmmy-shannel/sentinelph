@@ -152,13 +152,13 @@ export default function AIModelInsights() {
         confirm or correct AI classifications in the Review Queue — this page reflects their work.
       </div>
 
-      {/* Metric cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "16px" }}>
+          {/* Metric cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: "16px" }}>
         {[
           { l: "ACCURACY",  v: metrics?.accuracy,  color: A },
           { l: "PRECISION", v: metrics?.precision, color: "#a855f7" },
           { l: "RECALL",    v: metrics?.recall,    color: "#22c55e" },
-          { l: "F1 SCORE",  v: metrics?.f1,        color: "#f59e0b" },
+          { l: "F1 SCORE",  v: metrics?.f1,        color: A },
         ].map((m) => {
           const numeric = m.v === null || m.v === undefined ? null : m.v * 100;
           const sampleSize = metrics?.sampleSize ?? 0;
@@ -237,8 +237,7 @@ export default function AIModelInsights() {
               <Tooltip contentStyle={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: "8px", color: "#e2e8f0", fontSize: 12 }} />
               <Area type="monotone" dataKey="acc"    stroke={A}         strokeWidth={2.5} fill="url(#accGrad)"  activeDot={{ r: 4, fill: A_SOFT, stroke: "#0e0e18", strokeWidth: 2 }} />
               <Area type="monotone" dataKey="prec"   stroke="#a855f7"   strokeWidth={2}   fill="url(#precGrad)" activeDot={{ r: 3, fill: "#a855f7", stroke: "#0e0e18", strokeWidth: 2 }} />
-              <Line type="monotone" dataKey="recall" stroke="#22c55e"   strokeWidth={2}   dot={false} strokeDasharray="5 4" />
-              <Line type="monotone" dataKey="f1"     stroke="#f59e0b"   strokeWidth={2}   dot={false} strokeDasharray="2 4" />
+             
             </AreaChart>
           </ResponsiveContainer>
         )}
